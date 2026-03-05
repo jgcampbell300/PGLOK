@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+
+# Local runtime state
+src/config/ui_window_state.json
+
+# Downloaded and indexed local data
+src/data/

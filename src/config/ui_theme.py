@@ -17,7 +17,7 @@ UI_COLORS = {
 }
 
 UI_ATTRS = {
-    "window_title": "PGLOK",
+    "window_title": "PG-LOK",
     "window_min_width": 760,
     "window_min_height": 420,
     "container_padding": 18,
@@ -105,7 +105,7 @@ def apply_theme(root):
         focusthickness=2,
         focuscolor=UI_COLORS["primary_active"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
-        padding=(12, 9),
+        padding=(10, 6),
     )
     style.map(
         "App.Primary.TButton",
@@ -119,10 +119,30 @@ def apply_theme(root):
         borderwidth=1,
         relief="flat",
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
-        padding=(12, 9),
+        padding=(10, 6),
     )
     style.map(
         "App.Secondary.TButton",
         background=[("active", UI_COLORS["secondary_active"]), ("disabled", UI_COLORS["secondary"])],
         foreground=[("disabled", UI_COLORS["muted_text"])],
+    )
+    style.configure(
+        "App.Treeview",
+        background=UI_COLORS["entry_bg"],
+        fieldbackground=UI_COLORS["entry_bg"],
+        foreground=UI_COLORS["text"],
+        bordercolor=UI_COLORS["entry_border"],
+        rowheight=24,
+    )
+    style.map(
+        "App.Treeview",
+        background=[("selected", UI_COLORS["primary"])],
+        foreground=[("selected", "#ffffff")],
+    )
+    style.configure(
+        "App.Treeview.Heading",
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        relief="flat",
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
     )
