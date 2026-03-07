@@ -69,6 +69,13 @@ if [[ "${1:-}" == "--desktop" ]] || [[ "${1:-}" == "-d" ]]; then
     
     mkdir -p "$DESKTOP_DIR"
     
+    # Check if icon exists
+    ICON_PATH="$(pwd)/icon.png"
+    if [[ ! -f "$ICON_PATH" ]]; then
+        echo "⚠️  Icon not found at $ICON_PATH"
+        ICON_PATH=""
+    fi
+    
     cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
@@ -76,13 +83,32 @@ Type=Application
 Name=PGLOK
 Comment=Project Gorgon Locator and Data Tools
 Exec=$(pwd)/start_linux.sh
-Icon=$(pwd)/icon.png
+${ICON_PATH:+Icon=$ICON_PATH}
 Terminal=false
 Categories=Game;Utility;
+StartupNotify=true
 EOF
     
     echo "✅ Desktop entry created at $DESKTOP_FILE"
     echo "   You can now launch PGLOK from your application menu."
+    
+    # Also create desktop entry for the executable if it exists
+    if [[ -f "$(pwd)/dist/PGLOK" ]]; then
+        EXE_DESKTOP_FILE="$DESKTOP_DIR/pglok-exe.desktop"
+        cat > "$EXE_DESKTOP_FILE" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PGLOK (Executable)
+Comment=Project Gorgon Locator and Data Tools - Standalone
+Exec=$(pwd)/dist/PGLOK
+${ICON_PATH:+Icon=$ICON_PATH}
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
+EOF
+        echo "✅ Executable desktop entry created at $EXE_DESKTOP_FILE"
+    fi
 fi
 
 echo ""

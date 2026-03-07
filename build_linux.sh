@@ -15,9 +15,21 @@ if [[ -f ".venv/bin/activate" ]]; then
   source ".venv/bin/activate"
 fi
 
-"$PY_BIN" -m pip install --upgrade pip
-"$PY_BIN" -m pip install -r requirements.txt pyinstaller
+echo "🔧 Building PGLOK executable for Linux..."
+
+# Install dependencies with user flag to avoid system package conflicts
+"$PY_BIN" -m pip install --break-system-packages --upgrade pip
+"$PY_BIN" -m pip install --break-system-packages pyinstaller
+
+# Build the executable
 "$PY_BIN" -m PyInstaller --clean --noconfirm scripts/pyinstaller/pglok.spec
 
 echo
-echo "Build complete: dist/PGLOK"
+echo "✅ Build complete: dist/PGLOK"
+echo "📦 Executable created at: $(pwd)/dist/PGLOK"
+echo ""
+echo "To run the executable:"
+echo "  ./dist/PGLOK"
+echo ""
+echo "To install system-wide (optional):"
+echo "  sudo cp dist/PGLOK /usr/local/bin/"

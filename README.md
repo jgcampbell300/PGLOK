@@ -72,13 +72,45 @@ pip install -r requirements.txt
 
 You must build on each target OS (Linux/macOS/Windows) separately.
 
-- Linux: `./build_linux.sh`
-- macOS: `./build_mac.command`
-- Windows: `build_windows.bat`
+### Linux
+```bash
+# Build executable
+./build_linux.sh
+
+# Package for distribution
+./package_linux.sh
+```
+
+### macOS
+```bash
+./build_mac.command
+```
+
+### Windows
+```bash
+build_windows.bat
+```
 
 Build output:
 - Linux/macOS: `dist/PGLOK`
 - Windows: `dist/PGLOK.exe`
+
+### Executable Features
+- ✅ **Standalone** - No Python installation required
+- ✅ **Icon Integration** - Custom application icon
+- ✅ **Desktop Integration** - Can be added to application menu
+- ✅ **Portable** - Single file, no installation needed
+
+### Installing the Executable (Linux)
+```bash
+# Extract and install
+tar -xzf PGLOK-Linux-YYYYMMDD.tar.gz
+cd PGLOK-Linux-YYYYMMDD
+./install.sh
+
+# Or manually copy
+sudo cp dist/PGLOK /usr/local/bin/
+```
 
 ## Configuration
 

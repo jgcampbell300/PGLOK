@@ -1,10 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import os
 
 from PyInstaller.utils.hooks import collect_submodules
 
 
-project_root = Path(__file__).resolve().parents[2]
+# Get the project root directory
+project_root = Path(os.getcwd())
 
 datas = []
 for rel_path in ("src/config", "src/assets", "src/data"):
@@ -47,4 +49,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(project_root / "icon.ico"),
 )
