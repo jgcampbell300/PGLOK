@@ -178,7 +178,51 @@ def _replace_items(conn: sqlite3.Connection, report_id: int, items: list):
         )
 
 
-def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Path] = None):
+def cleanup_orphaned_data(db_path: Optional[Path] = None):
+    """Remove items and reports that no longer exist in the file system."""
+    db_path = Path(db_path) if db_path else get_db_path()
+    reports_dir = get_reports_dir()
+    
+    if not db_path.exists() or reports_dir is None or not reports_dir.exists():
+        return {"cleaned_reports": 0, "cleaned_items": 0, "db_path": str(db_path)}
+    
+    with sqlite3.connect(db_path) as conn:
+        ensure_schema(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
+        
+        # Get all current report files in the directory
+        current_files = {str(path) for path in sorted(reports_dir.glob(ITEM_REPORT_GLOB))}
+        
+        # Find and remove orphaned reports (no longer exist in filesystem)
+        cursor = conn.execute("SELECT file_path FROM reports")
+        db_files = {row[0] for row in cursor.fetchall()}
+        orphaned_reports = db_files - current_files
+        
+        cleaned_reports = 0
+        if orphaned_reports:
+            placeholders = ",".join("?" for _ in orphaned_reports)
+            conn.execute(f"DELETE FROM reports WHERE file_path IN ({placeholders})", tuple(orphaned_reports))
+            cleaned_reports = len(orphaned_reports)
+        
+        # Clean up any orphaned items (should be handled by FK cascade, but let's be explicit)
+        conn.execute("""
+            DELETE FROM items 
+            WHERE report_id NOT IN (
+                SELECT id FROM reports 
+                WHERE file_path IN ({})
+            )
+        """.format(",".join("?" for _ in current_files) if current_files else "''"), tuple(current_files))
+        
+        conn.commit()
+        
+    return {
+        "cleaned_reports": cleaned_reports,
+        "cleaned_items": conn.total_changes if hasattr(conn, 'total_changes') else 0,
+        "db_path": str(db_path),
+    }
+
+
+def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Path] = None, force_refresh: bool = False):
     reports_dir = Path(reports_dir) if reports_dir else get_reports_dir()
     db_path = Path(db_path) if db_path else get_db_path()
 
@@ -194,6 +238,12 @@ def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Pat
         ensure_schema(conn)
         conn.execute("PRAGMA foreign_keys = ON")
 
+        # If force_refresh, clean up orphaned data first
+        if force_refresh:
+            cleanup_result = cleanup_orphaned_data(db_path)
+            indexed = cleanup_result.get("cleaned_reports", 0)
+
+        # Get current report files and remove ones that no longer exist
         seen_paths = {str(path) for path in report_files}
         conn.execute(
             "DELETE FROM reports WHERE file_path NOT IN ({})".format(
@@ -221,12 +271,19 @@ def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Pat
 
         conn.commit()
 
-    return {
+    result = {
         "indexed_reports": indexed,
         "skipped_reports": skipped,
         "total_reports": len(report_files),
         "db_path": str(db_path),
     }
+    
+    # Add cleanup info if force_refresh was used
+    if force_refresh and 'cleanup_result' in locals():
+        result["cleaned_reports"] = cleanup_result.get("cleaned_reports", 0)
+        result["cleaned_items"] = cleanup_result.get("cleaned_items", 0)
+    
+    return result
 
 
 def get_filter_values(db_path: Optional[Path] = None):

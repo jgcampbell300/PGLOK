@@ -1495,7 +1495,7 @@ class PGLOKApp:
 
         def worker():
             try:
-                result = index_item_reports()
+                result = index_item_reports(force_refresh=True)
                 filters = itemizer_get_filter_values()
 
                 def update_ui():
@@ -1513,9 +1513,15 @@ class PGLOKApp:
                             self.itemizer_character_var.set("")
                     self._render_itemizer_character_notes(filters["characters"])
                     self._load_itemizer_rows(reset_offset=True)
-                    self.status_var.set(
-                        f"Itemizer index ready: {result['indexed_reports']} updated, {result['skipped_reports']} skipped."
-                    )
+                    
+                    # Show cleanup info if applicable
+                    status_msg = f"Itemizer index ready: {result['indexed_reports']} updated, {result['skipped_reports']} skipped."
+                    if result.get('cleaned_reports', 0) > 0:
+                        status_msg += f" {result['cleaned_reports']} orphaned reports removed."
+                    if result.get('cleaned_items', 0) > 0:
+                        status_msg += f" {result['cleaned_items']} orphaned items removed."
+                    
+                    self.status_var.set(status_msg)
 
                 self.root.after(0, update_ui)
             except Exception as exc:
