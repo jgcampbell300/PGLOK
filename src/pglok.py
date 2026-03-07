@@ -1,46 +1,93 @@
 import json
 import re
+import sqlite3
 import threading
+import urllib.error
+import urllib.request
+import webbrowser
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
 from datetime import datetime
 
 import src.config.config as config
+from src import __version__
 from src.chat.monitor import ChatLogMonitor
-from src.config.ui_theme import UI_ATTRS, UI_TEXT, UI_COLORS, apply_theme
+from src.config.ui_theme import UI_ATTRS, UI_TEXT, UI_COLORS, apply_theme, configure_menu_theme
 from src.data_acquisition import main as run_data_acquisition
 from src.data_index import fetch_rows, get_db_path, index_data_dir, list_indexed_files
+from src.itemizer import get_filter_values as itemizer_get_filter_values
+from src.itemizer import index_item_reports, search_item_totals, search_items
 from src.locate_PG import initialize_pg_base
+from src.maptools import MapToolsBrowser
+from src.utils.spellcheck import EntrySpellcheckBinder
 
 
 WINDOW_STATE_FILE = config.CONFIG_DIR / "ui_window_state.json"
 GEOMETRY_RE = re.compile(r"^(?P<w>\d+)x(?P<h>\d+)\+(?P<x>-?\d+)\+(?P<y>-?\d+)$")
 CHARACTER_FILE_RE = re.compile(r"^Character_(?P<name>.+)_(?P<server>[^_]+)\.json$")
 CHAT_CHANNEL_RE = re.compile(r"\[(?P<channel>[^\]]+)\]")
+MAIN_MIN_WIDTH = 900
+MAIN_MIN_HEIGHT = 620
+REPO_URL = "https://github.com/jgcampbell300/PGLOK"
+RELEASES_URL = f"{REPO_URL}/releases/latest"
+GITHUB_RELEASE_API = "https://api.github.com/repos/jgcampbell300/PGLOK/releases/latest"
+GITHUB_TAGS_API = "https://api.github.com/repos/jgcampbell300/PGLOK/tags?per_page=1"
 
 
 class PGLOKApp:
     def __init__(self, root):
         self.root = root
         self._resize_after_id = None
+        self._data_browser_resize_after_id = None
+        self._itemizer_resize_after_id = None
         self._window_state_ready = False
         self.settings_window = None
         self.data_browser_window = None
+        self.data_browser_paned = None
+        self.data_browser_display_paned = None
         self.character_browser_window = None
         self.chat_window = None
+        self.itemizer_window = None
+        self.map_tools_window = None
+        self.map_tools_browser = None
+        self.home_paned = None
+        self.itemizer_paned = None
+        self.itemizer_bottom_paned = None
         self.locate_button = None
         self.download_button = None
         self.reset_button = None
         self.data_file_listbox = None
         self.data_rows_tree = None
         self.data_json_text = None
-        self.data_search_var = tk.StringVar()
+        self.data_browser_font_size = int(self._get_ui_pref("data_browser_font_size", max(9, UI_ATTRS["font_size"])))
+        self.data_search_var = tk.StringVar(value=str(self._get_ui_pref("data_browser_search", "")))
+        self._data_search_after_id = None
         self.data_page_var = tk.StringVar(value="Page 1")
         self.data_selected_filename = None
         self.data_page_size = 200
-        self.data_offset = 0
+        self.data_offset = int(self._get_ui_pref("data_browser_offset", 0) or 0)
         self.data_total_rows = 0
+        self.itemizer_tree = None
+        self.itemizer_json_text = None
+        self.itemizer_search_var = tk.StringVar(value=str(self._get_ui_pref("itemizer_search", "")))
+        self.itemizer_server_var = tk.StringVar(value=str(self._get_ui_pref("itemizer_server", "")))
+        self.itemizer_character_var = tk.StringVar(value=str(self._get_ui_pref("itemizer_character", "")))
+        self.itemizer_page_var = tk.StringVar(value="Page 1")
+        self.itemizer_totals_var = tk.StringVar(value="Total Qty: 0   Total Value: 0")
+        self.itemizer_server_combo = None
+        self.itemizer_character_combo = None
+        self.itemizer_notes_canvas = None
+        self.itemizer_notes_inner = None
+        self.itemizer_notes_window_id = None
+        self.itemizer_note_vars = {}
+        self.itemizer_note_entry_widgets = {}
+        self.itemizer_note_row_widgets = {}
+        self.itemizer_drag_name = None
+        self.itemizer_page_size = 250
+        self.itemizer_offset = int(self._get_ui_pref("itemizer_offset", 0) or 0)
+        self.itemizer_total_rows = 0
+        self._itemizer_search_after_id = None
         self.always_on_top_var = tk.BooleanVar(value=False)
         self.pin_button = None
         self.character_tree = None
@@ -57,11 +104,21 @@ class PGLOKApp:
         self.character_count_var = tk.StringVar(value="Characters Loaded: 0")
         self.path_vars = {label: tk.StringVar() for label in UI_TEXT["path_labels"]}
         self.status_var = tk.StringVar(value=UI_TEXT["status_ready"])
+        self.global_search_var = tk.StringVar(value=str(self._get_ui_pref("global_search_query", "")))
+        self.global_search_results_tree = None
+        self.global_search_detail_text = None
+        self.global_search_paned = None
+        self.global_search_results = []
+        self._global_search_after_id = None
+        self.alpha_button = None
+        self.entry_spellcheck = EntrySpellcheckBinder()
 
         apply_theme(self.root)
         self.root.title(UI_ATTRS["window_title"])
+        self.data_search_var.trace_add("write", lambda *_: self._schedule_data_live_search())
+        self.itemizer_search_var.trace_add("write", lambda *_: self._schedule_itemizer_live_search())
 
-        self.app_frame = ttk.Frame(root, padding=UI_ATTRS["container_padding"], style="App.Panel.TFrame")
+        self.app_frame = ttk.Frame(root, padding=(6, 2, 6, 6), style="App.Panel.TFrame")
         self.app_frame.pack(fill="both", expand=True)
 
         self._build_layout()
@@ -73,56 +130,43 @@ class PGLOKApp:
         self.refresh_config_view()
         self._restore_always_on_top_state()
         self.show_page("home")
+        self._refresh_character_cache()
         self._restore_open_windows()
         self.root.after(150, self._raise_main_window_default)
+        self._check_for_upgrade_async()
         if config.PG_BASE is None:
             self.locate_pg()
 
     def _build_layout(self):
-        toolbar = ttk.Frame(self.app_frame, padding=8, style="App.Panel.TFrame")
-        toolbar.pack(fill="x", pady=(0, 8))
-        ttk.Label(toolbar, text="Main Toolbar", style="App.Header.TLabel").pack(side="left")
-        self.pin_button = ttk.Button(toolbar, text="PIN: OFF", command=self._toggle_always_on_top, style="App.Primary.TButton")
-        self.pin_button.pack(side="right")
-        ttk.Button(toolbar, text="Chat", command=self._open_chat, style="App.Secondary.TButton").pack(side="right", padx=(6, 0))
-        ttk.Button(toolbar, text="Planner", command=self._open_planner, style="App.Secondary.TButton").pack(side="right", padx=(6, 0))
+        toolbar = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
+        toolbar.pack(fill="x", pady=(0, 3))
+        ttk.Button(toolbar, text="Chat", command=self._open_chat, style="App.Secondary.TButton").pack(side="left")
         ttk.Button(
             toolbar,
             text="Characters",
             command=self.open_character_browser_window,
             style="App.Secondary.TButton",
-        ).pack(side="right", padx=(6, 0))
-        ttk.Button(
+        ).pack(side="left", padx=(3, 0))
+        ttk.Button(toolbar, text="Data", command=self.open_data_browser_window, style="App.Secondary.TButton").pack(
+            side="left", padx=(3, 0)
+        )
+        ttk.Button(toolbar, text="Itemizer", command=self.open_itemizer_window, style="App.Secondary.TButton").pack(
+            side="left", padx=(3, 0)
+        )
+        ttk.Button(toolbar, text="Maps", command=self.open_map_tools_window, style="App.Secondary.TButton").pack(
+            side="left", padx=(3, 0)
+        )
+        ttk.Button(toolbar, text="Planner", command=self._open_planner, style="App.Secondary.TButton").pack(side="left", padx=(3, 0))
+        self.pin_button = ttk.Button(toolbar, text="PIN: OFF", command=self._toggle_always_on_top, style="App.Primary.TButton")
+        self.pin_button.pack(side="left", padx=(3, 0))
+
+        self.alpha_button = ttk.Button(
             toolbar,
-            text="Data",
-            command=self.open_data_browser_window,
+            text=f"ALPHA v{__version__}",
+            command=lambda: webbrowser.open(REPO_URL),
             style="App.Secondary.TButton",
-        ).pack(side="right", padx=(6, 0))
-        ttk.Button(toolbar, text="Settings", command=self.open_settings_window, style="App.Secondary.TButton").pack(
-            side="right", padx=(6, 0)
         )
-
-        header = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
-        header.pack(fill="x", pady=(2, 10))
-
-        title_column = ttk.Frame(header, style="App.Panel.TFrame")
-        title_column.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_column, text=UI_ATTRS["window_title"], style="App.Header.TLabel").pack(anchor="w")
-        ttk.Label(
-            title_column,
-            text="Project Gorgon companion tools",
-            style="App.Status.TLabel",
-        ).pack(anchor="w", pady=(2, 0))
-
-        badge = tk.Label(
-            header,
-            text="ALPHA",
-            bg=UI_COLORS["secondary"],
-            fg=UI_COLORS["text"],
-            padx=10,
-            pady=4,
-        )
-        badge.pack(side="right")
+        self.alpha_button.pack(side="right")
 
         self.page_container = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
         self.page_container.pack(fill="both", expand=True)
@@ -131,17 +175,31 @@ class PGLOKApp:
 
         self._build_home_page()
 
+        status_card = ttk.Frame(self.app_frame, padding=6, style="App.Card.TFrame")
+        status_card.pack(fill="x", pady=(4, 0))
+        status_row = ttk.Frame(status_card, style="App.Panel.TFrame")
+        status_row.pack(fill="x")
+        status_row.columnconfigure(0, weight=1)
+        left_status = ttk.Frame(status_row, style="App.Panel.TFrame")
+        left_status.grid(row=0, column=0, sticky="w")
+        ttk.Label(left_status, text="Status:", style="App.Status.TLabel").pack(side="left")
+        ttk.Label(left_status, textvariable=self.status_var, style="App.Status.TLabel").pack(side="left", padx=(4, 0))
+        ttk.Label(status_row, textvariable=self.character_count_var, style="App.Status.TLabel").grid(row=0, column=1, sticky="e")
+
     def _build_menu_bar(self):
         menu_bar = tk.Menu(self.root)
+        configure_menu_theme(menu_bar)
         self.root.config(menu=menu_bar)
 
         file_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(file_menu)
         file_menu.add_command(label="Home", command=lambda: self.show_page("home"))
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menu_bar.add_cascade(label="File", menu=file_menu)
 
         edit_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(edit_menu)
         edit_menu.add_command(label="Settings", command=self.open_settings_window)
         edit_menu.add_separator()
         edit_menu.add_command(label="Copy", command=self._menu_not_implemented)
@@ -149,19 +207,23 @@ class PGLOKApp:
         menu_bar.add_cascade(label="Edit", menu=edit_menu)
 
         view_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(view_menu)
         view_menu.add_command(label="Home", command=lambda: self.show_page("home"))
         view_menu.add_command(label="Data Browser", command=self.open_data_browser_window)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
         document_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(document_menu)
         document_menu.add_command(label="Open Config Folder", command=self._menu_not_implemented)
         menu_bar.add_cascade(label="Document", menu=document_menu)
 
         maps_menu = tk.Menu(menu_bar, tearoff=0)
-        maps_menu.add_command(label="Open Map Tools", command=self._menu_not_implemented)
+        configure_menu_theme(maps_menu)
+        maps_menu.add_command(label="Open Map Tools", command=self.open_map_tools_window)
         menu_bar.add_cascade(label="Maps", menu=maps_menu)
 
         tools_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(tools_menu)
         tools_menu.add_command(label="Locate Project Gorgon", command=self.locate_pg)
         tools_menu.add_command(label="Download Newer Files", command=self.download_newer_files)
         tools_menu.add_command(label="Character Browser", command=self.open_character_browser_window)
@@ -174,8 +236,60 @@ class PGLOKApp:
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         help_menu = tk.Menu(menu_bar, tearoff=0)
+        configure_menu_theme(help_menu)
         help_menu.add_command(label="About PGLOK", command=self._menu_not_implemented)
         menu_bar.add_cascade(label="Help", menu=help_menu)
+
+    def _parse_version_key(self, value):
+        text = str(value or "").strip().lower()
+        if text.startswith("v"):
+            text = text[1:]
+        if not text:
+            return None
+        parts = re.findall(r"\d+", text)
+        if not parts:
+            return None
+        return tuple(int(p) for p in parts)
+
+    def _fetch_latest_repo_version(self):
+        headers = {
+            "User-Agent": "PGLOK/1.0 (+https://github.com/jgcampbell300/PGLOK)",
+            "Accept": "application/vnd.github+json",
+        }
+        for url, key in ((GITHUB_RELEASE_API, "tag_name"), (GITHUB_TAGS_API, "name")):
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                if key == "tag_name":
+                    value = str(payload.get("tag_name", "")).strip()
+                else:
+                    first = payload[0] if isinstance(payload, list) and payload else {}
+                    value = str(first.get("name", "")).strip()
+                if value:
+                    return value
+            except Exception:
+                continue
+        return ""
+
+    def _check_for_upgrade_async(self):
+        def worker():
+            latest = self._fetch_latest_repo_version()
+            if not latest:
+                return
+            current_key = self._parse_version_key(__version__)
+            latest_key = self._parse_version_key(latest)
+            if current_key is None or latest_key is None or latest_key <= current_key:
+                return
+
+            def apply_upgrade_state():
+                if self.alpha_button is None:
+                    return
+                self.alpha_button.configure(text="Upgrade!", command=lambda: webbrowser.open(RELEASES_URL))
+
+            self.root.after(0, apply_upgrade_state)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _menu_not_implemented(self):
         self.status_var.set("Menu action not implemented yet.")
@@ -184,7 +298,7 @@ class PGLOKApp:
         self.status_var.set("Fletcher is not implemented yet.")
 
     def _open_itemizer(self):
-        self.status_var.set("Itemizer is not implemented yet.")
+        self.open_itemizer_window()
 
     def _open_planner(self):
         self.status_var.set("Planner is not implemented yet.")
@@ -194,6 +308,48 @@ class PGLOKApp:
 
     def _open_chat(self):
         self.open_chat_window()
+
+    def open_map_tools_window(self):
+        if self.map_tools_window is not None and self.map_tools_window.winfo_exists():
+            self.map_tools_window.deiconify()
+            self.map_tools_window.lift()
+            self.map_tools_window.focus_force()
+            return
+
+        self.map_tools_window = tk.Toplevel(self.root)
+        self.map_tools_window.title(f"{UI_ATTRS['window_title']} - Map Tools")
+        self.map_tools_window.configure(bg=self.root.cget("bg"))
+        self.map_tools_window.protocol("WM_DELETE_WINDOW", self._on_close_map_tools_window)
+
+        shell = ttk.Frame(self.map_tools_window, padding=12, style="App.Panel.TFrame")
+        shell.pack(fill="both", expand=True)
+
+        browser = MapToolsBrowser(
+            shell,
+            maps_dir=config.DATA_DIR / "maps",
+            status_callback=self.status_var.set,
+            selected_map=self._get_ui_pref("map_tools_last_map", ""),
+            on_map_change=lambda name: self._set_ui_pref("map_tools_last_map", name),
+        )
+        self.map_tools_browser = browser
+        browser.pack(fill="both", expand=True)
+
+        self.map_tools_window.update_idletasks()
+        req_w = max(900, self.map_tools_window.winfo_reqwidth())
+        req_h = max(600, self.map_tools_window.winfo_reqheight())
+        self._apply_saved_window_geometry("map_tools", self.map_tools_window, req_w, req_h)
+        self.map_tools_window.minsize(760, 480)
+        self._set_window_open_state("map_tools", True)
+
+    def _on_close_map_tools_window(self):
+        if self.map_tools_window is not None and self.map_tools_window.winfo_exists():
+            if self.map_tools_browser is not None:
+                self._set_ui_pref("map_tools_last_map", self.map_tools_browser.selected_map_var.get().strip())
+            self._save_window_geometry("map_tools", self.map_tools_window)
+            self.map_tools_window.destroy()
+        self._set_window_open_state("map_tools", False)
+        self.map_tools_window = None
+        self.map_tools_browser = None
 
     def open_chat_window(self):
         if self.chat_window is not None and self.chat_window.winfo_exists():
@@ -330,16 +486,19 @@ class PGLOKApp:
             return self.chat_tab_text[name]
 
         tab_frame = ttk.Frame(self.chat_notebook, style="App.Card.TFrame")
-        scroll = ttk.Scrollbar(tab_frame, orient="vertical")
+        scroll = ttk.Scrollbar(tab_frame, orient="vertical", style="App.Vertical.TScrollbar")
         scroll.pack(side="right", fill="y")
         text = tk.Text(
             tab_frame,
             wrap="word",
-            bg=UI_COLORS["bg"],
+            bg=UI_COLORS["entry_bg"],
             fg=UI_COLORS["text"],
             insertbackground=UI_COLORS["text"],
             borderwidth=1,
-            highlightthickness=0,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
             yscrollcommand=scroll.set,
         )
         text.pack(side="left", fill="both", expand=True)
@@ -383,11 +542,389 @@ class PGLOKApp:
             self.pin_button.configure(text="PIN: ON" if value else "PIN: OFF")
 
     def _build_home_page(self):
-        status_card = ttk.Frame(self.home_page, padding=16, style="App.Card.TFrame")
-        status_card.pack(fill="x")
-        ttk.Label(status_card, text="Status", style="App.Header.TLabel").pack(anchor="w")
-        ttk.Label(status_card, textvariable=self.status_var, style="App.Status.TLabel").pack(anchor="w", pady=(6, 0))
-        ttk.Label(status_card, textvariable=self.character_count_var, style="App.Status.TLabel").pack(anchor="w", pady=(2, 0))
+        self.home_paned = None
+        search_card = ttk.Frame(self.home_page, padding=8, style="App.Card.TFrame")
+        search_card.pack(fill="both", expand=True)
+
+        ttk.Label(search_card, text="Global Search", style="App.Header.TLabel").pack(anchor="w")
+
+        search_row = ttk.Frame(search_card, style="App.Card.TFrame")
+        search_row.pack(fill="x", pady=(4, 4))
+        search_entry = ttk.Entry(search_row, textvariable=self.global_search_var, style="App.TEntry")
+        search_entry.pack(side="left", fill="x", expand=True)
+        self.entry_spellcheck.register(search_entry)
+        search_entry.bind("<Return>", lambda _e: self._start_global_search())
+        ttk.Button(
+            search_row,
+            text="Search",
+            command=self._start_global_search,
+            style="App.Primary.TButton",
+        ).pack(side="left", padx=(6, 4))
+        ttk.Button(
+            search_row,
+            text="Reset",
+            command=self._reset_global_search,
+            style="App.Secondary.TButton",
+        ).pack(side="left")
+
+        results_wrap = ttk.Frame(search_card, style="App.Card.TFrame")
+        results_wrap.pack(fill="both", expand=True)
+
+        self.global_search_paned = ttk.Panedwindow(results_wrap, orient="vertical", style="App.TPanedwindow")
+        self.global_search_paned.pack(fill="both", expand=True)
+        self.global_search_paned.bind("<ButtonRelease-1>", self._on_global_search_pane_resize)
+        results_top = ttk.Frame(self.global_search_paned, style="App.Card.TFrame")
+        results_bottom = ttk.Frame(self.global_search_paned, style="App.Card.TFrame")
+        self.global_search_paned.add(results_top, weight=3)
+        self.global_search_paned.add(results_bottom, weight=2)
+        try:
+            self.global_search_paned.pane(results_top, minsize=90)
+            self.global_search_paned.pane(results_bottom, minsize=90)
+        except tk.TclError:
+            pass
+
+        results_tree_wrap = ttk.Frame(results_top, style="App.Card.TFrame")
+        results_tree_wrap.pack(fill="both", expand=True)
+        results_tree_scroll = ttk.Scrollbar(results_tree_wrap, orient="vertical", style="App.Vertical.TScrollbar")
+        results_tree_scroll.pack(side="right", fill="y")
+        self.global_search_results_tree = ttk.Treeview(
+            results_tree_wrap,
+            columns=("source", "title", "location"),
+            show="headings",
+            height=7,
+            style="App.Treeview",
+            yscrollcommand=results_tree_scroll.set,
+        )
+        self.global_search_results_tree.heading("source", text="Source")
+        self.global_search_results_tree.heading("title", text="Found")
+        self.global_search_results_tree.heading("location", text="Where")
+        self.global_search_results_tree.column("source", width=120, stretch=False)
+        self.global_search_results_tree.column("title", width=260, stretch=False)
+        self.global_search_results_tree.column("location", width=520, stretch=True)
+        self.global_search_results_tree.pack(side="left", fill="both", expand=True)
+        results_tree_scroll.configure(command=self.global_search_results_tree.yview)
+        self.global_search_results_tree.bind("<<TreeviewSelect>>", self._on_global_search_select)
+
+        detail_wrap = ttk.Frame(results_bottom, style="App.Card.TFrame")
+        detail_wrap.pack(fill="both", expand=True, pady=(4, 0))
+        detail_scroll = ttk.Scrollbar(detail_wrap, orient="vertical", style="App.Vertical.TScrollbar")
+        detail_scroll.pack(side="right", fill="y")
+        self.global_search_detail_text = tk.Text(
+            detail_wrap,
+            height=5,
+            wrap="word",
+            bg=UI_COLORS["entry_bg"],
+            fg=UI_COLORS["text"],
+            insertbackground=UI_COLORS["text"],
+            borderwidth=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
+            yscrollcommand=detail_scroll.set,
+        )
+        self.global_search_detail_text.pack(side="left", fill="both", expand=True)
+        detail_scroll.configure(command=self.global_search_detail_text.yview)
+        self._set_global_search_detail("")
+        self.root.after(120, self._restore_global_search_split)
+        self.root.after(140, self._restore_global_search_state)
+        self._ensure_home_layout_visible()
+
+    def _on_home_pane_resize(self, _event=None):
+        self._save_home_split()
+        self._ensure_home_layout_visible()
+
+    def _save_home_split(self):
+        if self.home_paned is None:
+            return
+        try:
+            split = int(self.home_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("home_split", split)
+
+    def _restore_home_split(self):
+        if self.home_paned is None:
+            return
+        self.home_paned.update_idletasks()
+        split = self._get_ui_pref("home_split", None)
+        if split is None:
+            return
+        try:
+            max_height = max(240, self.home_paned.winfo_height() - 120)
+            clamped = min(max(int(split), 200), max_height)
+            self.home_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+        self._ensure_home_layout_visible()
+
+    def _set_global_search_detail(self, text):
+        if self.global_search_detail_text is None:
+            return
+        self.global_search_detail_text.configure(state="normal")
+        self.global_search_detail_text.delete("1.0", tk.END)
+        self.global_search_detail_text.insert("1.0", text)
+        self.global_search_detail_text.configure(state="disabled")
+
+    def _on_global_search_pane_resize(self, _event=None):
+        self._save_global_search_split()
+        self._ensure_home_layout_visible()
+
+    def _save_global_search_split(self):
+        if self.global_search_paned is None:
+            return
+        try:
+            split = int(self.global_search_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("global_search_split", split)
+
+    def _restore_global_search_split(self):
+        if self.global_search_paned is None:
+            return
+        self.global_search_paned.update_idletasks()
+        split = self._get_ui_pref("global_search_split", None)
+        if split is None:
+            return
+        try:
+            max_height = max(140, self.global_search_paned.winfo_height() - 100)
+            clamped = min(max(int(split), 80), max_height)
+            self.global_search_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+        self._ensure_home_layout_visible()
+
+    def _ensure_home_layout_visible(self):
+        # Keep home split panes within safe bounds so all sections remain visible.
+        if self.home_paned is not None:
+            try:
+                total_h = int(self.home_paned.winfo_height())
+                if total_h > 0:
+                    min_top = 170
+                    min_bottom = 95
+                    max_top = max(min_top, total_h - min_bottom)
+                    current = int(self.home_paned.sashpos(0))
+                    clamped = min(max(current, min_top), max_top)
+                    if clamped != current:
+                        self.home_paned.sashpos(0, clamped)
+            except (tk.TclError, ValueError):
+                pass
+
+        if self.global_search_paned is not None:
+            try:
+                total_h = int(self.global_search_paned.winfo_height())
+                if total_h > 0:
+                    min_top = 80
+                    min_bottom = 70
+                    max_top = max(min_top, total_h - min_bottom)
+                    current = int(self.global_search_paned.sashpos(0))
+                    clamped = min(max(current, min_top), max_top)
+                    if clamped != current:
+                        self.global_search_paned.sashpos(0, clamped)
+            except (tk.TclError, ValueError):
+                pass
+
+    def _populate_global_search_results(self, results):
+        self.global_search_results = list(results)
+        self._set_ui_pref("global_search_results", self.global_search_results)
+        if self.global_search_results_tree is not None:
+            self.global_search_results_tree.delete(*self.global_search_results_tree.get_children())
+            for idx, item in enumerate(self.global_search_results):
+                self.global_search_results_tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(idx),
+                    values=(item["source"], item["title"], item["location"]),
+                )
+            if self.global_search_results:
+                self.global_search_results_tree.selection_set("0")
+                self.global_search_results_tree.focus("0")
+                self._on_global_search_select()
+            else:
+                self._set_global_search_detail("No matches found.")
+
+    def _on_global_search_select(self, _event=None):
+        if self.global_search_results_tree is None:
+            return
+        sel = self.global_search_results_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx < 0 or idx >= len(self.global_search_results):
+            return
+        self._set_ui_pref("global_search_selected_index", idx)
+        item = self.global_search_results[idx]
+        self._set_global_search_detail(
+            f"Source: {item['source']}\n"
+            f"Found: {item['title']}\n"
+            f"Where: {item['location']}\n\n"
+            f"Snippet:\n{item['snippet']}"
+        )
+
+    def _reset_global_search(self):
+        self.global_search_var.set("")
+        self._populate_global_search_results([])
+        self._set_global_search_detail("")
+        self._set_ui_pref("global_search_query", "")
+        self._set_ui_pref("global_search_results", [])
+        self._set_ui_pref("global_search_selected_index", 0)
+        self.status_var.set(UI_TEXT["status_ready"])
+
+    def _start_global_search(self):
+        if self._global_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._global_search_after_id)
+            except tk.TclError:
+                pass
+            self._global_search_after_id = None
+        query = self.global_search_var.get().strip()
+        self._set_ui_pref("global_search_query", query)
+        if not query:
+            self._reset_global_search()
+            return
+
+        self.status_var.set("Searching databases and files...")
+
+        def worker():
+            try:
+                results = self._run_global_search(query)
+                lines = [f"Results for: {query}", "=" * 64]
+                if not results:
+                    pass
+
+                def done():
+                    self._populate_global_search_results(results)
+                    self.status_var.set(f"Global search complete: {len(results)} matches.")
+
+                self.root.after(0, done)
+            except Exception as exc:
+                self.root.after(0, lambda: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restore_global_search_state(self):
+        saved_results = self._get_ui_pref("global_search_results", [])
+        if not isinstance(saved_results, list):
+            saved_results = []
+
+        normalized = []
+        for item in saved_results[:200]:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "source": str(item.get("source", "")),
+                    "title": str(item.get("title", "")),
+                    "location": str(item.get("location", "")),
+                    "snippet": str(item.get("snippet", "")),
+                }
+            )
+
+        if normalized:
+            self._populate_global_search_results(normalized)
+            selected_idx = int(self._get_ui_pref("global_search_selected_index", 0) or 0)
+            selected_idx = max(0, min(selected_idx, len(normalized) - 1))
+            if self.global_search_results_tree is not None:
+                self.global_search_results_tree.selection_set(str(selected_idx))
+                self.global_search_results_tree.focus(str(selected_idx))
+                self._on_global_search_select()
+
+    def _run_global_search(self, query):
+        needle = query.lower()
+        like = f"%{query}%"
+        results = []
+        max_results = 200
+
+        def add_result(source, title, location, snippet):
+            if len(results) >= max_results:
+                return
+            clean = " ".join(str(snippet).split())
+            if len(clean) > 260:
+                clean = clean[:257] + "..."
+            results.append(
+                {
+                    "source": source,
+                    "title": title,
+                    "location": location,
+                    "snippet": clean,
+                }
+            )
+
+        data_db = get_db_path(config.DATA_DIR)
+        if data_db.exists():
+            with sqlite3.connect(data_db) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT filename, row_index, row_key, payload
+                    FROM data_rows
+                    WHERE search_text LIKE ?
+                    LIMIT 80
+                    """,
+                    (like,),
+                ).fetchall()
+            for row in rows:
+                add_result(
+                    "Data DB",
+                    f"{row[0]} / row {row[1]}",
+                    f"key={row[2] or '(none)'}",
+                    row[3],
+                )
+                if len(results) >= max_results:
+                    return results
+
+        item_db = config.DATA_DIR / "itemizer.db"
+        if item_db.exists():
+            with sqlite3.connect(item_db) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT r.file_name, r.server, r.character, i.item_name, i.raw_json
+                    FROM items i
+                    JOIN reports r ON r.id = i.report_id
+                    WHERE i.search_text LIKE ? OR i.item_name LIKE ?
+                    LIMIT 80
+                    """,
+                    (like, like),
+                ).fetchall()
+            for row in rows:
+                add_result(
+                    "Itemizer DB",
+                    f"{row[3] or '(item)'}",
+                    f"{row[0]} ({row[1]}/{row[2]})",
+                    row[4],
+                )
+                if len(results) >= max_results:
+                    return results
+
+        search_roots = [config.DATA_DIR]
+        reports_dir = self._get_reports_dir()
+        if reports_dir is not None and reports_dir.exists():
+            search_roots.append(reports_dir)
+
+        allowed_suffixes = {".json", ".txt", ".log", ".ini"}
+        for root in search_roots:
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in allowed_suffixes:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                idx = text.lower().find(needle)
+                if idx < 0:
+                    continue
+                start = max(0, idx - 80)
+                end = min(len(text), idx + max(80, len(query) + 80))
+                snippet = text[start:end].replace("\n", " ").replace("\r", " ")
+                add_result(
+                    "File",
+                    path.name,
+                    str(path),
+                    snippet,
+                )
+                if len(results) >= max_results:
+                    return results
+
+        return results
 
     def _build_settings_content(self, parent):
         shell = ttk.Frame(parent, padding=16, style="App.Card.TFrame")
@@ -402,7 +939,9 @@ class PGLOKApp:
             row = ttk.Frame(paths_frame, style="App.Panel.TFrame")
             row.pack(fill="x", pady=3)
             ttk.Label(row, text=f"{label}:", width=UI_ATTRS["label_width"], style="App.TLabel").pack(side="left")
-            ttk.Entry(row, textvariable=value_var, style="App.TEntry").pack(side="left", fill="x", expand=True)
+            path_entry = ttk.Entry(row, textvariable=value_var, style="App.TEntry")
+            path_entry.pack(side="left", fill="x", expand=True)
+            self.entry_spellcheck.register(path_entry)
 
         button_row = ttk.Frame(shell, style="App.Card.TFrame")
         button_row.pack(fill="x", pady=14)
@@ -481,106 +1020,858 @@ class PGLOKApp:
         self.data_browser_window.title(f"{UI_ATTRS['window_title']} - Data Browser")
         self.data_browser_window.configure(bg=self.root.cget("bg"))
         self.data_browser_window.protocol("WM_DELETE_WINDOW", self._on_close_data_browser_window)
+        self.data_browser_window.bind("<Configure>", self._on_data_browser_window_configure)
 
         shell = ttk.Frame(self.data_browser_window, padding=12, style="App.Panel.TFrame")
         shell.pack(fill="both", expand=True)
 
         header = ttk.Frame(shell, style="App.Panel.TFrame")
         header.pack(fill="x", pady=(0, 8))
-        ttk.Label(header, text="Data Browser", style="App.Header.TLabel").pack(side="left")
-        ttk.Button(header, text="Refresh Index", command=self._refresh_data_index_async, style="App.Primary.TButton").pack(
+        ttk.Label(header, text="Data Browser", style="Data.Header.TLabel").pack(side="left")
+        ttk.Button(header, text="Refresh Index", command=self._refresh_data_index_async, style="Data.Primary.TButton").pack(
             side="right"
         )
 
         body = ttk.Panedwindow(shell, orient="horizontal")
         body.pack(fill="both", expand=True)
+        self.data_browser_paned = body
+        body.bind("<ButtonRelease-1>", self._on_data_browser_pane_resize)
 
         left = ttk.Frame(body, padding=10, style="App.Card.TFrame")
         right = ttk.Frame(body, padding=10, style="App.Card.TFrame")
         body.add(left, weight=1)
         body.add(right, weight=3)
 
-        ttk.Label(left, text="Files", style="App.Header.TLabel").pack(anchor="w")
+        ttk.Label(left, text="Files", style="Data.Header.TLabel").pack(anchor="w")
         self.data_file_listbox = tk.Listbox(
             left,
-            bg=UI_COLORS["bg"],
+            bg=UI_COLORS["entry_bg"],
             fg=UI_COLORS["text"],
-            selectbackground=UI_COLORS["primary"],
-            selectforeground="#ffffff",
+            selectbackground=UI_COLORS["secondary_active"],
+            selectforeground=UI_COLORS["accent"],
             borderwidth=1,
-            highlightthickness=0,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
+            font=(UI_ATTRS["font_family"], self.data_browser_font_size),
         )
         self.data_file_listbox.pack(fill="both", expand=True, pady=(8, 0))
         self.data_file_listbox.bind("<<ListboxSelect>>", self._on_data_file_select)
+        self.data_file_listbox.bind("<Button-3>", self._show_data_file_context_menu)
+        self.data_file_listbox.bind("<Button-2>", self._show_data_file_context_menu)
 
         control_row = ttk.Frame(right, style="App.Card.TFrame")
         control_row.pack(fill="x")
-        ttk.Label(control_row, text="Search:", style="App.TLabel").pack(side="left")
-        search_entry = ttk.Entry(control_row, textvariable=self.data_search_var, style="App.TEntry")
+        ttk.Label(control_row, text="Search:", style="Data.TLabel").pack(side="left")
+        search_entry = ttk.Entry(control_row, textvariable=self.data_search_var, style="Data.TEntry")
         search_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
+        self.entry_spellcheck.register(search_entry)
         search_entry.bind("<Return>", lambda _event: self._load_data_rows(reset_offset=True))
         ttk.Button(
             control_row,
             text="Apply",
             command=lambda: self._load_data_rows(reset_offset=True),
-            style="App.Secondary.TButton",
+            style="Data.Secondary.TButton",
         ).pack(side="left", padx=(0, 6))
-        ttk.Button(control_row, text="Prev", command=self._prev_data_page, style="App.Secondary.TButton").pack(
+        ttk.Button(
+            control_row,
+            text="Reset",
+            command=self._reset_data_filters,
+            style="Data.Secondary.TButton",
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(control_row, text="Prev", command=self._prev_data_page, style="Data.Secondary.TButton").pack(
             side="left", padx=(0, 6)
         )
-        ttk.Button(control_row, text="Next", command=self._next_data_page, style="App.Secondary.TButton").pack(side="left")
+        ttk.Button(control_row, text="Next", command=self._next_data_page, style="Data.Secondary.TButton").pack(side="left")
 
-        ttk.Label(right, textvariable=self.data_page_var, style="App.Status.TLabel").pack(anchor="w", pady=(8, 6))
+        ttk.Label(right, textvariable=self.data_page_var, style="Data.Status.TLabel").pack(anchor="w", pady=(8, 6))
+
+        display_paned = ttk.Panedwindow(right, orient="vertical")
+        display_paned.pack(fill="both", expand=True)
+        self.data_browser_display_paned = display_paned
+        display_paned.bind("<ButtonRelease-1>", self._on_data_browser_display_pane_resize)
+
+        top_display = ttk.Frame(display_paned, style="App.Card.TFrame")
+        bottom_display = ttk.Frame(display_paned, style="App.Card.TFrame")
+        display_paned.add(top_display, weight=3)
+        display_paned.add(bottom_display, weight=2)
 
         self.data_rows_tree = ttk.Treeview(
-            right,
+            top_display,
             columns=("row_index", "row_key", "preview"),
             show="headings",
             height=14,
-            style="App.Treeview",
+            style="Data.Treeview",
         )
         self.data_rows_tree.heading("row_index", text="#")
         self.data_rows_tree.heading("row_key", text="Key")
         self.data_rows_tree.heading("preview", text="Preview")
         self.data_rows_tree.column("row_index", width=70, stretch=False)
         self.data_rows_tree.column("row_key", width=220, stretch=False)
-        self.data_rows_tree.column("preview", width=620, stretch=True)
+        self.data_rows_tree.column("preview", width=1100, stretch=False)
+        data_tree_xscroll = ttk.Scrollbar(top_display, orient="horizontal", style="App.Horizontal.TScrollbar")
+        self.data_rows_tree.configure(xscrollcommand=data_tree_xscroll.set)
+        data_tree_xscroll.configure(command=self.data_rows_tree.xview)
         self.data_rows_tree.pack(fill="both", expand=True)
+        data_tree_xscroll.pack(fill="x", pady=(2, 0))
         self.data_rows_tree.bind("<<TreeviewSelect>>", self._on_data_row_select)
+        self.data_rows_tree.bind("<Button-3>", self._show_data_tree_context_menu)
+        self.data_rows_tree.bind("<Button-2>", self._show_data_tree_context_menu)
 
-        ttk.Label(right, text="Raw JSON", style="App.Header.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Label(bottom_display, text="Details", style="Data.Header.TLabel").pack(anchor="w", pady=(2, 4))
         self.data_json_text = tk.Text(
-            right,
+            bottom_display,
             height=12,
             wrap="none",
-            bg=UI_COLORS["bg"],
+            bg=UI_COLORS["entry_bg"],
             fg=UI_COLORS["text"],
             insertbackground=UI_COLORS["text"],
+            font=(UI_ATTRS["font_family"], self.data_browser_font_size),
             borderwidth=1,
-            highlightthickness=0,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
         )
         self.data_json_text.pack(fill="both", expand=True)
+        self.data_json_text.bind("<Button-3>", self._show_data_text_context_menu)
+        self.data_json_text.bind("<Button-2>", self._show_data_text_context_menu)
+        data_text_xscroll = ttk.Scrollbar(bottom_display, orient="horizontal", style="App.Horizontal.TScrollbar")
+        self.data_json_text.configure(xscrollcommand=data_text_xscroll.set)
+        data_text_xscroll.configure(command=self.data_json_text.xview)
+        data_text_xscroll.pack(fill="x", pady=(2, 0))
+        self._apply_data_browser_font_size()
+        self._bind_data_browser_zoom_events(self.data_browser_window)
 
         self.data_browser_window.update_idletasks()
-        req_w = max(980, self.data_browser_window.winfo_reqwidth())
-        req_h = max(620, self.data_browser_window.winfo_reqheight())
+        screen_w = max(640, int(self.data_browser_window.winfo_screenwidth()))
+        screen_h = max(480, int(self.data_browser_window.winfo_screenheight()))
+        req_w = min(max(900, self.data_browser_window.winfo_reqwidth()), max(480, screen_w - 80))
+        req_h = min(max(560, self.data_browser_window.winfo_reqheight()), max(320, screen_h - 100))
         self._apply_saved_window_geometry("data_browser", self.data_browser_window, req_w, req_h)
-        self.data_browser_window.minsize(req_w, req_h)
+        self.data_browser_window.minsize(min(760, req_w), min(500, req_h))
         self._set_window_open_state("data_browser", True)
+        self.data_browser_window.after(10, self._restore_data_browser_pane_split)
+        self.data_browser_window.after(20, self._restore_data_browser_display_pane_split)
         self._refresh_data_index_async()
 
     def _on_close_data_browser_window(self):
+        if self._data_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._data_search_after_id)
+            except tk.TclError:
+                pass
+            self._data_search_after_id = None
+        if self._data_browser_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._data_browser_resize_after_id)
+            except tk.TclError:
+                pass
+            self._data_browser_resize_after_id = None
         if self.data_browser_window is not None and self.data_browser_window.winfo_exists():
+            self._set_ui_pref("data_browser_search", self.data_search_var.get().strip())
+            self._set_ui_pref("data_browser_offset", int(self.data_offset))
+            if self.data_selected_filename:
+                self._set_ui_pref("data_browser_selected_file", self.data_selected_filename)
+            self._save_data_browser_pane_split()
+            self._save_data_browser_display_pane_split()
             self._save_window_geometry("data_browser", self.data_browser_window)
             self.data_browser_window.destroy()
         self._set_window_open_state("data_browser", False)
         self.data_browser_window = None
+        self.data_browser_paned = None
+        self.data_browser_display_paned = None
         self.data_file_listbox = None
         self.data_rows_tree = None
         self.data_json_text = None
         self.data_selected_filename = None
         self.data_offset = 0
         self.data_total_rows = 0
+
+    def _on_data_browser_window_configure(self, event):
+        if self.data_browser_window is None or event.widget is not self.data_browser_window:
+            return
+        if self._data_browser_resize_after_id is not None:
+            self.root.after_cancel(self._data_browser_resize_after_id)
+        self._data_browser_resize_after_id = self.root.after(300, self._save_data_browser_window_state)
+
+    def _save_data_browser_window_state(self):
+        self._data_browser_resize_after_id = None
+        self._save_window_geometry("data_browser", self.data_browser_window)
+
+    def _on_data_browser_pane_resize(self, _event=None):
+        self._save_data_browser_pane_split()
+
+    def _on_data_browser_display_pane_resize(self, _event=None):
+        self._save_data_browser_display_pane_split()
+
+    def _save_data_browser_pane_split(self):
+        if self.data_browser_paned is None or not self.data_browser_paned.winfo_exists():
+            return
+        try:
+            split = int(self.data_browser_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("data_browser_split", split)
+
+    def _restore_data_browser_pane_split(self):
+        if self.data_browser_paned is None or not self.data_browser_paned.winfo_exists():
+            return
+        split = self._get_ui_pref("data_browser_split", None)
+        if split is None:
+            return
+        try:
+            max_width = max(300, self.data_browser_paned.winfo_width() - 360)
+            clamped = min(max(int(split), 180), max_width)
+            self.data_browser_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+
+    def _save_data_browser_display_pane_split(self):
+        if self.data_browser_display_paned is None or not self.data_browser_display_paned.winfo_exists():
+            return
+        try:
+            split = int(self.data_browser_display_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("data_browser_display_split", split)
+
+    def _restore_data_browser_display_pane_split(self):
+        if self.data_browser_display_paned is None or not self.data_browser_display_paned.winfo_exists():
+            return
+        split = self._get_ui_pref("data_browser_display_split", None)
+        if split is None:
+            return
+        try:
+            max_height = max(260, self.data_browser_display_paned.winfo_height() - 220)
+            clamped = min(max(int(split), 160), max_height)
+            self.data_browser_display_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+
+    def open_itemizer_window(self):
+        if self.itemizer_window is not None and self.itemizer_window.winfo_exists():
+            self.itemizer_window.deiconify()
+            self.itemizer_window.lift()
+            self.itemizer_window.focus_force()
+            return
+
+        self.itemizer_window = tk.Toplevel(self.root)
+        self.itemizer_window.title(f"{UI_ATTRS['window_title']} - Itemizer")
+        self.itemizer_window.configure(bg=self.root.cget("bg"))
+        self.itemizer_window.protocol("WM_DELETE_WINDOW", self._on_close_itemizer_window)
+        self.itemizer_window.bind("<Configure>", self._on_itemizer_window_configure)
+
+        shell = ttk.Frame(self.itemizer_window, padding=12, style="App.Panel.TFrame")
+        shell.pack(fill="both", expand=True)
+
+        header = ttk.Frame(shell, style="App.Panel.TFrame")
+        header.pack(fill="x", pady=(0, 8))
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
+        header.columnconfigure(2, weight=1)
+        ttk.Label(header, text="Itemizer", style="App.Header.TLabel").grid(row=0, column=1)
+        ttk.Button(header, text="Refresh Index", command=self._refresh_itemizer_index_async, style="App.Primary.TButton").grid(
+            row=0, column=2, sticky="e"
+        )
+
+        filters = ttk.Frame(shell, padding=10, style="App.Card.TFrame")
+        filters.pack(fill="x", pady=(0, 8))
+        ttk.Label(filters, text="Server:", style="App.TLabel").pack(side="left")
+        self.itemizer_server_combo = ttk.Combobox(
+            filters,
+            textvariable=self.itemizer_server_var,
+            state="readonly",
+            width=18,
+            style="App.TCombobox",
+        )
+        self.itemizer_server_combo.pack(side="left", padx=(6, 10))
+        self.itemizer_server_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_itemizer_rows(reset_offset=True))
+
+        ttk.Label(filters, text="Character:", style="App.TLabel").pack(side="left")
+        self.itemizer_character_combo = ttk.Combobox(
+            filters,
+            textvariable=self.itemizer_character_var,
+            state="readonly",
+            width=18,
+            style="App.TCombobox",
+        )
+        self.itemizer_character_combo.pack(side="left", padx=(6, 10))
+        self.itemizer_character_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_itemizer_rows(reset_offset=True))
+
+        ttk.Label(filters, text="Search:", style="App.TLabel").pack(side="left")
+        search_entry = ttk.Entry(filters, textvariable=self.itemizer_search_var, style="App.TEntry")
+        search_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
+        self.entry_spellcheck.register(search_entry)
+        search_entry.bind("<Return>", lambda _e: self._load_itemizer_rows(reset_offset=True))
+        ttk.Button(
+            filters,
+            text="Apply",
+            command=lambda: self._load_itemizer_rows(reset_offset=True),
+            style="App.Secondary.TButton",
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            filters,
+            text="Reset",
+            command=self._reset_itemizer_filters,
+            style="App.Secondary.TButton",
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(filters, text="Prev", command=self._prev_itemizer_page, style="App.Secondary.TButton").pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(filters, text="Next", command=self._next_itemizer_page, style="App.Secondary.TButton").pack(side="left")
+
+        status_row = ttk.Frame(shell, style="App.Panel.TFrame")
+        status_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(status_row, textvariable=self.itemizer_page_var, style="App.Status.TLabel").pack(side="left")
+        ttk.Label(status_row, textvariable=self.itemizer_totals_var, style="App.Status.TLabel").pack(side="right")
+
+        body = ttk.Panedwindow(shell, orient="vertical")
+        body.pack(fill="both", expand=True)
+        self.itemizer_paned = body
+        top = ttk.Frame(body, padding=10, style="App.Card.TFrame")
+        bottom = ttk.Frame(body, padding=10, style="App.Card.TFrame")
+        body.add(top, weight=4)
+        body.add(bottom, weight=1)
+        body.bind("<ButtonRelease-1>", self._on_itemizer_pane_resize)
+
+        self.itemizer_tree = ttk.Treeview(
+            top,
+            columns=("server", "character", "item", "qty", "value", "rarity", "slot", "location", "timestamp"),
+            show="headings",
+            style="App.Treeview",
+            height=14,
+        )
+        self.itemizer_tree.heading("server", text="Server")
+        self.itemizer_tree.heading("character", text="Character")
+        self.itemizer_tree.heading("item", text="Item")
+        self.itemizer_tree.heading("qty", text="Qty")
+        self.itemizer_tree.heading("value", text="Value")
+        self.itemizer_tree.heading("rarity", text="Rarity")
+        self.itemizer_tree.heading("slot", text="Slot")
+        self.itemizer_tree.heading("location", text="Location")
+        self.itemizer_tree.heading("timestamp", text="Timestamp")
+        self.itemizer_tree.column("server", width=120, stretch=False)
+        self.itemizer_tree.column("character", width=140, stretch=False)
+        self.itemizer_tree.column("item", width=260, stretch=True)
+        self.itemizer_tree.column("qty", width=60, stretch=False, anchor="e")
+        self.itemizer_tree.column("value", width=70, stretch=False, anchor="e")
+        self.itemizer_tree.column("rarity", width=100, stretch=False)
+        self.itemizer_tree.column("slot", width=110, stretch=False)
+        self.itemizer_tree.column("location", width=120, stretch=False)
+        self.itemizer_tree.column("timestamp", width=190, stretch=False)
+        self._restore_itemizer_column_widths()
+        self.itemizer_tree.pack(fill="both", expand=True)
+        self.itemizer_tree.bind("<<TreeviewSelect>>", self._on_itemizer_row_select)
+        self.itemizer_tree.bind("<ButtonRelease-1>", self._on_itemizer_tree_mouse_release, add="+")
+
+        bottom_split = ttk.Panedwindow(bottom, orient="horizontal")
+        bottom_split.pack(fill="both", expand=True)
+        self.itemizer_bottom_paned = bottom_split
+        bottom_split.bind("<ButtonRelease-1>", self._on_itemizer_bottom_pane_resize)
+        json_wrap = ttk.Frame(bottom_split, style="App.Card.TFrame")
+        notes_wrap = ttk.Frame(bottom_split, style="App.Card.TFrame")
+        bottom_split.add(json_wrap, weight=1)
+        bottom_split.add(notes_wrap, weight=1)
+
+        json_inner = ttk.Frame(json_wrap, padding=(0, 0, 6, 0), style="App.Card.TFrame")
+        json_inner.pack(fill="both", expand=True)
+        notes_inner = ttk.Frame(notes_wrap, padding=(6, 0, 0, 0), style="App.Card.TFrame")
+        notes_inner.pack(fill="both", expand=True)
+
+        self.itemizer_json_text = tk.Text(
+            json_inner,
+            wrap="none",
+            bg=UI_COLORS["entry_bg"],
+            fg=UI_COLORS["text"],
+            insertbackground=UI_COLORS["text"],
+            borderwidth=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
+        )
+        self.itemizer_json_text.pack(fill="both", expand=True)
+
+        notes_header = ttk.Frame(notes_inner, style="App.Card.TFrame")
+        notes_header.pack(fill="x", pady=(0, 2))
+        notes_header.columnconfigure(0, weight=1)
+        notes_header.columnconfigure(1, weight=0)
+        notes_header.columnconfigure(2, weight=1)
+        ttk.Label(notes_header, text="Character Notes", style="App.TLabel").grid(row=0, column=1)
+        save_notes_btn = ttk.Button(
+            notes_header,
+            text="Save Notes",
+            command=self._save_itemizer_character_notes,
+            style="App.Secondary.TButton",
+            width=10,
+        )
+        save_notes_btn.grid(row=0, column=2, sticky="e")
+
+        notes_body = ttk.Frame(notes_inner, style="App.Card.TFrame")
+        notes_body.pack(fill="both", expand=True)
+        notes_scroll = ttk.Scrollbar(notes_body, orient="vertical", style="App.Vertical.TScrollbar")
+        notes_scroll.pack(side="right", fill="y")
+
+        self.itemizer_notes_canvas = tk.Canvas(
+            notes_body,
+            bg=UI_COLORS["entry_bg"],
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            relief="solid",
+            bd=0,
+            yscrollcommand=notes_scroll.set,
+        )
+        self.itemizer_notes_canvas.pack(side="left", fill="both", expand=True)
+        notes_scroll.configure(command=self.itemizer_notes_canvas.yview)
+
+        self.itemizer_notes_inner = ttk.Frame(self.itemizer_notes_canvas, style="App.Card.TFrame")
+        self.itemizer_notes_window_id = self.itemizer_notes_canvas.create_window(
+            (0, 0), window=self.itemizer_notes_inner, anchor="nw"
+        )
+        self.itemizer_notes_inner.bind("<Configure>", self._on_itemizer_notes_inner_configure)
+        self.itemizer_notes_canvas.bind("<Configure>", self._on_itemizer_notes_canvas_configure)
+        self._render_itemizer_character_notes([])
+
+        self.itemizer_window.update_idletasks()
+        screen_w = max(640, int(self.itemizer_window.winfo_screenwidth()))
+        screen_h = max(480, int(self.itemizer_window.winfo_screenheight()))
+        req_w = min(max(980, self.itemizer_window.winfo_reqwidth()), max(480, screen_w - 80))
+        req_h = min(max(580, self.itemizer_window.winfo_reqheight()), max(320, screen_h - 100))
+        self._apply_saved_window_geometry("itemizer", self.itemizer_window, req_w, req_h)
+        self.itemizer_window.minsize(min(860, req_w), min(520, req_h))
+        self._set_window_open_state("itemizer", True)
+        self.itemizer_window.after(10, self._restore_itemizer_pane_split)
+        self.itemizer_window.after(20, self._restore_itemizer_bottom_pane_split)
+        self._refresh_itemizer_index_async()
+
+    def _on_close_itemizer_window(self):
+        if self._itemizer_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._itemizer_resize_after_id)
+            except tk.TclError:
+                pass
+            self._itemizer_resize_after_id = None
+        if self.itemizer_window is not None and self.itemizer_window.winfo_exists():
+            self._save_itemizer_pane_split()
+            self._save_itemizer_bottom_pane_split()
+            self._save_itemizer_column_widths()
+            self._save_itemizer_character_notes()
+            self._save_window_geometry("itemizer", self.itemizer_window)
+            self.itemizer_window.destroy()
+        self._set_window_open_state("itemizer", False)
+        self.itemizer_window = None
+        self.itemizer_tree = None
+        self.itemizer_json_text = None
+        self.itemizer_paned = None
+        self.itemizer_bottom_paned = None
+        self.itemizer_server_combo = None
+        self.itemizer_character_combo = None
+        self.itemizer_notes_canvas = None
+        self.itemizer_notes_inner = None
+        self.itemizer_notes_window_id = None
+        self.itemizer_note_vars = {}
+        self.itemizer_note_entry_widgets = {}
+        self.itemizer_note_row_widgets = {}
+        self.itemizer_drag_name = None
+        self.itemizer_offset = 0
+        self.itemizer_total_rows = 0
+        self.itemizer_totals_var.set("Total Qty: 0   Total Value: 0")
+
+    def _on_itemizer_window_configure(self, event):
+        if self.itemizer_window is None or event.widget is not self.itemizer_window:
+            return
+        if self._itemizer_resize_after_id is not None:
+            self.root.after_cancel(self._itemizer_resize_after_id)
+        self._itemizer_resize_after_id = self.root.after(300, self._save_itemizer_window_state)
+
+    def _save_itemizer_window_state(self):
+        self._itemizer_resize_after_id = None
+        self._save_window_geometry("itemizer", self.itemizer_window)
+
+    def _refresh_itemizer_index_async(self):
+        self.status_var.set("Indexing item reports...")
+
+        def worker():
+            try:
+                result = index_item_reports()
+                filters = itemizer_get_filter_values()
+
+                def update_ui():
+                    if self.itemizer_window is None:
+                        return
+                    servers = [""] + filters["servers"]
+                    characters = [""] + filters["characters"]
+                    if self.itemizer_server_combo is not None:
+                        self.itemizer_server_combo["values"] = servers
+                        if self.itemizer_server_var.get() not in servers:
+                            self.itemizer_server_var.set("")
+                    if self.itemizer_character_combo is not None:
+                        self.itemizer_character_combo["values"] = characters
+                        if self.itemizer_character_var.get() not in characters:
+                            self.itemizer_character_var.set("")
+                    self._render_itemizer_character_notes(filters["characters"])
+                    self._load_itemizer_rows(reset_offset=True)
+                    self.status_var.set(
+                        f"Itemizer index ready: {result['indexed_reports']} updated, {result['skipped_reports']} skipped."
+                    )
+
+                self.root.after(0, update_ui)
+            except Exception as exc:
+                self.root.after(0, lambda: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _load_itemizer_rows(self, reset_offset=False):
+        if self.itemizer_tree is None:
+            return
+        if reset_offset:
+            self.itemizer_offset = 0
+
+        selected_server = self.itemizer_server_var.get().strip()
+        selected_character = self.itemizer_character_var.get().strip()
+        search_text = self.itemizer_search_var.get().strip()
+
+        rows, total = search_items(
+            server=selected_server,
+            character=selected_character,
+            text=search_text,
+            limit=self.itemizer_page_size,
+            offset=self.itemizer_offset,
+        )
+        totals = search_item_totals(
+            server=selected_server,
+            character=selected_character,
+            text=search_text,
+        )
+        self.itemizer_total_rows = total
+
+        self.itemizer_tree.delete(*self.itemizer_tree.get_children())
+        for row in rows:
+            self.itemizer_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    row["server"],
+                    row["character"],
+                    row["item_name"],
+                    row["stack_size"],
+                    row["value"],
+                    row["rarity"],
+                    row["slot"],
+                    row["storage_vault"],
+                    row["timestamp"],
+                ),
+                tags=(row["raw_json"],),
+            )
+
+        if self.itemizer_json_text is not None:
+            self.itemizer_json_text.delete("1.0", tk.END)
+
+        page_num = (self.itemizer_offset // self.itemizer_page_size) + 1
+        total_pages = max(1, (self.itemizer_total_rows + self.itemizer_page_size - 1) // self.itemizer_page_size)
+        self.itemizer_page_var.set(f"Page {page_num} / {total_pages}   Rows: {self.itemizer_total_rows}")
+        self.itemizer_totals_var.set(
+            f"Total Qty: {totals['qty_total']:,}   Total Value: {totals['value_total']:,}"
+        )
+        self._set_ui_pref("itemizer_server", selected_server)
+        self._set_ui_pref("itemizer_character", selected_character)
+        self._set_ui_pref("itemizer_search", search_text)
+        self._set_ui_pref("itemizer_offset", int(self.itemizer_offset))
+
+    def _on_itemizer_row_select(self, _event=None):
+        if self.itemizer_tree is None or self.itemizer_json_text is None:
+            return
+        selection = self.itemizer_tree.selection()
+        if not selection:
+            return
+        payload = self.itemizer_tree.item(selection[0], "tags")[0]
+        self.itemizer_json_text.delete("1.0", tk.END)
+        try:
+            parsed = json.loads(payload)
+            self.itemizer_json_text.insert("1.0", json.dumps(parsed, indent=2, ensure_ascii=False))
+        except json.JSONDecodeError:
+            self.itemizer_json_text.insert("1.0", payload)
+
+    def _reset_itemizer_filters(self):
+        self.itemizer_server_var.set("")
+        self.itemizer_character_var.set("")
+        self.itemizer_search_var.set("")
+        self._load_itemizer_rows(reset_offset=True)
+
+    def _schedule_itemizer_live_search(self):
+        if self._itemizer_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._itemizer_search_after_id)
+            except tk.TclError:
+                pass
+        self._itemizer_search_after_id = self.root.after(220, self._run_itemizer_live_search)
+
+    def _run_itemizer_live_search(self):
+        self._itemizer_search_after_id = None
+        if self.itemizer_window is None or not self.itemizer_window.winfo_exists():
+            return
+        if self.itemizer_tree is None:
+            return
+        self._load_itemizer_rows(reset_offset=True)
+
+    def _on_itemizer_pane_resize(self, _event=None):
+        self._save_itemizer_pane_split()
+
+    def _on_itemizer_bottom_pane_resize(self, _event=None):
+        self._save_itemizer_bottom_pane_split()
+
+    def _on_itemizer_tree_mouse_release(self, _event=None):
+        self._save_itemizer_column_widths()
+
+    def _save_itemizer_pane_split(self):
+        if self.itemizer_paned is None or not self.itemizer_paned.winfo_exists():
+            return
+        try:
+            split = int(self.itemizer_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("itemizer_split", split)
+
+    def _restore_itemizer_pane_split(self):
+        if self.itemizer_paned is None or not self.itemizer_paned.winfo_exists():
+            return
+        split = self._get_ui_pref("itemizer_split", None)
+        if split is None:
+            return
+        try:
+            max_height = max(220, self.itemizer_paned.winfo_height() - 140)
+            clamped = min(max(int(split), 160), max_height)
+            self.itemizer_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+
+    def _save_itemizer_bottom_pane_split(self):
+        if self.itemizer_bottom_paned is None or not self.itemizer_bottom_paned.winfo_exists():
+            return
+        try:
+            split = int(self.itemizer_bottom_paned.sashpos(0))
+        except (tk.TclError, ValueError):
+            return
+        self._set_ui_pref("itemizer_bottom_split", split)
+
+    def _restore_itemizer_bottom_pane_split(self):
+        if self.itemizer_bottom_paned is None or not self.itemizer_bottom_paned.winfo_exists():
+            return
+        split = self._get_ui_pref("itemizer_bottom_split", None)
+        if split is None:
+            return
+        try:
+            max_width = max(240, self.itemizer_bottom_paned.winfo_width() - 240)
+            clamped = min(max(int(split), 240), max_width)
+            self.itemizer_bottom_paned.sashpos(0, clamped)
+        except (tk.TclError, ValueError):
+            return
+
+    def _save_itemizer_column_widths(self):
+        if self.itemizer_tree is None or not self.itemizer_tree.winfo_exists():
+            return
+        widths = {}
+        for col in ("server", "character", "item", "qty", "value", "rarity", "slot", "location", "timestamp"):
+            try:
+                widths[col] = int(self.itemizer_tree.column(col, "width"))
+            except (tk.TclError, ValueError):
+                continue
+        if widths:
+            self._set_ui_pref("itemizer_column_widths", widths)
+
+    def _restore_itemizer_column_widths(self):
+        if self.itemizer_tree is None or not self.itemizer_tree.winfo_exists():
+            return
+        widths = self._get_ui_pref("itemizer_column_widths", {})
+        if not isinstance(widths, dict):
+            return
+        for col in ("server", "character", "item", "qty", "value", "rarity", "slot", "location", "timestamp"):
+            width = widths.get(col)
+            if width is None:
+                continue
+            try:
+                parsed = int(width)
+            except (TypeError, ValueError):
+                continue
+            if parsed >= 40:
+                try:
+                    self.itemizer_tree.column(col, width=parsed)
+                except tk.TclError:
+                    continue
+
+    def _on_itemizer_notes_inner_configure(self, _event=None):
+        if self.itemizer_notes_canvas is None or self.itemizer_notes_inner is None:
+            return
+        try:
+            self.itemizer_notes_canvas.configure(scrollregion=self.itemizer_notes_canvas.bbox("all"))
+        except tk.TclError:
+            return
+
+    def _on_itemizer_notes_canvas_configure(self, event=None):
+        if self.itemizer_notes_canvas is None or self.itemizer_notes_inner is None or self.itemizer_notes_window_id is None:
+            return
+        if event is None:
+            return
+        try:
+            self.itemizer_notes_canvas.itemconfigure(self.itemizer_notes_window_id, width=event.width)
+        except tk.TclError:
+            return
+
+    def _render_itemizer_character_notes(self, character_names):
+        if self.itemizer_notes_inner is None:
+            return
+        existing_notes = self._get_ui_pref("itemizer_character_notes", {})
+        if not isinstance(existing_notes, dict):
+            existing_notes = {}
+
+        normalized = self._get_ordered_itemizer_character_names(character_names)
+        current_values = {name: var.get() for name, var in self.itemizer_note_vars.items()}
+        current_values.update({k: str(v) for k, v in existing_notes.items()})
+
+        for child in self.itemizer_notes_inner.winfo_children():
+            child.destroy()
+        self.itemizer_note_vars = {}
+        self.itemizer_note_entry_widgets = {}
+        self.itemizer_note_row_widgets = {}
+
+        if not normalized:
+            ttk.Label(
+                self.itemizer_notes_inner,
+                text="No character names found.",
+                style="App.Status.TLabel",
+            ).pack(anchor="w", padx=6, pady=6)
+            return
+
+        for name in normalized:
+            row = ttk.Frame(self.itemizer_notes_inner, style="App.Card.TFrame")
+            row.pack(fill="x", padx=3, pady=1)
+            name_label = ttk.Label(row, text=name, width=18, style="App.TLabel", cursor="fleur")
+            name_label.pack(side="left")
+            name_label.bind("<ButtonPress-1>", lambda e, n=name: self._start_itemizer_note_drag(n, e))
+            name_label.bind("<ButtonRelease-1>", lambda e, n=name: self._drop_itemizer_note_drag(n, e))
+            var = tk.StringVar(value=current_values.get(name, ""))
+            entry = ttk.Entry(row, textvariable=var, style="App.TEntry", width=28)
+            entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
+            self.entry_spellcheck.register(entry)
+            entry.bind("<FocusOut>", lambda _e: self._save_itemizer_character_notes())
+            entry.bind("<Return>", lambda _e: self._save_itemizer_character_notes())
+            self.itemizer_note_vars[name] = var
+            self.itemizer_note_entry_widgets[name] = entry
+            self.itemizer_note_row_widgets[name] = row
+
+    def _save_itemizer_character_notes(self):
+        if not self.itemizer_note_vars:
+            return
+        existing_notes = self._get_ui_pref("itemizer_character_notes", {})
+        if not isinstance(existing_notes, dict):
+            existing_notes = {}
+
+        notes = dict(existing_notes)
+        for name, var in self.itemizer_note_vars.items():
+            value = var.get().strip()
+            if value:
+                notes[name] = value
+            elif name in notes:
+                # Clearing a visible field should clear that specific saved note.
+                notes.pop(name, None)
+        self._set_ui_pref("itemizer_character_notes", notes)
+        self._save_itemizer_character_order(list(self.itemizer_note_vars.keys()))
+
+    def _get_ordered_itemizer_character_names(self, character_names):
+        normalized = {str(name).strip() for name in character_names if str(name).strip()}
+        saved_order = self._get_ui_pref("itemizer_character_order", [])
+        if not isinstance(saved_order, list):
+            saved_order = []
+
+        ordered = []
+        seen = set()
+        for name in saved_order:
+            text = str(name).strip()
+            if text and text in normalized and text not in seen:
+                ordered.append(text)
+                seen.add(text)
+
+        for name in sorted(normalized, key=str.lower):
+            if name not in seen:
+                ordered.append(name)
+                seen.add(name)
+        return ordered
+
+    def _save_itemizer_character_order(self, names):
+        if not names:
+            return
+        existing = self._get_ui_pref("itemizer_character_order", [])
+        if not isinstance(existing, list):
+            existing = []
+        clean = []
+        seen = set()
+        for name in names:
+            text = str(name).strip()
+            if text and text not in seen:
+                clean.append(text)
+                seen.add(text)
+        for name in existing:
+            text = str(name).strip()
+            if text and text not in seen:
+                clean.append(text)
+                seen.add(text)
+        self._set_ui_pref("itemizer_character_order", clean)
+
+    def _start_itemizer_note_drag(self, name, _event=None):
+        self.itemizer_drag_name = name
+        self.status_var.set(f"Dragging note row: {name}")
+
+    def _drop_itemizer_note_drag(self, name, event=None):
+        dragged = self.itemizer_drag_name or name
+        self.itemizer_drag_name = None
+        if dragged not in self.itemizer_note_row_widgets or event is None or self.itemizer_notes_inner is None:
+            return
+
+        order = list(self.itemizer_note_vars.keys())
+        if dragged not in order or len(order) <= 1:
+            return
+
+        y_local = event.y_root - self.itemizer_notes_inner.winfo_rooty()
+        target_idx = len(order) - 1
+        for idx, row_name in enumerate(order):
+            row_widget = self.itemizer_note_row_widgets.get(row_name)
+            if row_widget is None:
+                continue
+            mid = row_widget.winfo_y() + (row_widget.winfo_height() // 2)
+            if y_local < mid:
+                target_idx = idx
+                break
+
+        current_idx = order.index(dragged)
+        if target_idx == current_idx:
+            self.status_var.set("Character notes order unchanged.")
+            return
+
+        values = {n: v.get() for n, v in self.itemizer_note_vars.items()}
+        item = order.pop(current_idx)
+        if target_idx > current_idx:
+            target_idx -= 1
+        order.insert(max(0, min(target_idx, len(order))), item)
+
+        self._save_itemizer_character_order(order)
+        self._render_itemizer_character_notes(order)
+        for key, value in values.items():
+            if key in self.itemizer_note_vars:
+                self.itemizer_note_vars[key].set(value)
+        self._save_itemizer_character_notes()
+        self.status_var.set(f"Moved {dragged}.")
+
+    def _next_itemizer_page(self):
+        if self.itemizer_offset + self.itemizer_page_size >= self.itemizer_total_rows:
+            return
+        self.itemizer_offset += self.itemizer_page_size
+        self._load_itemizer_rows(reset_offset=False)
+
+    def _prev_itemizer_page(self):
+        self.itemizer_offset = max(0, self.itemizer_offset - self.itemizer_page_size)
+        self._load_itemizer_rows(reset_offset=False)
 
     def open_character_browser_window(self):
         if self.character_browser_window is not None and self.character_browser_window.winfo_exists():
@@ -612,7 +1903,7 @@ class PGLOKApp:
         tree_wrap = ttk.Frame(top, style="App.Card.TFrame")
         tree_wrap.pack(fill="x", expand=False)
 
-        character_tree_scroll = ttk.Scrollbar(tree_wrap, orient="vertical")
+        character_tree_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", style="App.Vertical.TScrollbar")
         character_tree_scroll.pack(side="right", fill="y")
 
         self.character_tree = ttk.Treeview(
@@ -642,7 +1933,10 @@ class PGLOKApp:
             fg=UI_COLORS["text"],
             insertbackground=UI_COLORS["text"],
             borderwidth=1,
-            highlightthickness=0,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
         )
         self.character_json_text.pack(fill="both", expand=True)
 
@@ -671,21 +1965,10 @@ class PGLOKApp:
             return None
         return Path(config.PG_BASE) / "Reports"
 
-    def _load_character_entries(self):
-        if self.character_tree is None:
-            return
-
+    def _collect_character_entries(self):
         reports_dir = self._get_reports_dir()
-        self.character_tree.delete(*self.character_tree.get_children())
-        if self.character_json_text is not None:
-            self.character_json_text.delete("1.0", tk.END)
-        self.character_entries = []
-
         if reports_dir is None or not reports_dir.exists():
-            self._set_character_tree_height(4)
-            self.character_count_var.set("Characters Loaded: 0")
-            self.status_var.set("Reports directory not found.")
-            return
+            return []
 
         entries = []
         for path in reports_dir.glob("Character_*.json"):
@@ -700,9 +1983,29 @@ class PGLOKApp:
                     "filename": path.name,
                 }
             )
-
         entries.sort(key=lambda x: (x["server"].lower(), x["name"].lower()))
+        return entries
+
+    def _refresh_character_cache(self):
+        entries = self._collect_character_entries()
         self.character_entries = entries
+        self.character_count_var.set(f"Characters Loaded: {len(entries)}")
+
+    def _load_character_entries(self):
+        if self.character_tree is None:
+            return
+
+        self.character_tree.delete(*self.character_tree.get_children())
+        if self.character_json_text is not None:
+            self.character_json_text.delete("1.0", tk.END)
+        entries = self._collect_character_entries()
+        self.character_entries = entries
+
+        if not entries:
+            self._set_character_tree_height(4)
+            self.character_count_var.set("Characters Loaded: 0")
+            self.status_var.set("Reports directory not found.")
+            return
 
         for idx, entry in enumerate(entries):
             self.character_tree.insert(
@@ -716,8 +2019,15 @@ class PGLOKApp:
         self.status_var.set(f"Loaded {len(entries)} character reports.")
         self._set_character_tree_height(len(entries))
         if entries:
-            self.character_tree.selection_set("0")
-            self.character_tree.focus("0")
+            selected_idx = 0
+            preferred = str(self._get_ui_pref("character_browser_selected_file", ""))
+            if preferred:
+                for idx, entry in enumerate(entries):
+                    if entry["filename"] == preferred:
+                        selected_idx = idx
+                        break
+            self.character_tree.selection_set(str(selected_idx))
+            self.character_tree.focus(str(selected_idx))
             self._on_character_select()
 
     def _on_character_select(self, _event=None):
@@ -732,6 +2042,7 @@ class PGLOKApp:
 
         path = self.character_entries[idx]["path"]
         entry = self.character_entries[idx]
+        self._set_ui_pref("character_browser_selected_file", entry["filename"])
         try:
             with path.open("r", encoding="utf-8") as f:
                 payload = json.load(f)
@@ -863,8 +2174,15 @@ class PGLOKApp:
                         label = f"{item['filename']} ({item['row_count']})"
                         self.data_file_listbox.insert(tk.END, label)
                     if files:
-                        self.data_file_listbox.selection_set(0)
-                        self._on_data_file_select()
+                        preferred = str(self._get_ui_pref("data_browser_selected_file", "")) or self.data_selected_filename
+                        selected_idx = 0
+                        for idx, item in enumerate(files):
+                            if item["filename"] == preferred:
+                                selected_idx = idx
+                                break
+                        self.data_offset = int(self._get_ui_pref("data_browser_offset", 0) or 0)
+                        self.data_file_listbox.selection_set(selected_idx)
+                        self._on_data_file_select(reset_offset=False)
                     self.status_var.set(
                         f"Index ready: {result['indexed_files']} updated, {result['skipped_files']} unchanged."
                     )
@@ -875,7 +2193,7 @@ class PGLOKApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_data_file_select(self, _event=None):
+    def _on_data_file_select(self, _event=None, reset_offset=True):
         if self.data_file_listbox is None:
             return
         selection = self.data_file_listbox.curselection()
@@ -883,6 +2201,27 @@ class PGLOKApp:
             return
         row_text = self.data_file_listbox.get(selection[0])
         self.data_selected_filename = row_text.split(" (", 1)[0]
+        self._set_ui_pref("data_browser_selected_file", self.data_selected_filename)
+        self._load_data_rows(reset_offset=reset_offset)
+
+    def _reset_data_filters(self):
+        self.data_search_var.set("")
+        self._load_data_rows(reset_offset=True)
+
+    def _schedule_data_live_search(self):
+        if self._data_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._data_search_after_id)
+            except tk.TclError:
+                pass
+        self._data_search_after_id = self.root.after(220, self._run_data_live_search)
+
+    def _run_data_live_search(self):
+        self._data_search_after_id = None
+        if self.data_browser_window is None or not self.data_browser_window.winfo_exists():
+            return
+        if self.data_rows_tree is None or self.data_selected_filename is None:
+            return
         self._load_data_rows(reset_offset=True)
 
     def _load_data_rows(self, reset_offset=False):
@@ -916,9 +2255,26 @@ class PGLOKApp:
         if self.data_json_text is not None:
             self.data_json_text.delete("1.0", tk.END)
 
+        selected_row_pref = self._get_ui_pref("data_browser_selected_row", {})
+        if isinstance(selected_row_pref, dict) and selected_row_pref.get("filename") == self.data_selected_filename:
+            target_key = str(selected_row_pref.get("row_key", ""))
+            target_index = str(selected_row_pref.get("row_index", ""))
+            for item_id in self.data_rows_tree.get_children():
+                vals = self.data_rows_tree.item(item_id, "values")
+                row_key = str(vals[1]) if len(vals) > 1 else ""
+                row_index = str(vals[0]) if vals else ""
+                if row_key == target_key and row_index == target_index:
+                    self.data_rows_tree.selection_set(item_id)
+                    self.data_rows_tree.focus(item_id)
+                    self._on_data_row_select()
+                    break
+
         page_num = (self.data_offset // self.data_page_size) + 1
         total_pages = max(1, (self.data_total_rows + self.data_page_size - 1) // self.data_page_size)
         self.data_page_var.set(f"Page {page_num} / {total_pages}   Rows: {self.data_total_rows}")
+        self._set_ui_pref("data_browser_search", self.data_search_var.get().strip())
+        self._set_ui_pref("data_browser_selected_file", self.data_selected_filename)
+        self._set_ui_pref("data_browser_offset", int(self.data_offset))
 
     def _on_data_row_select(self, _event=None):
         if self.data_rows_tree is None or self.data_json_text is None:
@@ -928,13 +2284,275 @@ class PGLOKApp:
             return
         item_id = selection[0]
         payload = self.data_rows_tree.item(item_id, "tags")[0]
+        values = self.data_rows_tree.item(item_id, "values")
+        row_index = values[0] if values else ""
+        row_key = values[1] if len(values) > 1 else ""
+        self._set_ui_pref(
+            "data_browser_selected_row",
+            {"filename": self.data_selected_filename or "", "row_index": row_index, "row_key": row_key},
+        )
         self.data_json_text.delete("1.0", tk.END)
         try:
             parsed = json.loads(payload)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+            pretty = self._format_data_payload(self.data_selected_filename or "", row_index, row_key, parsed)
             self.data_json_text.insert("1.0", pretty)
         except json.JSONDecodeError:
             self.data_json_text.insert("1.0", payload)
+
+    def _show_data_file_context_menu(self, event):
+        if self.data_file_listbox is None:
+            return "break"
+        idx = self.data_file_listbox.nearest(event.y)
+        if idx >= 0:
+            self.data_file_listbox.selection_clear(0, tk.END)
+            self.data_file_listbox.selection_set(idx)
+            self.data_file_listbox.activate(idx)
+
+        menu = tk.Menu(self.data_browser_window, tearoff=0)
+        menu.add_command(label="Copy Filename", command=self._copy_selected_data_filename)
+        menu.add_command(label="Refresh Index", command=self._refresh_data_index_async)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _show_data_tree_context_menu(self, event):
+        if self.data_rows_tree is None:
+            return "break"
+        row_id = self.data_rows_tree.identify_row(event.y)
+        if row_id:
+            self.data_rows_tree.selection_set(row_id)
+            self.data_rows_tree.focus(row_id)
+            self._on_data_row_select()
+
+        menu = tk.Menu(self.data_browser_window, tearoff=0)
+        menu.add_command(label="Copy Row Key", command=self._copy_selected_data_row_key)
+        menu.add_command(label="Copy Raw JSON", command=self._copy_selected_data_row_payload)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _show_data_text_context_menu(self, event):
+        if self.data_json_text is None:
+            return "break"
+        menu = tk.Menu(self.data_browser_window, tearoff=0)
+        menu.add_command(label="Cut", command=lambda: self.data_json_text.event_generate("<<Cut>>"))
+        menu.add_command(label="Copy", command=lambda: self.data_json_text.event_generate("<<Copy>>"))
+        menu.add_command(label="Paste", command=lambda: self.data_json_text.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(label="Select All", command=lambda: self.data_json_text.tag_add("sel", "1.0", tk.END))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _copy_selected_data_filename(self):
+        if self.data_file_listbox is None:
+            return
+        sel = self.data_file_listbox.curselection()
+        if not sel:
+            return
+        text = self.data_file_listbox.get(sel[0]).split(" (", 1)[0]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _copy_selected_data_row_key(self):
+        if self.data_rows_tree is None:
+            return
+        sel = self.data_rows_tree.selection()
+        if not sel:
+            return
+        values = self.data_rows_tree.item(sel[0], "values")
+        key = values[1] if len(values) > 1 else ""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(key))
+
+    def _copy_selected_data_row_payload(self):
+        if self.data_rows_tree is None:
+            return
+        sel = self.data_rows_tree.selection()
+        if not sel:
+            return
+        payload = self.data_rows_tree.item(sel[0], "tags")[0]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(payload)
+
+    def _bind_data_browser_zoom_events(self, widget):
+        if widget is None:
+            return
+        try:
+            widget.bind("<Control-MouseWheel>", self._on_data_browser_ctrl_mousewheel, add="+")
+            widget.bind("<Control-Button-4>", self._on_data_browser_ctrl_wheel_up, add="+")
+            widget.bind("<Control-Button-5>", self._on_data_browser_ctrl_wheel_down, add="+")
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._bind_data_browser_zoom_events(child)
+
+    def _on_data_browser_ctrl_wheel_up(self, _event=None):
+        self._change_data_browser_font_size(1)
+        return "break"
+
+    def _on_data_browser_ctrl_wheel_down(self, _event=None):
+        self._change_data_browser_font_size(-1)
+        return "break"
+
+    def _on_data_browser_ctrl_mousewheel(self, event):
+        delta = int(getattr(event, "delta", 0))
+        if delta == 0:
+            return "break"
+        steps = int(delta / 120) if abs(delta) >= 120 else (1 if delta > 0 else -1)
+        self._change_data_browser_font_size(steps)
+        return "break"
+
+    def _change_data_browser_font_size(self, step):
+        self.data_browser_font_size = max(8, min(32, int(self.data_browser_font_size) + int(step)))
+        self._apply_data_browser_font_size()
+        self._set_ui_pref("data_browser_font_size", self.data_browser_font_size)
+
+    def _apply_data_browser_font_size(self):
+        size = int(self.data_browser_font_size)
+        style = ttk.Style(self.root)
+        style.configure(
+            "Data.TLabel",
+            background=UI_COLORS["panel_bg"],
+            foreground=UI_COLORS["text"],
+            font=(UI_ATTRS["font_family"], size),
+        )
+        style.configure(
+            "Data.Header.TLabel",
+            background=UI_COLORS["panel_bg"],
+            foreground=UI_COLORS["accent"],
+            font=(UI_ATTRS["font_family"], max(size + 3, 10), "bold"),
+        )
+        style.configure(
+            "Data.Status.TLabel",
+            background=UI_COLORS["panel_bg"],
+            foreground=UI_COLORS["muted_text"],
+            font=(UI_ATTRS["font_family"], size),
+        )
+        style.configure(
+            "Data.Primary.TButton",
+            background=UI_COLORS["primary"],
+            foreground=UI_COLORS["text"],
+            borderwidth=1,
+            relief="raised",
+            focusthickness=2,
+            focuscolor=UI_COLORS["primary_active"],
+            font=(UI_ATTRS["font_family"], size),
+            padding=(10, 6),
+        )
+        style.map(
+            "Data.Primary.TButton",
+            background=[("active", UI_COLORS["primary_active"]), ("disabled", UI_COLORS["secondary"])],
+            foreground=[("disabled", UI_COLORS["muted_text"])],
+        )
+        style.configure(
+            "Data.Secondary.TButton",
+            background=UI_COLORS["secondary"],
+            foreground=UI_COLORS["text"],
+            borderwidth=1,
+            relief="raised",
+            font=(UI_ATTRS["font_family"], size),
+            padding=(10, 6),
+        )
+        style.map(
+            "Data.Secondary.TButton",
+            background=[("active", UI_COLORS["secondary_active"]), ("disabled", UI_COLORS["secondary"])],
+            foreground=[("disabled", UI_COLORS["muted_text"])],
+        )
+        style.configure(
+            "Data.TEntry",
+            fieldbackground=UI_COLORS["entry_bg"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["entry_border"],
+            insertcolor=UI_COLORS["text"],
+            lightcolor=UI_COLORS["entry_border"],
+            darkcolor=UI_COLORS["entry_border"],
+            font=(UI_ATTRS["font_family"], size),
+            padding=(6, 4),
+        )
+        style.map("Data.TEntry", bordercolor=[("focus", UI_COLORS["accent"])], lightcolor=[("focus", UI_COLORS["accent"])])
+        style.configure(
+            "Data.Treeview",
+            background=UI_COLORS["entry_bg"],
+            fieldbackground=UI_COLORS["entry_bg"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["entry_border"],
+            font=(UI_ATTRS["font_family"], size),
+            rowheight=max(20, size * 2 + 4),
+        )
+        style.map(
+            "Data.Treeview",
+            background=[("selected", UI_COLORS["secondary_active"])],
+            foreground=[("selected", UI_COLORS["accent"])],
+        )
+        style.configure(
+            "Data.Treeview.Heading",
+            background=UI_COLORS["secondary"],
+            foreground=UI_COLORS["text"],
+            relief="raised",
+            font=(UI_ATTRS["font_family"], size, "bold"),
+        )
+        style.map("Data.Treeview.Heading", background=[("active", UI_COLORS["secondary_active"])])
+
+        if self.data_file_listbox is not None:
+            self.data_file_listbox.configure(font=(UI_ATTRS["font_family"], size))
+        if self.data_json_text is not None:
+            self.data_json_text.configure(font=(UI_ATTRS["font_family"], size))
+
+    def _format_data_payload(self, filename, row_index, row_key, payload):
+        lines = []
+        lines.append("Data Row")
+        lines.append("=" * 64)
+        lines.append(f"File: {filename}")
+        lines.append(f"Row: {row_index}")
+        if row_key:
+            lines.append(f"Key: {row_key}")
+        lines.append("")
+
+        if isinstance(payload, dict):
+            scalar_items = []
+            complex_items = []
+            for key, value in payload.items():
+                if isinstance(value, (dict, list)):
+                    complex_items.append((key, value))
+                else:
+                    scalar_items.append((key, value))
+
+            if scalar_items:
+                lines.append("Overview")
+                lines.append("-" * 64)
+                for key, value in scalar_items:
+                    lines.append(f"{self._humanize_key(key)}: {value}")
+                lines.append("")
+
+            if complex_items:
+                lines.append("Details")
+                lines.append("-" * 64)
+                for key, value in complex_items:
+                    lines.append(f"{self._humanize_key(key)}:")
+                    lines.extend(self._summarize_structure(value, indent="  ", max_depth=2, max_items=14))
+                    lines.append("")
+        elif isinstance(payload, list):
+            lines.append("Overview")
+            lines.append("-" * 64)
+            lines.extend(self._summarize_structure(payload, indent="  ", max_depth=2, max_items=20))
+            lines.append("")
+        else:
+            lines.append("Overview")
+            lines.append("-" * 64)
+            lines.append(str(payload))
+            lines.append("")
+
+        lines.append("Raw JSON")
+        lines.append("-" * 64)
+        lines.append(json.dumps(payload, indent=2, ensure_ascii=False))
+        return "\n".join(lines)
 
     def _next_data_page(self):
         if self.data_selected_filename is None:
@@ -957,10 +2575,21 @@ class PGLOKApp:
 
     def _apply_startup_geometry(self):
         self.root.update_idletasks()
-        req_w = self.root.winfo_reqwidth()
-        req_h = self.root.winfo_reqheight()
-        self._apply_saved_window_geometry("main", self.root, req_w, req_h)
-        self.root.minsize(req_w, req_h)
+        req_w = max(int(self.root.winfo_reqwidth()), MAIN_MIN_WIDTH)
+        req_h = max(int(self.root.winfo_reqheight()), MAIN_MIN_HEIGHT)
+        states = self._load_all_window_states()
+        if "main" in states:
+            # Use fixed minimums so the window remains user-resizable.
+            self._apply_saved_window_geometry("main", self.root, MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+        else:
+            screen_w = max(640, int(self.root.winfo_screenwidth()))
+            screen_h = max(480, int(self.root.winfo_screenheight()))
+            max_w = max(480, screen_w - 80)
+            max_h = max(320, screen_h - 100)
+            width = min(req_w, max_w)
+            height = min(req_h, max_h)
+            self.root.geometry(f"{width}x{height}")
+        self.root.minsize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
         self._window_state_ready = True
 
     def _load_all_window_states(self):
@@ -1019,10 +2648,14 @@ class PGLOKApp:
             self.open_settings_window()
         if self._is_window_marked_open("data_browser"):
             self.open_data_browser_window()
+        if self._is_window_marked_open("itemizer"):
+            self.open_itemizer_window()
         if self._is_window_marked_open("character_browser"):
             self.open_character_browser_window()
         if self._is_window_marked_open("chat_monitor"):
             self.open_chat_window()
+        if self._is_window_marked_open("map_tools"):
+            self.open_map_tools_window()
 
     def _raise_main_window_default(self):
         try:
@@ -1053,21 +2686,35 @@ class PGLOKApp:
         self._save_all_window_states(states)
 
     def _apply_saved_window_geometry(self, key, window, min_width, min_height):
+        screen_w = max(640, int(window.winfo_screenwidth()))
+        screen_h = max(480, int(window.winfo_screenheight()))
+        max_w = max(480, screen_w - 80)
+        max_h = max(320, screen_h - 100)
+        base_w = max(320, min(int(min_width), max_w))
+        base_h = max(240, min(int(min_height), max_h))
+
         states = self._load_all_window_states()
         state = states.get(key)
         if state and "width" in state and "height" in state:
-            width = max(int(state["width"]), int(min_width))
-            height = max(int(state["height"]), int(min_height))
+            width = max(base_w, int(state["width"]))
+            height = max(base_h, int(state["height"]))
+            width = min(width, max_w)
+            height = min(height, max_h)
             if "x" in state and "y" in state:
-                window.geometry(f"{width}x{height}+{int(state['x'])}+{int(state['y'])}")
+                max_x = max(0, screen_w - width)
+                max_y = max(0, screen_h - height)
+                x = min(max(int(state["x"]), 0), max_x)
+                y = min(max(int(state["y"]), 0), max_y)
+                window.geometry(f"{width}x{height}+{x}+{y}")
             else:
                 window.geometry(f"{width}x{height}")
         else:
-            window.geometry(f"{int(min_width)}x{int(min_height)}")
+            window.geometry(f"{base_w}x{base_h}")
 
     def _on_window_configure(self, event):
         if event.widget is not self.root or not self._window_state_ready:
             return
+        self._ensure_home_layout_visible()
         if self._resize_after_id is not None:
             self.root.after_cancel(self._resize_after_id)
         self._resize_after_id = self.root.after(350, self._save_main_window_state)
@@ -1077,21 +2724,62 @@ class PGLOKApp:
         self._save_window_geometry("main", self.root)
 
     def _on_close(self):
+        if self._data_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._data_search_after_id)
+            except tk.TclError:
+                pass
+            self._data_search_after_id = None
+        if self._data_browser_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._data_browser_resize_after_id)
+            except tk.TclError:
+                pass
+            self._data_browser_resize_after_id = None
+        if self._itemizer_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._itemizer_resize_after_id)
+            except tk.TclError:
+                pass
+            self._itemizer_resize_after_id = None
+        if self._itemizer_search_after_id is not None:
+            try:
+                self.root.after_cancel(self._itemizer_search_after_id)
+            except tk.TclError:
+                pass
+            self._itemizer_search_after_id = None
         self._save_main_window_state()
         self._set_window_open_state("settings", self.settings_window is not None and self.settings_window.winfo_exists())
         self._set_window_open_state(
             "data_browser",
             self.data_browser_window is not None and self.data_browser_window.winfo_exists(),
         )
+        self._set_window_open_state("itemizer", self.itemizer_window is not None and self.itemizer_window.winfo_exists())
         self._set_window_open_state(
             "character_browser",
             self.character_browser_window is not None and self.character_browser_window.winfo_exists(),
         )
         self._set_window_open_state("chat_monitor", self.chat_window is not None and self.chat_window.winfo_exists())
+        self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
         self._save_window_geometry("settings", self.settings_window)
+        self._save_data_browser_pane_split()
+        self._save_data_browser_display_pane_split()
+        self._save_global_search_split()
         self._save_window_geometry("data_browser", self.data_browser_window)
+        self._save_window_geometry("itemizer", self.itemizer_window)
+        self._save_itemizer_pane_split()
+        self._save_itemizer_bottom_pane_split()
+        self._save_itemizer_column_widths()
+        self._save_itemizer_character_notes()
+        self._set_ui_pref("data_browser_search", self.data_search_var.get().strip())
+        self._set_ui_pref("data_browser_offset", int(self.data_offset))
+        self._set_ui_pref("itemizer_server", self.itemizer_server_var.get().strip())
+        self._set_ui_pref("itemizer_character", self.itemizer_character_var.get().strip())
+        self._set_ui_pref("itemizer_search", self.itemizer_search_var.get().strip())
+        self._set_ui_pref("itemizer_offset", int(self.itemizer_offset))
         self._save_window_geometry("character_browser", self.character_browser_window)
         self._save_window_geometry("chat_monitor", self.chat_window)
+        self._save_window_geometry("map_tools", self.map_tools_window)
         self._stop_chat_monitor()
         self.root.destroy()
 
@@ -1109,13 +2797,15 @@ class PGLOKApp:
             self.reset_button.configure(state=state)
         self.status_var.set(message)
 
-    def run_in_background(self, task, busy_message, done_message):
+    def run_in_background(self, task, busy_message, done_message, ui_after=None):
         def runner():
             try:
                 self.root.after(0, lambda: self.set_busy(True, busy_message))
                 task()
                 self.root.after(0, lambda: self.set_busy(False, done_message))
                 self.root.after(0, self.refresh_config_view)
+                if ui_after is not None:
+                    self.root.after(0, ui_after)
             except Exception as exc:
                 self.root.after(0, lambda: self.set_busy(False, f"{UI_TEXT['status_error_prefix']}{exc}"))
 
@@ -1126,6 +2816,7 @@ class PGLOKApp:
             task=lambda: initialize_pg_base(force=True),
             busy_message=UI_TEXT["status_locating"],
             done_message=UI_TEXT["status_ready"],
+            ui_after=self._refresh_character_cache,
         )
 
     def download_newer_files(self):

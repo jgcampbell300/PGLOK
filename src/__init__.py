@@ -1,4 +1,6 @@
-__all__ = ["PGLOKApp", "main"]
+__version__ = "0.1.0"
+
+__all__ = ["PGLOKApp", "main", "__version__"]
 
 
 def __getattr__(name):

@@ -6,3 +6,6 @@ src/config/ui_window_state.json
 
 # Downloaded and indexed local data
 src/data/
+
+# Local test assets
+test/

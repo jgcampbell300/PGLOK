@@ -2,18 +2,19 @@ from tkinter import ttk
 
 
 UI_COLORS = {
-    "bg": "#0f111a",
-    "panel_bg": "#151a26",
-    "card_bg": "#1b2130",
-    "text": "#e6edf7",
-    "muted_text": "#98a6bd",
-    "primary": "#1f8fff",
-    "primary_active": "#46a4ff",
-    "secondary": "#2a344a",
-    "secondary_active": "#3a4661",
-    "entry_bg": "#0f141f",
-    "entry_border": "#385072",
-    "accent": "#5dd6ff",
+    "bg": "#060507",
+    "panel_bg": "#140f0e",
+    "card_bg": "#1e1413",
+    "text": "#ddd6c8",
+    "muted_text": "#baa98d",
+    "primary": "#8d321e",
+    "primary_active": "#a63a22",
+    "secondary": "#3a231d",
+    "secondary_active": "#4c2e26",
+    "entry_bg": "#140f0f",
+    "entry_border": "#8a6a3d",
+    "accent": "#d8b564",
+    "menu_active": "#4c2e26",
 }
 
 UI_ATTRS = {
@@ -23,7 +24,7 @@ UI_ATTRS = {
     "container_padding": 18,
     "label_width": 14,
     "header_text": "Project Gorgon Locator and Data Tools",
-    "font_family": "Segoe UI",
+    "font_family": "Palatino Linotype",
     "font_size": 10,
     "font_size_header": 14,
 }
@@ -49,6 +50,7 @@ UI_TEXT = {
 
 def apply_theme(root):
     root.configure(bg=UI_COLORS["bg"])
+    root.option_add("*Font", (UI_ATTRS["font_family"], UI_ATTRS["font_size"]))
 
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -95,13 +97,30 @@ def apply_theme(root):
         insertcolor=UI_COLORS["text"],
         lightcolor=UI_COLORS["entry_border"],
         darkcolor=UI_COLORS["entry_border"],
+        padding=(6, 4),
+    )
+    style.map("App.TEntry", bordercolor=[("focus", UI_COLORS["accent"])], lightcolor=[("focus", UI_COLORS["accent"])])
+    style.configure(
+        "App.SpellError.TEntry",
+        fieldbackground=UI_COLORS["entry_bg"],
+        foreground=UI_COLORS["text"],
+        bordercolor="#b63a3a",
+        insertcolor=UI_COLORS["text"],
+        lightcolor="#b63a3a",
+        darkcolor="#b63a3a",
+        padding=(6, 4),
+    )
+    style.map(
+        "App.SpellError.TEntry",
+        bordercolor=[("focus", "#d84a4a")],
+        lightcolor=[("focus", "#d84a4a")],
     )
     style.configure(
         "App.Primary.TButton",
         background=UI_COLORS["primary"],
-        foreground="#ffffff",
+        foreground=UI_COLORS["text"],
         borderwidth=1,
-        relief="flat",
+        relief="raised",
         focusthickness=2,
         focuscolor=UI_COLORS["primary_active"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
@@ -117,7 +136,7 @@ def apply_theme(root):
         background=UI_COLORS["secondary"],
         foreground=UI_COLORS["text"],
         borderwidth=1,
-        relief="flat",
+        relief="raised",
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
         padding=(10, 6),
     )
@@ -136,13 +155,107 @@ def apply_theme(root):
     )
     style.map(
         "App.Treeview",
-        background=[("selected", UI_COLORS["primary"])],
-        foreground=[("selected", "#ffffff")],
+        background=[("selected", UI_COLORS["secondary_active"])],
+        foreground=[("selected", UI_COLORS["accent"])],
     )
     style.configure(
         "App.Treeview.Heading",
         background=UI_COLORS["secondary"],
         foreground=UI_COLORS["text"],
-        relief="flat",
+        relief="raised",
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+    )
+    style.map("App.Treeview.Heading", background=[("active", UI_COLORS["secondary_active"])])
+    style.configure(
+        "App.TCombobox",
+        fieldbackground=UI_COLORS["entry_bg"],
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        bordercolor=UI_COLORS["entry_border"],
+        lightcolor=UI_COLORS["entry_border"],
+        darkcolor=UI_COLORS["entry_border"],
+        arrowcolor=UI_COLORS["accent"],
+        insertcolor=UI_COLORS["text"],
+    )
+    style.map(
+        "App.TCombobox",
+        fieldbackground=[("readonly", UI_COLORS["entry_bg"])],
+        foreground=[("readonly", UI_COLORS["text"])],
+        background=[("readonly", UI_COLORS["secondary"])],
+    )
+    style.configure(
+        "TScrollbar",
+        troughcolor=UI_COLORS["card_bg"],
+        background=UI_COLORS["secondary"],
+        arrowcolor=UI_COLORS["accent"],
+        bordercolor=UI_COLORS["entry_border"],
+        lightcolor=UI_COLORS["entry_border"],
+        darkcolor=UI_COLORS["entry_border"],
+        gripcount=0,
+    )
+    style.map(
+        "TScrollbar",
+        background=[("active", UI_COLORS["secondary_active"])],
+    )
+    style.configure(
+        "App.Vertical.TScrollbar",
+        troughcolor=UI_COLORS["card_bg"],
+        background=UI_COLORS["secondary"],
+        arrowcolor=UI_COLORS["accent"],
+        bordercolor=UI_COLORS["entry_border"],
+        lightcolor=UI_COLORS["entry_border"],
+        darkcolor=UI_COLORS["entry_border"],
+        gripcount=0,
+    )
+    style.map(
+        "App.Vertical.TScrollbar",
+        background=[("active", UI_COLORS["secondary_active"])],
+    )
+    style.configure(
+        "App.Horizontal.TScrollbar",
+        troughcolor=UI_COLORS["card_bg"],
+        background=UI_COLORS["secondary"],
+        arrowcolor=UI_COLORS["accent"],
+        bordercolor=UI_COLORS["entry_border"],
+        lightcolor=UI_COLORS["entry_border"],
+        darkcolor=UI_COLORS["entry_border"],
+        gripcount=0,
+    )
+    style.map(
+        "App.Horizontal.TScrollbar",
+        background=[("active", UI_COLORS["secondary_active"])],
+    )
+    style.configure(
+        "App.TPanedwindow",
+        background=UI_COLORS["card_bg"],
+        sashthickness=6,
+        sashrelief="flat",
+    )
+    style.configure(
+        "TNotebook",
+        background=UI_COLORS["card_bg"],
+        borderwidth=1,
+    )
+    style.configure(
+        "TNotebook.Tab",
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        padding=(10, 4),
+    )
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", UI_COLORS["primary"]), ("active", UI_COLORS["secondary_active"])],
+        foreground=[("selected", UI_COLORS["text"])],
+    )
+
+
+def configure_menu_theme(menu):
+    menu.configure(
+        bg=UI_COLORS["panel_bg"],
+        fg=UI_COLORS["text"],
+        activebackground=UI_COLORS["menu_active"],
+        activeforeground=UI_COLORS["accent"],
+        selectcolor=UI_COLORS["accent"],
+        relief="flat",
+        borderwidth=1,
     )
