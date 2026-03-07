@@ -9,3 +9,7 @@ src/data/
 
 # Local test assets
 test/
+
+# Packaging outputs
+build/
+dist/
