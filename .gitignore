@@ -13,3 +13,12 @@ test/
 # Packaging outputs
 build/
 dist/
+
+# Development tools and backups
+.ai/
+.venv_tools/
+backups/
+
+# IDE files
+.idea/
+.vscode/
