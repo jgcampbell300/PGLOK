@@ -18,7 +18,16 @@ dist/
 .ai/
 .venv_tools/
 backups/
+build_env/
 
 # IDE files
 .idea/
 .vscode/
+
+# Build artifacts
+build/
+dist/
+*.tar.gz
+
+# Icon generation script
+create_icon.py
