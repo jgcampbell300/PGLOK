@@ -31,3 +31,9 @@ dist/
 
 # Icon generation script
 create_icon.py
+
+# Prevent inclusion of virtual environment symlinks in archives
+**/bin/python*
+**/bin/python3*
+**/lib64/
+**/lib/python*

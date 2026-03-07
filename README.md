@@ -2,16 +2,33 @@
 
 A comprehensive desktop application for managing and searching Project Gorgon game data.
 
-## Features
+## 🚀 Quick Download & Install
 
-- **Data Browser**: Search and browse Project Gorgon game data (abilities, items, quests, recipes, etc.)
-- **Itemizer**: Index and search your character inventory reports
-- **Chat Monitor**: Real-time monitoring of Project Gorgon chat logs
-- **Map Tools**: View and manage game maps with zoom/pan functionality
-- **Character Browser**: Browse and analyze character data files
-- **Global Search**: Search across all data sources simultaneously
+### Option 1: Download Release (Recommended)
+```bash
+# Download the latest release
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-Source.tar.gz -o PGLOK.tar.gz
 
-## Quick Start (Installation & Running)
+# Extract and install
+tar -xzf PGLOK.tar.gz
+cd PGLOK-*
+./install_linux.sh --desktop
+```
+
+### Option 2: Clone Repository
+```bash
+# Clone and install
+git clone https://github.com/jgcampbell300/PGLOK.git
+cd PGLOK
+./install_linux.sh --desktop
+```
+
+## ⚠️ Important Notes
+
+- **No dangerous symlinks** - All packages are symlink-free
+- **Clean extraction** - Safe for all systems
+- **Professional icon** - Custom application branding
+- **Standalone executables** - No Python required
 
 ### Option 1: Easy Installation Scripts
 ```bash
