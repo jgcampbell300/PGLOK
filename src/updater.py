@@ -95,28 +95,45 @@ def install_update_windows(zip_path: Path) -> bool:
         # Get current script directory
         current_dir = Path(__file__).resolve().parent.parent.parent
         
+        print(f"Extracting Windows update from {zip_path} to {current_dir}")
+        
         # Extract zip to temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
+            print(f"Using temporary directory: {temp_dir}")
+            
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(temp_dir)
             
             # Find the extracted directory (usually PGLOK-main)
             extracted_dirs = [d for d in Path(temp_dir).iterdir() if d.is_dir()]
             if not extracted_dirs:
+                print("No directories found in extracted zip")
                 return False
             
             source_dir = extracted_dirs[0]
+            print(f"Source directory for update: {source_dir}")
             
             # Copy files over current installation
+            files_copied = 0
             for item in source_dir.rglob('*'):
                 if item.is_file():
-                    dest_file = current_dir / item.relative_to(source_dir)
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest_file)
+                    try:
+                        dest_file = current_dir / item.relative_to(source_dir)
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dest_file)
+                        files_copied += 1
+                        print(f"Copied: {item} → {dest_file}")
+                    except Exception as e:
+                        print(f"Failed to copy {item}: {e}")
+                        return False
+            
+            print(f"Successfully copied {files_copied} files")
         
         return True
     except Exception as e:
         print(f"Windows update failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -128,28 +145,75 @@ def install_update_linux(tar_path: Path) -> bool:
         # Get current script directory
         current_dir = Path(__file__).resolve().parent.parent.parent
         
+        print(f"Extracting update from {tar_path} to {current_dir}")
+        
         # Extract tar to temporary directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            with tarfile.open(tar_path, 'r:*') as tar_ref:
-                tar_ref.extractall(temp_dir)
+            print(f"Using temporary directory: {temp_dir}")
             
-            # Find the extracted directory
-            extracted_dirs = [d for d in Path(temp_dir).iterdir() if d.is_dir()]
-            if not extracted_dirs:
+            # Try different tar modes
+            try:
+                with tarfile.open(tar_path, 'r:gz') as tar_ref:
+                    tar_ref.extractall(temp_dir)
+            except tarfile.ReadError:
+                try:
+                    with tarfile.open(tar_path, 'r:bz2') as tar_ref:
+                        tar_ref.extractall(temp_dir)
+                except tarfile.ReadError:
+                    with tarfile.open(tar_path, 'r') as tar_ref:
+                        tar_ref.extractall(temp_dir)
+            
+            # Find the extracted directory or files
+            extracted_items = list(Path(temp_dir).iterdir())
+            if not extracted_items:
+                print("No items found in extracted archive")
                 return False
             
-            source_dir = extracted_dirs[0]
+            # Check if we have a directory (typical) or just files
+            source_dir = None
+            for item in extracted_items:
+                if item.is_dir():
+                    source_dir = item
+                    break
+                elif item.is_file() and item.name in ['test.txt', 'README.md']:
+                    # Handle case where archive has files at root
+                    source_dir = Path(temp_dir)
+                    break
+            
+            if source_dir is None:
+                print("No suitable source directory found in extracted archive")
+                return False
+            
+            print(f"Source directory for update: {source_dir}")
             
             # Copy files over current installation
-            for item in source_dir.rglob('*'):
+            files_copied = 0
+            source_path = Path(source_dir)
+            for item in source_path.rglob('*'):
                 if item.is_file():
-                    dest_file = current_dir / item.relative_to(source_dir)
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest_file)
+                    try:
+                        if source_dir == temp_dir:
+                            # Files are at root, use relative path directly
+                            dest_file = current_dir / item.name
+                        else:
+                            # Files are in subdirectory, use relative path
+                            dest_file = current_dir / item.relative_to(source_dir)
+                        
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dest_file)
+                        files_copied += 1
+                        print(f"Copied: {item} → {dest_file}")
+                    except Exception as e:
+                        print(f"Failed to copy {item}: {e}")
+                        return False
+            
+            print(f"Successfully copied {files_copied} files")
         
         return True
     except Exception as e:
         print(f"Linux update failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -181,6 +245,8 @@ def restart_application():
         sys.exit(0)
     except Exception as e:
         print(f"Failed to restart application: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def perform_auto_update(current_version: str) -> bool:
