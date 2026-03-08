@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -21,6 +22,7 @@ from src.itemizer import index_item_reports, search_item_totals, search_items
 from src.locate_PG import initialize_pg_base
 from src.maptools import MapToolsBrowser
 from src.utils.spellcheck import EntrySpellcheckBinder
+from src.updater import perform_auto_update
 
 
 WINDOW_STATE_FILE = config.CONFIG_DIR / "ui_window_state.json"
@@ -240,56 +242,72 @@ class PGLOKApp:
         help_menu.add_command(label="About PGLOK", command=self._menu_not_implemented)
         menu_bar.add_cascade(label="Help", menu=help_menu)
 
-    def _parse_version_key(self, value):
-        text = str(value or "").strip().lower()
-        if text.startswith("v"):
-            text = text[1:]
-        if not text:
-            return None
-        parts = re.findall(r"\d+", text)
-        if not parts:
-            return None
-        return tuple(int(p) for p in parts)
-
-    def _fetch_latest_repo_version(self):
-        headers = {
-            "User-Agent": "PGLOK/1.0 (+https://github.com/jgcampbell300/PGLOK)",
-            "Accept": "application/vnd.github+json",
-        }
-        for url, key in ((GITHUB_RELEASE_API, "tag_name"), (GITHUB_TAGS_API, "name")):
-            try:
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-                if key == "tag_name":
-                    value = str(payload.get("tag_name", "")).strip()
-                else:
-                    first = payload[0] if isinstance(payload, list) and payload else {}
-                    value = str(first.get("name", "")).strip()
-                if value:
-                    return value
-            except Exception:
-                continue
-        return ""
-
     def _check_for_upgrade_async(self):
+        """Check for updates and automatically install if available."""
         def worker():
-            latest = self._fetch_latest_repo_version()
-            if not latest:
-                return
-            current_key = self._parse_version_key(__version__)
-            latest_key = self._parse_version_key(latest)
-            if current_key is None or latest_key is None or latest_key <= current_key:
-                return
+            try:
+                # Perform automatic update
+                update_success = perform_auto_update(__version__)
+                
+                def apply_result():
+                    if update_success:
+                        # Show success message and restart
+                        messagebox.showinfo(
+                            "Update Complete", 
+                            f"PGLOK has been updated successfully!\n\nThe application will restart to apply the update."
+                        )
+                        self.root.after(1000, self._restart_application)
+                    else:
+                        # Check if update is available but auto-install failed
+                        from src.updater import fetch_latest_repo_version, parse_version_key
+                        
+                        latest_version, _ = fetch_latest_repo_version()
+                        if latest_version:
+                            current_key = parse_version_key(__version__)
+                            latest_key = parse_version_key(latest_version)
+                            
+                            if current_key and latest_key and latest_key > current_key:
+                                def apply_upgrade_state():
+                                    if self.alpha_button is None:
+                                        return
+                                    self.alpha_button.configure(
+                                        text="Update Available!", 
+                                        command=lambda: webbrowser.open(RELEASES_URL)
+                                    )
+                                    self.status_var.set(f"Update available: {__version__} → {latest_version}")
+                                
+                                self.root.after(0, apply_upgrade_state)
+                            else:
+                                self.status_var.set("PGLOK is up to date")
+                        else:
+                            self.status_var.set("Unable to check for updates")
 
-            def apply_upgrade_state():
-                if self.alpha_button is None:
-                    return
-                self.alpha_button.configure(text="Upgrade!", command=lambda: webbrowser.open(RELEASES_URL))
-
-            self.root.after(0, apply_upgrade_state)
+                self.root.after(0, apply_result)
+                
+            except Exception as exc:
+                def show_error():
+                    self.status_var.set(f"Update check failed: {exc}")
+                self.root.after(0, show_error)
 
         threading.Thread(target=worker, daemon=True).start()
+    
+    def _restart_application(self):
+        """Restart the application."""
+        try:
+            # Get current executable path
+            executable = sys.executable
+            if sys.executable.endswith('python') or sys.executable.endswith('python3'):
+                # We're running from source, restart with main script
+                script_path = Path(__file__).resolve().parent / 'pglok.py'
+                subprocess.Popen([executable, str(script_path)])
+            else:
+                # We're running from executable
+                subprocess.Popen([executable])
+            
+            # Exit current instance
+            self.root.quit()
+        except Exception as e:
+            messagebox.showerror("Restart Failed", f"Failed to restart application: {e}")
 
     def _menu_not_implemented(self):
         self.status_var.set("Menu action not implemented yet.")
