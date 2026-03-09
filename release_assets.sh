@@ -1,0 +1,65 @@
+#!/bin/bash
+
+# Create properly named release assets for auto-update system
+
+echo "🎯 Creating Release Assets for Auto-Update"
+echo "=========================================="
+
+# Current files
+echo "📦 Current release files:"
+echo "✅ PGLOK-Linux-v0.1.4.tar.gz ($(du -h PGLOK-Linux-v0.1.4.tar.gz | cut -f1))"
+echo "✅ PGLOK-v0.1.4-source.tar.gz ($(du -h PGLOK-v0.1.4-source.tar.gz | cut -f1))"
+
+echo ""
+echo "🔍 What the auto-update system needs:"
+echo "====================================="
+
+echo ""
+echo "1️⃣ REQUIRED: Linux Executable Package"
+echo "   File: PGLOK-Linux-v0.1.4.tar.gz"
+echo "   Size: 57.4MB"
+echo "   Contains: PGLOK executable + install.sh + icon + README + LICENSE"
+echo "   Platform: Linux"
+echo "   Extension: .tar.gz"
+echo "   ✅ READY TO UPLOAD"
+
+echo ""
+echo "2️⃣ OPTIONAL: Source Package"
+echo "   File: PGLOK-v0.1.4-source.tar.gz"
+echo "   Size: 280KB"
+echo "   Contains: Complete source code"
+echo "   Platform: Source"
+echo "   Extension: .tar.gz"
+echo "   ✅ READY TO UPLOAD"
+
+echo ""
+echo "🚀 GitHub Release Setup:"
+echo "========================"
+echo ""
+echo "📝 Release Details:"
+echo "   Tag: v0.1.4"
+echo "   Title: PGLOK v0.1.4"
+echo "   Target: main"
+echo "   Description: Copy content from RELEASE_NOTES.md"
+echo ""
+echo "📎 Assets to Upload (EXACT filenames):"
+echo "   1. PGLOK-Linux-v0.1.4.tar.gz"
+echo "   2. PGLOK-v0.1.4-source.tar.gz"
+echo ""
+echo "⚠️  IMPORTANT: Use EXACT filenames above!"
+echo "   The auto-update system looks for specific patterns:"
+echo "   - Must contain 'linux' for Linux platforms"
+echo "   - Must end with '.tar.gz' for Linux packages"
+echo "   - Version number helps with identification"
+
+echo ""
+echo "🧪 Test After Release:"
+echo "====================="
+echo "1. Create release with these assets"
+echo "2. Test: ~/.local/bin/PGLOK"
+echo "3. Should show: 'PGLOK is up to date'"
+echo "4. Test with older version to verify auto-update"
+
+echo ""
+echo "📋 Release URL:"
+echo "https://github.com/jgcampbell300/PGLOK/releases/new"

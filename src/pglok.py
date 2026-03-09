@@ -239,8 +239,173 @@ class PGLOKApp:
 
         help_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(help_menu)
+        help_menu.add_command(label="Check for Updates", command=self._check_for_updates_manual)
+        help_menu.add_separator()
         help_menu.add_command(label="About PGLOK", command=self._menu_not_implemented)
         menu_bar.add_cascade(label="Help", menu=help_menu)
+
+    def _check_for_updates_manual(self):
+        """Manual update check with progress dialog."""
+        from tkinter import messagebox
+        import threading
+        
+        # Create progress dialog
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Checking for Updates")
+        progress_window.geometry("500x300")
+        progress_window.resizable(False, False)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+        
+        # Center the dialog
+        progress_window.update_idletasks()
+        x = (progress_window.winfo_screenwidth() // 2) - (500 // 2)
+        y = (progress_window.winfo_screenheight() // 2) - (300 // 2)
+        progress_window.geometry(f"500x300+{x}+{y}")
+        
+        # Apply theme
+        main_frame = ttk.Frame(progress_window, style="App.Card.TFrame", padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="PGLOK Update", style="App.Title.TLabel")
+        title_label.pack(pady=(0, 15))
+        
+        # Status text
+        status_var = tk.StringVar(value="Checking for updates...")
+        status_label = ttk.Label(main_frame, textvariable=status_var, style="App.Status.TLabel")
+        status_label.pack(pady=10, anchor="w")
+        
+        # Progress bar
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(main_frame, variable=progress_var, mode="indeterminate", style="App.Horizontal.TProgressbar")
+        progress_bar.pack(fill="x", pady=10)
+        progress_bar.start(10)
+        
+        # Details text
+        details_text = tk.Text(main_frame, height=8, wrap="word", bg=UI_COLORS["entry_bg"], fg=UI_COLORS["text"], 
+                              borderwidth=1, relief="solid", highlightthickness=1,
+                              highlightbackground=UI_COLORS["entry_border"], highlightcolor=UI_COLORS["accent"])
+        details_scroll = ttk.Scrollbar(main_frame, orient="vertical", command=details_text.yview, style="App.Vertical.TScrollbar")
+        details_text.configure(yscrollcommand=details_scroll.set)
+        
+        details_frame = ttk.Frame(main_frame)
+        details_frame.pack(fill="both", expand=True, pady=10)
+        details_text.pack(side="left", fill="both", expand=True)
+        details_scroll.pack(side="right", fill="y")
+        
+        # Close button (initially disabled)
+        close_var = tk.BooleanVar(value=False)
+        close_button = ttk.Button(main_frame, text="Close", command=progress_window.destroy, state="disabled", style="App.Primary.TButton")
+        close_button.pack(pady=(10, 0))
+        
+        def update_status(message):
+            """Update status message and details."""
+            status_var.set(message)
+            details_text.insert(tk.END, f"[{self._get_timestamp()}] {message}\n")
+            details_text.see(tk.END)
+            progress_window.update_idletasks()
+        
+        def update_progress(value):
+            """Update progress bar."""
+            progress_var.set(value)
+            progress_window.update_idletasks()
+        
+        def enable_close():
+            """Enable close button and stop progress."""
+            progress_bar.stop()
+            close_button.configure(state="normal")
+            close_var.set(True)
+        
+        def worker():
+            """Update worker thread."""
+            try:
+                update_status("Checking for updates...")
+                update_progress(10)
+                
+                from src.updater import fetch_latest_repo_version, parse_version_key
+                
+                latest_version, assets = fetch_latest_repo_version()
+                update_progress(30)
+                
+                if not latest_version:
+                    update_status("Unable to check for updates")
+                    details_text.insert(tk.END, "\nCould not connect to GitHub to check for updates.\n")
+                    details_text.insert(tk.END, "Please check your internet connection and try again.\n")
+                    enable_close()
+                    return
+                
+                current_key = parse_version_key(__version__)
+                latest_key = parse_version_key(latest_version)
+                
+                update_progress(50)
+                update_status(f"Current version: {__version__}")
+                update_status(f"Latest version: {latest_version}")
+                
+                if current_key is None or latest_key is None or latest_key <= current_key:
+                    update_status("PGLOK is up to date!")
+                    details_text.insert(tk.END, f"\nYou are running the latest version ({__version__}).\n")
+                    update_progress(100)
+                    enable_close()
+                    return
+                
+                update_status(f"Update available: {__version__} → {latest_version}")
+                update_progress(70)
+                
+                # Count assets
+                if assets:
+                    details_text.insert(tk.END, f"\nAvailable release assets:\n")
+                    for i, asset in enumerate(assets, 1):
+                        size_mb = asset.get('size', 0) / (1024*1024)
+                        details_text.insert(tk.END, f"  {i}. {asset['name']} ({size_mb:.1f}MB)\n")
+                
+                update_status("Downloading update...")
+                update_progress(80)
+                
+                from src.updater import perform_auto_update
+                update_success = perform_auto_update(__version__)
+                
+                update_progress(90)
+                
+                if update_success:
+                    update_status("Update completed successfully!")
+                    details_text.insert(tk.END, "\n✅ Update has been installed successfully.\n")
+                    details_text.insert(tk.END, "The application will restart to apply the update.\n")
+                    update_progress(100)
+                    enable_close()
+                    
+                    def restart_after_delay():
+                        progress_window.destroy()
+                        self._restart_application()
+                    
+                    progress_window.after(3000, restart_after_delay)
+                else:
+                    update_status("Update failed")
+                    details_text.insert(tk.END, "\n❌ Automatic update failed.\n")
+                    details_text.insert(tk.END, "You can download the update manually from:\n")
+                    details_text.insert(tk.END, "https://github.com/jgcampbell300/PGLOK/releases/latest\n")
+                    enable_close()
+                
+            except Exception as exc:
+                update_status(f"Update check failed: {exc}")
+                details_text.insert(tk.END, f"\n❌ Error: {exc}\n")
+                details_text.insert(tk.END, "Please try again or check your internet connection.\n")
+                enable_close()
+        
+        # Start update check in background thread
+        threading.Thread(target=worker, daemon=True).start()
+        
+        # Handle window close
+        def on_close():
+            if close_var.get():
+                progress_window.destroy()
+        
+        progress_window.protocol("WM_DELETE_WINDOW", on_close)
+    
+    def _get_timestamp(self):
+        """Get current timestamp for log entries."""
+        import datetime
+        return datetime.datetime.now().strftime("%H:%M:%S")
 
     def _check_for_upgrade_async(self):
         """Check for updates and automatically install if available."""
