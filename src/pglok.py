@@ -471,8 +471,15 @@ class PGLOKApp:
             if lines and self.chat_notebook is not None:
                 for line in lines:
                     channel = self._extract_chat_channel(line)
+                    
+                    # Combine Status and Error channels into System tab
+                    if channel in ["Status", "Error"]:
+                        combined_channel = "System"
+                    else:
+                        combined_channel = channel
+                    
                     self._append_chat_line("All", line)
-                    self._append_chat_line(channel, line)
+                    self._append_chat_line(combined_channel, line)
                 self.chat_lines_seen += len(lines)
             self._update_chat_info(current_file)
         except Exception as exc:
@@ -486,6 +493,10 @@ class PGLOKApp:
             return "Item"
         if "recipe:" in lower:
             return "Recipe"
+        if "status:" in lower:
+            return "Status"
+        if "error:" in lower:
+            return "Error"
         match = CHAT_CHANNEL_RE.search(line)
         if not match:
             return "Other"
