@@ -23,6 +23,14 @@ from src.locate_PG import initialize_pg_base
 from src.maptools import MapToolsBrowser
 from src.utils.spellcheck import EntrySpellcheckBinder
 from src.updater import perform_auto_update
+import sys
+
+# Import database manager
+from src.database.database_manager import get_database_manager
+
+# Import base addon
+sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
+from base_addon import BaseAddon
 
 
 WINDOW_STATE_FILE = config.CONFIG_DIR / "ui_window_state.json"
@@ -67,6 +75,11 @@ class PGLOKApp:
         self._data_search_after_id = None
         self.data_page_var = tk.StringVar(value="Page 1")
         self.data_selected_filename = None
+        
+        # Initialize database manager
+        self.db_manager = get_database_manager()
+        self.current_user_id = 1  # Default user
+        
         self.data_page_size = 200
         self.data_offset = int(self._get_ui_pref("data_browser_offset", 0) or 0)
         self.data_total_rows = 0
@@ -114,13 +127,17 @@ class PGLOKApp:
         self._global_search_after_id = None
         self.alpha_button = None
         self.entry_spellcheck = EntrySpellcheckBinder()
+        
+        # Addon manager will be initialized lazily
+        self.addon_manager = None
+        self.addons_menu = None
 
         apply_theme(self.root)
         self.root.title(UI_ATTRS["window_title"])
         self.data_search_var.trace_add("write", lambda *_: self._schedule_data_live_search())
         self.itemizer_search_var.trace_add("write", lambda *_: self._schedule_itemizer_live_search())
 
-        self.app_frame = ttk.Frame(root, padding=(6, 2, 6, 6), style="App.Panel.TFrame")
+        self.app_frame = ttk.Frame(root, padding=(4, 2, 4, 4), style="App.Panel.TFrame")
         self.app_frame.pack(fill="both", expand=True)
 
         self._build_layout()
@@ -140,7 +157,16 @@ class PGLOKApp:
             self.locate_pg()
 
     def _build_layout(self):
-        toolbar = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
+        # Create main paned window for resizable layout
+        self.main_paned = ttk.PanedWindow(self.app_frame, orient="vertical", style="App.TFrame")
+        self.main_paned.pack(fill="both", expand=True)
+        
+        # Top section for toolbar and content
+        self.top_section = ttk.Frame(self.main_paned, style="App.TFrame")
+        self.main_paned.add(self.top_section, weight=1)
+        
+        # Toolbar
+        toolbar = ttk.Frame(self.top_section, style="App.Panel.TFrame")
         toolbar.pack(fill="x", pady=(0, 3))
         ttk.Button(toolbar, text="Chat", command=self._open_chat, style="App.Secondary.TButton").pack(side="left")
         ttk.Button(
@@ -170,23 +196,96 @@ class PGLOKApp:
         )
         self.alpha_button.pack(side="right")
 
-        self.page_container = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
+        # Content area
+        self.page_container = ttk.Frame(self.top_section, style="App.Panel.TFrame")
         self.page_container.pack(fill="both", expand=True)
 
         self.home_page = ttk.Frame(self.page_container, style="App.Panel.TFrame")
-
         self._build_home_page()
 
-        status_card = ttk.Frame(self.app_frame, padding=6, style="App.Card.TFrame")
-        status_card.pack(fill="x", pady=(4, 0))
-        status_row = ttk.Frame(status_card, style="App.Panel.TFrame")
+        # Status bar section (always visible, not resizable)
+        self.status_section = ttk.Frame(self.main_paned, style="App.Panel.TFrame")
+        self.main_paned.add(self.status_section, weight=0)  # Weight 0 means it won't resize
+        
+        # Create persistent status bar
+        self._create_status_bar()
+        
+        # Configure paned window - let it handle sizing naturally
+        # The weight=0 on status section should keep it small
+
+    def _create_status_bar(self):
+        """Create the persistent status bar."""
+        # Main status bar frame with minimal padding
+        status_frame = ttk.Frame(self.status_section, style="App.Card.TFrame", padding=2)
+        status_frame.pack(fill="x", expand=True)
+        
+        # Single status row
+        status_row = ttk.Frame(status_frame, style="App.Panel.TFrame")
         status_row.pack(fill="x")
-        status_row.columnconfigure(0, weight=1)
+        status_row.columnconfigure(1, weight=1)  # Center section expands
+        
+        # Left status - icon and status text
         left_status = ttk.Frame(status_row, style="App.Panel.TFrame")
         left_status.grid(row=0, column=0, sticky="w")
-        ttk.Label(left_status, text="Status:", style="App.Status.TLabel").pack(side="left")
-        ttk.Label(left_status, textvariable=self.status_var, style="App.Status.TLabel").pack(side="left", padx=(4, 0))
-        ttk.Label(status_row, textvariable=self.character_count_var, style="App.Status.TLabel").grid(row=0, column=1, sticky="e")
+        
+        self.status_icon = ttk.Label(left_status, text="●", style="App.Status.TLabel", foreground="#8d321e")
+        self.status_icon.pack(side="left")
+        ttk.Label(left_status, textvariable=self.status_var, style="App.Status.TLabel").pack(side="left", padx=(4, 8))
+        
+        # Center status - additional info (expands)
+        self.center_status = ttk.Frame(status_row, style="App.Panel.TFrame")
+        self.center_status.grid(row=0, column=1, sticky="we")
+        self.center_info_var = tk.StringVar(value="")
+        ttk.Label(self.center_status, textvariable=self.center_info_var, style="App.Muted.TLabel").pack(side="left")
+        
+        # Right status - character count
+        right_status = ttk.Frame(status_row, style="App.Panel.TFrame")
+        right_status.grid(row=0, column=2, sticky="e")
+        ttk.Label(right_status, textvariable=self.character_count_var, style="App.Status.TLabel").pack(side="left")
+        
+        # Progress bar (hidden by default, shown below status when needed)
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
+            status_frame, 
+            variable=self.progress_var, 
+            mode="determinate", 
+            style="App.Horizontal.TProgressbar",
+            length=200
+        )
+        # Progress bar will be shown/hidden as needed
+        
+        # Store reduced status height
+        self.status_height = 35  # Reduced height for cleaner status bar
+        
+    def show_progress(self, message, value=0):
+        """Show progress in status bar."""
+        self.status_var.set(message)
+        self.progress_var.set(value)
+        
+        # Show progress bar if value > 0
+        if value > 0:
+            self.progress_bar.pack(side="right", padx=(10, 0))
+        else:
+            # Hide progress bar after a delay
+            self.root.after(2000, lambda: self.progress_bar.pack_forget())
+    
+    def set_center_status(self, message):
+        """Set center status information."""
+        self.center_info_var.set(message)
+        
+    def set_status_color(self, color):
+        """Set status icon color."""
+        try:
+            self.status_icon.configure(foreground=color)
+        except:
+            pass
+    
+    def _select_all_text(self, entry_widget):
+        """Select all text in an entry widget when clicked."""
+        # Schedule selection to ensure it happens after the default click behavior
+        entry_widget.after(10, lambda: entry_widget.select_range(0, 'end'))
+        # Ensure focus is on the entry
+        entry_widget.focus_set()
 
     def _build_menu_bar(self):
         menu_bar = tk.Menu(self.root)
@@ -211,24 +310,27 @@ class PGLOKApp:
         view_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(view_menu)
         view_menu.add_command(label="Home", command=lambda: self.show_page("home"))
-        view_menu.add_command(label="Data Browser", command=self.open_data_browser_window)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
         document_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(document_menu)
+        document_menu.add_command(label="📁 Config Folder", command=self._open_config_folder)
+        document_menu.add_command(label="📁 Data Folder", command=self._open_data_folder)
+        document_menu.add_command(label="📁 Maps Folder", command=self._open_maps_folder)
+        document_menu.add_command(label="📁 Chat Logs Folder", command=self._open_chat_logs_folder)
+        document_menu.add_command(label="📁 Reports Folder", command=self._open_reports_folder)
+        document_menu.add_separator()
         document_menu.add_command(label="Open Config Folder", command=self._menu_not_implemented)
         menu_bar.add_cascade(label="Document", menu=document_menu)
-
-        maps_menu = tk.Menu(menu_bar, tearoff=0)
-        configure_menu_theme(maps_menu)
-        maps_menu.add_command(label="Open Map Tools", command=self.open_map_tools_window)
-        menu_bar.add_cascade(label="Maps", menu=maps_menu)
 
         tools_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(tools_menu)
         tools_menu.add_command(label="Locate Project Gorgon", command=self.locate_pg)
         tools_menu.add_command(label="Download Newer Files", command=self.download_newer_files)
         tools_menu.add_command(label="Character Browser", command=self.open_character_browser_window)
+        tools_menu.add_command(label="Data Browser", command=self.open_data_browser_window)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Map Tools", command=self.open_map_tools_window)
         tools_menu.add_separator()
         tools_menu.add_command(label="Fletcher", command=self._open_fletcher)
         tools_menu.add_command(label="Itemizer", command=self._open_itemizer)
@@ -236,6 +338,32 @@ class PGLOKApp:
         tools_menu.add_command(label="Timer", command=self._open_timer)
         tools_menu.add_command(label="Chat", command=self._open_chat)
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
+
+        # Addons menu
+        try:
+            # Check if addons should be enabled (can be disabled if causing issues)
+            enable_addons = True  # Set to False to disable addon system
+            
+            if enable_addons:
+                addons_menu = tk.Menu(menu_bar, tearoff=0)
+                configure_menu_theme(addons_menu)
+                self.addons_menu = addons_menu
+                self._create_addons_menu()
+                menu_bar.add_cascade(label="Addons", menu=addons_menu)
+            else:
+                # Addons disabled
+                addons_menu = tk.Menu(menu_bar, tearoff=0)
+                configure_menu_theme(addons_menu)
+                addons_menu.add_command(label="Addons Disabled", state="disabled")
+                menu_bar.add_cascade(label="Addons", menu=addons_menu)
+                
+        except Exception as e:
+            print(f"Warning: Failed to create addons menu: {e}")
+            # Create a disabled addons menu as fallback
+            addons_menu = tk.Menu(menu_bar, tearoff=0)
+            configure_menu_theme(addons_menu)
+            addons_menu.add_command(label="Addons Unavailable", state="disabled")
+            menu_bar.add_cascade(label="Addons", menu=addons_menu)
 
         help_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(help_menu)
@@ -407,6 +535,25 @@ class PGLOKApp:
         import datetime
         return datetime.datetime.now().strftime("%H:%M:%S")
 
+    def _create_addons_menu(self):
+        """Create the Addons menu with discovered addons."""
+        try:
+            # Initialize addon manager if needed
+            if self.addon_manager is None:
+                from src.addons import AddonManager
+                self.addon_manager = AddonManager(self)
+            
+            if self.addon_manager and hasattr(self.addon_manager, 'create_addons_menu'):
+                self.addon_manager.create_addons_menu(self.addons_menu)
+            else:
+                if self.addons_menu:
+                    self.addons_menu.add_command(label="No Addon Manager", state="disabled")
+                    
+        except Exception as e:
+            print(f"Warning: Failed to create addons menu: {e}")
+            if self.addons_menu:
+                self.addons_menu.add_command(label="Addons Error", state="disabled")
+
     def _check_for_upgrade_async(self):
         """Check for updates and automatically install if available."""
         def worker():
@@ -477,6 +624,121 @@ class PGLOKApp:
     def _menu_not_implemented(self):
         self.status_var.set("Menu action not implemented yet.")
 
+    def _open_config_folder(self):
+        """Open the PGLOK config folder."""
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            folder_path = str(config.CONFIG_DIR)
+            
+            if system == "Windows":
+                subprocess.run(["explorer", folder_path])
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path])
+            
+            self.status_var.set(f"Opened config folder: {folder_path}")
+        except Exception as e:
+            self.status_var.set(f"Error opening config folder: {e}")
+
+    def _open_data_folder(self):
+        """Open the PGLOK data folder."""
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            folder_path = str(config.DATA_DIR)
+            
+            if system == "Windows":
+                subprocess.run(["explorer", folder_path])
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path])
+            
+            self.status_var.set(f"Opened data folder: {folder_path}")
+        except Exception as e:
+            self.status_var.set(f"Error opening data folder: {e}")
+
+    def _open_maps_folder(self):
+        """Open the PGLOK maps folder."""
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            folder_path = config.DATA_DIR / "maps"  # Keep as Path object
+            
+            # Create maps folder if it doesn't exist
+            if not folder_path.exists():
+                folder_path.mkdir(parents=True, exist_ok=True)
+            
+            folder_path_str = str(folder_path)  # Convert to string only for subprocess
+            
+            if system == "Windows":
+                subprocess.run(["explorer", folder_path_str])
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path_str])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path_str])
+            
+            self.status_var.set(f"Opened maps folder: {folder_path_str}")
+        except Exception as e:
+            self.status_var.set(f"Error opening maps folder: {e}")
+
+    def _open_chat_logs_folder(self):
+        """Open the PGLOK chat logs folder."""
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            
+            if config.PG_BASE is None:
+                initialize_pg_base(force=True)
+            
+            if config.PG_BASE is None:
+                self.status_var.set("Project Gorgon not located - cannot open chat logs")
+                return
+            
+            folder_path = str(config.CHAT_DIR)
+            
+            if system == "Windows":
+                subprocess.run(["explorer", folder_path])
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path])
+            
+            self.status_var.set(f"Opened chat logs folder: {folder_path}")
+        except Exception as e:
+            self.status_var.set(f"Error opening chat logs folder: {e}")
+
+    def _open_reports_folder(self):
+        """Open the PGLOK reports folder."""
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            
+            reports_dir = self._get_reports_dir()
+            if reports_dir is None:
+                self.status_var.set("Project Gorgon not located - cannot open reports")
+                return
+            
+            folder_path = str(reports_dir)
+            
+            if system == "Windows":
+                subprocess.run(["explorer", folder_path])
+            elif system == "Darwin":  # macOS
+                subprocess.run(["open", folder_path])
+            else:  # Linux
+                subprocess.run(["xdg-open", folder_path])
+            
+            self.status_var.set(f"Opened reports folder: {folder_path}")
+        except Exception as e:
+            self.status_var.set(f"Error opening reports folder: {e}")
+
     def _open_fletcher(self):
         self.status_var.set("Fletcher is not implemented yet.")
 
@@ -491,6 +753,70 @@ class PGLOKApp:
 
     def _open_chat(self):
         self.open_chat_window()
+    
+    def apply_theme_to_window(self, window):
+        """Apply PGLOK theme to a window."""
+        try:
+            import src.config.ui_theme as ui_theme
+            
+            # Apply base theme like PGLOK does
+            window.configure(bg=ui_theme.UI_COLORS["bg"])
+            window.option_add("*Font", (ui_theme.UI_ATTRS["font_family"], ui_theme.UI_ATTRS["font_size"]))
+            
+            # Apply ttk styling like PGLOK
+            style = ttk.Style(window)
+            style.theme_use("clam")
+            
+            # Configure PGLOK frame style
+            style.configure(
+                "App.TFrame",
+                background=ui_theme.UI_COLORS["bg"],
+                relief="flat",
+            )
+            
+            return ui_theme.UI_COLORS, ui_theme.UI_ATTRS
+        except ImportError:
+            # Fallback theme application
+            from src.config.ui_theme import UI_COLORS, UI_ATTRS
+            window.configure(bg=UI_COLORS["bg"])
+            window.option_add("*Font", (UI_ATTRS["font_family"], UI_ATTRS["font_size"]))
+            return UI_COLORS, UI_ATTRS
+    
+    def save_window_state(self, name, window):
+        """Save window state."""
+        try:
+            geometry = window.geometry()
+            state_file = WINDOW_STATE_FILE
+            
+            if state_file.exists():
+                with open(state_file, 'r') as f:
+                    states = json.load(f)
+            else:
+                states = {}
+            
+            states[name] = {
+                'geometry': geometry,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(state_file, 'w') as f:
+                json.dump(states, f, indent=2)
+        except Exception as e:
+            print(f"Error saving window state: {e}")
+    
+    def restore_window_state(self, name, window):
+        """Restore window state."""
+        try:
+            state_file = WINDOW_STATE_FILE
+            
+            if state_file.exists():
+                with open(state_file, 'r') as f:
+                    states = json.load(f)
+                
+                if name in states:
+                    window.geometry(states[name]['geometry'])
+        except Exception as e:
+            print(f"Error restoring window state: {e}")
 
     def open_map_tools_window(self):
         if self.map_tools_window is not None and self.map_tools_window.winfo_exists():
@@ -748,6 +1074,7 @@ class PGLOKApp:
         search_entry.pack(side="left", fill="x", expand=True)
         self.entry_spellcheck.register(search_entry)
         search_entry.bind("<Return>", lambda _e: self._start_global_search())
+        search_entry.bind("<Button-1>", lambda _e: self._select_all_text(search_entry))
         ttk.Button(
             search_row,
             text="Search",
@@ -924,11 +1251,14 @@ class PGLOKApp:
         if self.global_search_results_tree is not None:
             self.global_search_results_tree.delete(*self.global_search_results_tree.get_children())
             for idx, item in enumerate(self.global_search_results):
+                # Add category to the display if available
+                category_prefix = f"[{item.get('category', 'General')}] " if item.get('category') else ""
+                display_title = f"{category_prefix}{item['title']}"
                 self.global_search_results_tree.insert(
                     "",
                     tk.END,
                     iid=str(idx),
-                    values=(item["source"], item["title"], item["location"]),
+                    values=(item["source"], display_title, item["location"]),
                 )
             if self.global_search_results:
                 self.global_search_results_tree.selection_set("0")
@@ -948,12 +1278,54 @@ class PGLOKApp:
             return
         self._set_ui_pref("global_search_selected_index", idx)
         item = self.global_search_results[idx]
-        self._set_global_search_detail(
-            f"Source: {item['source']}\n"
-            f"Found: {item['title']}\n"
-            f"Where: {item['location']}\n\n"
-            f"Snippet:\n{item['snippet']}"
-        )
+        
+        # Build a cleaner, more organized detail view
+        detail_lines = []
+        
+        # Header section with category and source
+        if item.get('category'):
+            detail_lines.append(f"📁 {item['category']}")
+        
+        source_icons = {
+            "Database": "🗄️",
+            "Items": "🎒", 
+            "File": "📄"
+        }
+        icon = source_icons.get(item['source'], "📋")
+        detail_lines.append(f"{icon} {item['source']}")
+        detail_lines.append("")  # Spacer
+        
+        # Main content section
+        detail_lines.append(f"🔍 {item['title']}")
+        detail_lines.append("")
+        
+        # Location with better formatting
+        detail_lines.append(f"📍 {item['location']}")
+        detail_lines.append("")
+        
+        # Preview section with cleaner formatting
+        detail_lines.append("📄 Content Preview")
+        detail_lines.append("─" * 30)
+        
+        # Clean up the snippet for better display
+        snippet = item['snippet'].strip()
+        if snippet:
+            # If snippet contains bullet points, it's already well-formatted
+            if snippet.startswith('•'):
+                detail_lines.append(snippet)
+            # If snippet contains highlighting markers, preserve them
+            elif '🔸' in snippet:
+                detail_lines.append(snippet)
+            else:
+                # For plain text, add some structure
+                lines = snippet.split('\n')
+                for line in lines:
+                    if line.strip():
+                        detail_lines.append(f"  {line.strip()}")
+        else:
+            detail_lines.append("  No preview available")
+        
+        self._set_global_search_detail("\n".join(detail_lines))
 
     def _reset_global_search(self):
         self.global_search_var.set("")
@@ -1011,6 +1383,7 @@ class PGLOKApp:
                     "title": str(item.get("title", "")),
                     "location": str(item.get("location", "")),
                     "snippet": str(item.get("snippet", "")),
+                    "category": str(item.get("category", "General")),
                 }
             )
 
@@ -1029,21 +1402,153 @@ class PGLOKApp:
         results = []
         max_results = 200
 
-        def add_result(source, title, location, snippet):
+        def add_result(source, title, location, snippet, category="General"):
             if len(results) >= max_results:
                 return
-            clean = " ".join(str(snippet).split())
-            if len(clean) > 260:
-                clean = clean[:257] + "..."
+            
+            # Clean up snippet based on its type
+            if isinstance(snippet, str):
+                # Remove excessive whitespace while preserving structure
+                clean_lines = []
+                for line in snippet.split('\n'):
+                    line = line.strip()
+                    if line:
+                        clean_lines.append(line)
+                
+                if clean_lines:
+                    # Join lines with appropriate spacing
+                    if len(clean_lines) == 1:
+                        clean = clean_lines[0]
+                    else:
+                        # For multi-line content, preserve the structure
+                        clean = '\n'.join(clean_lines)
+                else:
+                    clean = ""
+            else:
+                # Convert non-string to string and clean
+                clean = " ".join(str(snippet).split())
+            
+            # Apply length limit more intelligently
+            if len(clean) > 300:
+                if '\n' in clean:
+                    # For structured content, try to preserve complete lines
+                    lines = clean.split('\n')
+                    truncated = []
+                    current_length = 0
+                    for line in lines:
+                        if current_length + len(line) + 1 <= 297:  # Leave room for "..."
+                            truncated.append(line)
+                            current_length += len(line) + 1
+                        else:
+                            break
+                    clean = '\n'.join(truncated) + "..."
+                else:
+                    # For single line, simple truncation
+                    clean = clean[:297] + "..."
+            
             results.append(
                 {
                     "source": source,
                     "title": title,
                     "location": location,
                     "snippet": clean,
+                    "category": category,
                 }
             )
 
+        def format_json_snippet(json_str, query):
+            """Format JSON snippet to be more readable and highlight context"""
+            try:
+                import json
+                data = json.loads(json_str)
+                
+                def format_value(value):
+                    """Format individual values for display"""
+                    if isinstance(value, str):
+                        # Clean up strings, remove extra whitespace
+                        value = " ".join(value.split())
+                        if len(value) > 60:
+                            value = value[:57] + "..."
+                        return f'"{value}"'
+                    elif isinstance(value, (int, float)):
+                        return str(value)
+                    elif isinstance(value, bool):
+                        return str(value)
+                    elif isinstance(value, list):
+                        return f"[{len(value)} items]"
+                    elif isinstance(value, dict):
+                        return f"{{{len(value)} keys}}"
+                    else:
+                        return str(value)[:30]
+                
+                # Extract meaningful fields based on data type
+                if isinstance(data, dict):
+                    # Look for the query in values and provide context
+                    matching_fields = []
+                    important_fields = []
+                    
+                    # Priority order for important keys
+                    priority_keys = ['name', 'title', 'type', 'description', 'id', 'skill', 'level', 'damage', 'armor']
+                    
+                    for key in priority_keys:
+                        if key in data:
+                            value = data[key]
+                            formatted_value = format_value(value)
+                            
+                            # Check if this field matches the query
+                            if isinstance(value, str) and needle in value.lower():
+                                matching_fields.append(f"• {key.title()}: {formatted_value}")
+                            elif str(value) in query:
+                                matching_fields.append(f"• {key.title()}: {formatted_value}")
+                            else:
+                                important_fields.append(f"• {key.title()}: {formatted_value}")
+                    
+                    # Look for other matching fields
+                    for key, value in data.items():
+                        if key in priority_keys:
+                            continue  # Already processed
+                        
+                        if isinstance(value, str) and needle in value.lower():
+                            formatted_value = format_value(value)
+                            matching_fields.append(f"• {key.title()}: {formatted_value}")
+                        elif isinstance(value, (int, float)) and str(value) in query:
+                            formatted_value = format_value(value)
+                            matching_fields.append(f"• {key.title()}: {formatted_value}")
+                    
+                    # Combine matching fields first, then important fields
+                    all_fields = matching_fields[:3]  # Limit to 3 matching fields
+                    if not all_fields and important_fields:
+                        all_fields = important_fields[:2]  # Show 2 important fields if no matches
+                    
+                    if all_fields:
+                        return "\n".join(all_fields)
+                    else:
+                        # Fallback: show first few fields
+                        fallback_fields = []
+                        for key, value in list(data.items())[:3]:
+                            formatted_value = format_value(value)
+                            fallback_fields.append(f"• {key.title()}: {formatted_value}")
+                        return "\n".join(fallback_fields)
+                
+                # Handle arrays
+                elif isinstance(data, list) and data:
+                    if len(data) <= 3:
+                        return f"Array: [{', '.join(format_value(item) for item in data)}]"
+                    else:
+                        return f"Array: [{format_value(data[0])}, {format_value(data[1])}, ... ({len(data)} items)]"
+                
+                # Handle other types
+                else:
+                    return format_value(data)
+                    
+            except:
+                # Fallback for invalid JSON - clean up the text
+                clean_text = " ".join(str(json_str).split())
+                if len(clean_text) > 100:
+                    clean_text = clean_text[:97] + "..."
+                return clean_text
+
+        # Search Data DB with better formatting
         data_db = get_db_path(config.DATA_DIR)
         if data_db.exists():
             with sqlite3.connect(data_db) as conn:
@@ -1057,15 +1562,32 @@ class PGLOKApp:
                     (like,),
                 ).fetchall()
             for row in rows:
+                filename = row[0]
+                row_key = row[2] or '(no key)'
+                
+                # Create more descriptive title
+                if filename.endswith('.json'):
+                    title = f"📄 {filename.replace('.json', '')} - {row_key}"
+                else:
+                    title = f"📄 {filename} - {row_key}"
+                
+                # Format location more clearly
+                location = f"Data: {filename} (Row {row[1]})"
+                
+                # Better snippet formatting
+                snippet = format_json_snippet(row[3], query)
+                
                 add_result(
-                    "Data DB",
-                    f"{row[0]} / row {row[1]}",
-                    f"key={row[2] or '(none)'}",
-                    row[3],
+                    "Database",
+                    title,
+                    location,
+                    snippet,
+                    "Game Data"
                 )
                 if len(results) >= max_results:
                     return results
 
+        # Search Itemizer DB with better formatting
         item_db = config.DATA_DIR / "itemizer.db"
         if item_db.exists():
             with sqlite3.connect(item_db) as conn:
@@ -1080,15 +1602,64 @@ class PGLOKApp:
                     (like, like),
                 ).fetchall()
             for row in rows:
+                item_name = row[3] or 'Unknown Item'
+                character = row[2] or 'Unknown Character'
+                server = row[1] or 'Unknown Server'
+                
+                # More descriptive title
+                title = f"🎒 {item_name}"
+                
+                # Better location format
+                location = f"Inventory: {character} @ {server}"
+                
+                # Format snippet from item JSON
+                snippet = format_json_snippet(row[4], query)
+                
                 add_result(
-                    "Itemizer DB",
-                    f"{row[3] or '(item)'}",
-                    f"{row[0]} ({row[1]}/{row[2]})",
-                    row[4],
+                    "Items",
+                    title,
+                    location,
+                    snippet,
+                    "Inventory"
                 )
                 if len(results) >= max_results:
                     return results
 
+        def format_text_snippet(text, query, idx):
+                """Format text snippet with better structure and highlighting"""
+                # Extract context around the match
+                context_size = 60
+                start = max(0, idx - context_size)
+                end = min(len(text), idx + max(context_size, len(query) + context_size))
+                
+                # Get the snippet
+                snippet = text[start:end]
+                
+                # Clean up whitespace
+                snippet = " ".join(snippet.split())
+                
+                # Find the actual match position in the cleaned snippet
+                cleaned_idx = snippet.lower().find(needle)
+                if cleaned_idx >= 0:
+                    # Add highlighting markers around the match
+                    match_start = cleaned_idx
+                    match_end = cleaned_idx + len(query)
+                    highlighted = (
+                        snippet[:match_start] + 
+                        "🔸" + snippet[match_start:match_end] + "🔸" + 
+                        snippet[match_end:]
+                    )
+                    snippet = highlighted
+                
+                # Add ellipsis to show truncation
+                if start > 0:
+                    snippet = "..." + snippet
+                if end < len(text):
+                    snippet = snippet + "..."
+                
+                return snippet
+
+        # Search files with better categorization
         search_roots = [config.DATA_DIR]
         reports_dir = self._get_reports_dir()
         if reports_dir is not None and reports_dir.exists():
@@ -1106,14 +1677,42 @@ class PGLOKApp:
                 idx = text.lower().find(needle)
                 if idx < 0:
                     continue
-                start = max(0, idx - 80)
-                end = min(len(text), idx + max(80, len(query) + 80))
-                snippet = text[start:end].replace("\n", " ").replace("\r", " ")
+                
+                # Use the new formatting function
+                snippet = format_text_snippet(text, query, idx)
+                
+                # Determine file category and create appropriate title
+                suffix = path.suffix.lower()
+                if suffix == ".json":
+                    if "character" in path.name.lower():
+                        category = "Character"
+                        title = f"👤 {path.name}"
+                    elif "item" in path.name.lower():
+                        category = "Items"
+                        title = f"🎒 {path.name}"
+                    else:
+                        category = "Data"
+                        title = f"📄 {path.name}"
+                elif suffix == ".log":
+                    category = "Logs"
+                    title = f"📋 {path.name}"
+                elif suffix == ".txt":
+                    category = "Text"
+                    title = f"📝 {path.name}"
+                else:
+                    category = "Config"
+                    title = f"⚙️ {path.name}"
+                
+                # Better location format
+                relative_path = path.relative_to(root.parent) if root.parent else path
+                location = f"File: {relative_path}"
+                
                 add_result(
                     "File",
-                    path.name,
-                    str(path),
+                    title,
+                    location,
                     snippet,
+                    category
                 )
                 if len(results) >= max_results:
                     return results
@@ -1162,7 +1761,15 @@ class PGLOKApp:
             command=self.reset_paths,
             style="App.Secondary.TButton",
         )
-        self.reset_button.pack(side="left")
+        self.reset_button.pack(side="left", padx=(0, 8))
+
+        self.dependencies_button = ttk.Button(
+            button_row,
+            text="Check Dependencies",
+            command=self._check_dependencies,
+            style="App.Secondary.TButton",
+        )
+        self.dependencies_button.pack(side="left")
 
         ttk.Label(shell, textvariable=self.status_var, style="App.Status.TLabel").pack(anchor="w")
 
@@ -1199,9 +1806,24 @@ class PGLOKApp:
             self.settings_window.destroy()
         self._set_window_open_state("settings", False)
         self.settings_window = None
-        self.locate_button = None
-        self.download_button = None
-        self.reset_button = None
+
+    def _check_dependencies(self):
+        """Check and manage PGLOK dependencies."""
+        try:
+            # Use simple dependency checker to prevent crashes
+            from simple_dependency_checker import safe_show_dependency_checker
+            success = safe_show_dependency_checker(self)
+            
+            if not success:
+                print("Warning: Dependency checker failed to open")
+                
+        except Exception as e:
+            print(f"Error in dependency checker: {e}")
+            # Show user-friendly error message
+            try:
+                messagebox.showerror("Error", f"Failed to open dependency checker: {e}")
+            except:
+                print("Could not show error message")
 
     def open_data_browser_window(self):
         if self.data_browser_window is not None and self.data_browser_window.winfo_exists():
@@ -1262,6 +1884,7 @@ class PGLOKApp:
         search_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
         self.entry_spellcheck.register(search_entry)
         search_entry.bind("<Return>", lambda _event: self._load_data_rows(reset_offset=True))
+        search_entry.bind("<Button-1>", lambda _e: self._select_all_text(search_entry))
         ttk.Button(
             control_row,
             text="Apply",
@@ -1499,6 +2122,7 @@ class PGLOKApp:
         search_entry.pack(side="left", fill="x", expand=True, padx=(6, 6))
         self.entry_spellcheck.register(search_entry)
         search_entry.bind("<Return>", lambda _e: self._load_itemizer_rows(reset_offset=True))
+        search_entry.bind("<Button-1>", lambda _e: self._select_all_text(search_entry))
         ttk.Button(
             filters,
             text="Apply",
