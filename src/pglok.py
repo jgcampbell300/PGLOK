@@ -180,7 +180,7 @@ class PGLOKApp:
             command=self.open_character_browser_window,
             style="App.Secondary.TButton",
         ).pack(side="left", padx=(3, 0))
-        ttk.Button(toolbar, text="Data", command=self.open_data_browser_window, style="App.Secondary.TButton").pack(
+        ttk.Button(toolbar, text="Timers", command=self._open_timer, style="App.Secondary.TButton").pack(
             side="left", padx=(3, 0)
         )
         ttk.Button(toolbar, text="Itemizer", command=self.open_itemizer_window, style="App.Secondary.TButton").pack(
@@ -821,7 +821,7 @@ class PGLOKApp:
             return UI_COLORS, UI_ATTRS
 
     def create_themed_toplevel(self, name, title_suffix, on_close=None):
-        """Create a Toplevel with the PGLOK theme and standard title.
+        """Create a Toplevel with the PGLOK theme, standard title and persistent geometry.
 
         name: identifier used by caller for saved geometry keys (for callers' use).
         title_suffix: displayed after the app title.
@@ -829,14 +829,22 @@ class PGLOKApp:
         """
         win = tk.Toplevel(self.root)
         win.title(f"{UI_ATTRS['window_title']} - {title_suffix}")
-        # Apply central theme (sets icon and styles)
-        apply_theme(win)
-        if on_close:
+        # Use centralized setup to apply theme and attach geometry persistence
+        try:
+            from src.config.window_state import setup_window
+            # Provide reasonable minimums — callers may override
+            setup_window(win, name, min_w=760, min_h=480, on_close=on_close)
+        except Exception:
+            # Fallback: apply theme directly and set protocol
             try:
-                win.protocol("WM_DELETE_WINDOW", on_close)
+                apply_theme(win)
             except Exception:
-                # Fall back to a simple destroy
-                win.protocol("WM_DELETE_WINDOW", lambda: win.destroy())
+                pass
+            if on_close:
+                try:
+                    win.protocol("WM_DELETE_WINDOW", on_close)
+                except Exception:
+                    win.protocol("WM_DELETE_WINDOW", lambda: win.destroy())
         return win
     
     def save_window_state(self, name, window):
