@@ -128,6 +128,11 @@ class PGLOKApp:
         self.alpha_button = None
         self.entry_spellcheck = EntrySpellcheckBinder()
         
+        # Timer configuration variables
+        self.timer_auto_start_var = tk.BooleanVar(value=self._get_ui_pref("timer_auto_start", True))
+        self.timer_scan_interval_var = tk.IntVar(value=self._get_ui_pref("timer_scan_interval", 5))
+        self.timer_notification_var = tk.BooleanVar(value=self._get_ui_pref("timer_notifications", True))
+        
         # Addon manager will be initialized lazily
         self.addon_manager = None
         self.addons_menu = None
@@ -749,10 +754,43 @@ class PGLOKApp:
         self.status_var.set("Planner is not implemented yet.")
 
     def _open_timer(self):
-        self.status_var.set("Timer is not implemented yet.")
+        """Open the timer window."""
+        try:
+            from src.timer_window import TimerWindow
+            from pathlib import Path
+            
+            # Get chat directory if available
+            chat_dir = None
+            if config.PG_BASE is not None:
+                chat_dir = Path(config.PG_BASE) / "ChatLogs"
+                if chat_dir.exists():
+                    chat_dir = chat_dir
+            
+            # Create and show timer window
+            timer_window = TimerWindow(self, config.DATA_DIR, chat_dir)
+            self.status_var.set("Timer window opened")
+            
+        except Exception as e:
+            self.status_var.set(f"Error opening timer: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _open_chat(self):
         self.open_chat_window()
+    
+    def _open_duration_manager(self):
+        """Open the duration manager window."""
+        self.status_var.set("Duration manager not implemented yet.")
+    
+    def _save_timer_settings(self):
+        """Save timer settings to preferences."""
+        try:
+            self._set_ui_pref("timer_auto_start", self.timer_auto_start_var.get())
+            self._set_ui_pref("timer_scan_interval", self.timer_scan_interval_var.get())
+            self._set_ui_pref("timer_notifications", self.timer_notification_var.get())
+            self.status_var.set("Timer settings saved")
+        except Exception as e:
+            self.status_var.set(f"Error saving timer settings: {e}")
     
     def apply_theme_to_window(self, window):
         """Apply PGLOK theme to a window."""
@@ -781,6 +819,25 @@ class PGLOKApp:
             window.configure(bg=UI_COLORS["bg"])
             window.option_add("*Font", (UI_ATTRS["font_family"], UI_ATTRS["font_size"]))
             return UI_COLORS, UI_ATTRS
+
+    def create_themed_toplevel(self, name, title_suffix, on_close=None):
+        """Create a Toplevel with the PGLOK theme and standard title.
+
+        name: identifier used by caller for saved geometry keys (for callers' use).
+        title_suffix: displayed after the app title.
+        on_close: optional callable to set as WM_DELETE_WINDOW handler.
+        """
+        win = tk.Toplevel(self.root)
+        win.title(f"{UI_ATTRS['window_title']} - {title_suffix}")
+        # Apply central theme (sets icon and styles)
+        apply_theme(win)
+        if on_close:
+            try:
+                win.protocol("WM_DELETE_WINDOW", on_close)
+            except Exception:
+                # Fall back to a simple destroy
+                win.protocol("WM_DELETE_WINDOW", lambda: win.destroy())
+        return win
     
     def save_window_state(self, name, window):
         """Save window state."""
@@ -825,10 +882,7 @@ class PGLOKApp:
             self.map_tools_window.focus_force()
             return
 
-        self.map_tools_window = tk.Toplevel(self.root)
-        self.map_tools_window.title(f"{UI_ATTRS['window_title']} - Map Tools")
-        self.map_tools_window.configure(bg=self.root.cget("bg"))
-        self.map_tools_window.protocol("WM_DELETE_WINDOW", self._on_close_map_tools_window)
+        self.map_tools_window = self.create_themed_toplevel("map_tools", "Map Tools", on_close=self._on_close_map_tools_window)
 
         shell = ttk.Frame(self.map_tools_window, padding=12, style="App.Panel.TFrame")
         shell.pack(fill="both", expand=True)
@@ -867,10 +921,7 @@ class PGLOKApp:
             self.chat_window.focus_force()
             return
 
-        self.chat_window = tk.Toplevel(self.root)
-        self.chat_window.title(f"{UI_ATTRS['window_title']} - Chat Monitor")
-        self.chat_window.configure(bg=self.root.cget("bg"))
-        self.chat_window.protocol("WM_DELETE_WINDOW", self._on_close_chat_window)
+        self.chat_window = self.create_themed_toplevel("chat_monitor", "Chat Monitor", on_close=self._on_close_chat_window)
 
         shell = ttk.Frame(self.chat_window, padding=12, style="App.Panel.TFrame")
         shell.pack(fill="both", expand=True)
@@ -1727,16 +1778,51 @@ class PGLOKApp:
 
         paths_frame = ttk.Frame(shell, style="App.Card.TFrame")
         paths_frame.pack(fill="x")
-
-        for label, value_var in self.path_vars.items():
-            row = ttk.Frame(paths_frame, style="App.Panel.TFrame")
-            row.pack(fill="x", pady=3)
-            ttk.Label(row, text=f"{label}:", width=UI_ATTRS["label_width"], style="App.TLabel").pack(side="left")
-            path_entry = ttk.Entry(row, textvariable=value_var, style="App.TEntry")
-            path_entry.pack(side="left", fill="x", expand=True)
-            self.entry_spellcheck.register(path_entry)
-
-        button_row = ttk.Frame(shell, style="App.Card.TFrame")
+        
+        # Timer configuration frame
+        timer_frame = ttk.LabelFrame(shell, text="⏱️ Timer Settings", 
+                                     style="App.Card.TFrame", padding=10)
+        timer_frame.pack(fill="x", pady=(10, 0))
+        
+        # Auto-start settings
+        auto_frame = ttk.Frame(timer_frame, style="App.Panel.TFrame")
+        auto_frame.pack(fill="x", pady=(0, 10))
+        
+        ttk.Checkbutton(auto_frame, text="Auto-start timers from chat events", 
+                       variable=self.timer_auto_start_var, style="App.TCheckbutton",
+                       command=self._save_timer_settings).pack(anchor="w")
+        
+        # Scan interval
+        interval_frame = ttk.Frame(timer_frame, style="App.Panel.TFrame")
+        interval_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Label(interval_frame, text="Chat Scan Interval (seconds):", 
+                 style="App.TLabel").pack(side="left", padx=5)
+        
+        interval_spinbox = ttk.Spinbox(interval_frame, from_=1, to=30, 
+                                      textvariable=self.timer_scan_interval_var, 
+                                      style="App.TSpinbox", width=10)
+        interval_spinbox.pack(side="left", padx=5)
+        
+        # Notifications
+        notification_frame = ttk.Frame(timer_frame, style="App.Panel.TFrame")
+        notification_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Checkbutton(notification_frame, text="Enable timer notifications", 
+                           variable=self.timer_notification_var, style="App.TCheckbutton",
+                           command=self._save_timer_settings).pack(anchor="w")
+        
+        # Timer durations management
+        durations_frame = ttk.LabelFrame(timer_frame, text="⏱️ Default Durations", 
+                                        style="App.Card.TFrame", padding=10)
+        durations_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Label(durations_frame, text="Manage default timer durations for activities:", 
+                 style="App.TLabel").pack(anchor="w", pady=(0, 5))
+        
+        ttk.Button(durations_frame, text="Open Duration Manager", 
+                 command=self._open_duration_manager, style="App.Secondary.TButton").pack(pady=10)
+        
         button_row.pack(fill="x", pady=14)
 
         self.locate_button = ttk.Button(
@@ -1832,10 +1918,7 @@ class PGLOKApp:
             self.data_browser_window.focus_force()
             return
 
-        self.data_browser_window = tk.Toplevel(self.root)
-        self.data_browser_window.title(f"{UI_ATTRS['window_title']} - Data Browser")
-        self.data_browser_window.configure(bg=self.root.cget("bg"))
-        self.data_browser_window.protocol("WM_DELETE_WINDOW", self._on_close_data_browser_window)
+        self.data_browser_window = self.create_themed_toplevel("data_browser", "Data Browser", on_close=self._on_close_data_browser_window)
         self.data_browser_window.bind("<Configure>", self._on_data_browser_window_configure)
 
         shell = ttk.Frame(self.data_browser_window, padding=12, style="App.Panel.TFrame")
@@ -2074,10 +2157,7 @@ class PGLOKApp:
             self.itemizer_window.focus_force()
             return
 
-        self.itemizer_window = tk.Toplevel(self.root)
-        self.itemizer_window.title(f"{UI_ATTRS['window_title']} - Itemizer")
-        self.itemizer_window.configure(bg=self.root.cget("bg"))
-        self.itemizer_window.protocol("WM_DELETE_WINDOW", self._on_close_itemizer_window)
+        self.itemizer_window = self.create_themed_toplevel("itemizer", "Itemizer", on_close=self._on_close_itemizer_window)
         self.itemizer_window.bind("<Configure>", self._on_itemizer_window_configure)
 
         shell = ttk.Frame(self.itemizer_window, padding=12, style="App.Panel.TFrame")
@@ -2704,10 +2784,7 @@ class PGLOKApp:
             self.character_browser_window.focus_force()
             return
 
-        self.character_browser_window = tk.Toplevel(self.root)
-        self.character_browser_window.title(f"{UI_ATTRS['window_title']} - Character Browser")
-        self.character_browser_window.configure(bg=self.root.cget("bg"))
-        self.character_browser_window.protocol("WM_DELETE_WINDOW", self._on_close_character_browser_window)
+        self.character_browser_window = self.create_themed_toplevel("character_browser", "Character Browser", on_close=self._on_close_character_browser_window)
 
         shell = ttk.Frame(self.character_browser_window, padding=12, style="App.Panel.TFrame")
         shell.pack(fill="both", expand=True)

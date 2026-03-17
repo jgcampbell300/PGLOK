@@ -1,20 +1,23 @@
+import sys
+import tkinter as tk
 from tkinter import ttk
+from pathlib import Path
 
 
 UI_COLORS = {
-    "bg": "#060507",
-    "panel_bg": "#140f0e",
-    "card_bg": "#1e1413",
-    "text": "#ddd6c8",
-    "muted_text": "#baa98d",
-    "primary": "#8d321e",
-    "primary_active": "#a63a22",
-    "secondary": "#3a231d",
-    "secondary_active": "#4c2e26",
-    "entry_bg": "#140f0f",
-    "entry_border": "#8a6a3d",
-    "accent": "#d8b564",
-    "menu_active": "#4c2e26",
+    "bg": "#0f1720",
+    "panel_bg": "#111827",
+    "card_bg": "#0b1220",
+    "text": "#e6eef6",
+    "muted_text": "#9fb4c9",
+    "primary": "#0ea5a4",
+    "primary_active": "#34d3e0",
+    "secondary": "#122433",
+    "secondary_active": "#17374b",
+    "entry_bg": "#07101a",
+    "entry_border": "#2a5568",
+    "accent": "#7dd3fc",
+    "menu_active": "#17374b",
 }
 
 UI_ATTRS = {
@@ -24,7 +27,7 @@ UI_ATTRS = {
     "container_padding": 18,
     "label_width": 14,
     "header_text": "Project Gorgon Locator and Data Tools",
-    "font_family": "Palatino Linotype",
+    "font_family": "Segoe UI",
     "font_size": 10,
     "font_size_header": 14,
 }
@@ -52,6 +55,27 @@ def apply_theme(root):
     root.configure(bg=UI_COLORS["bg"])
     root.option_add("*Font", (UI_ATTRS["font_family"], UI_ATTRS["font_size"]))
 
+    # Ensure the application icon is applied to every window passed here
+    try:
+        base = Path(__file__).resolve().parents[2]
+        icon_png = base / "icon.png"
+        icon_ico = base / "icon.ico"
+        if icon_png.exists():
+            try:
+                img = tk.PhotoImage(file=str(icon_png))
+                root.iconphoto(False, img)
+                # keep reference to prevent GC
+                setattr(root, "_pglok_icon", img)
+            except Exception:
+                pass
+        if sys.platform == "win32" and icon_ico.exists():
+            try:
+                root.iconbitmap(str(icon_ico))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     style = ttk.Style(root)
     style.theme_use("clam")
 
@@ -78,9 +102,21 @@ def apply_theme(root):
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
     )
     style.configure(
+        "App.Muted.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
+    )
+    style.configure(
         "App.Header.TLabel",
         background=UI_COLORS["panel_bg"],
         foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size_header"], "bold"),
+    )
+    style.configure(
+        "App.Title.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["text"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size_header"], "bold"),
     )
     style.configure(
@@ -88,6 +124,12 @@ def apply_theme(root):
         background=UI_COLORS["panel_bg"],
         foreground=UI_COLORS["muted_text"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+    )
+    style.configure(
+        "App.Muted.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
     )
     style.configure(
         "App.TEntry",
@@ -126,6 +168,8 @@ def apply_theme(root):
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
         padding=(10, 6),
     )
+    # Make sure button containers blend with panel background
+    style.configure("App.TFrame", background=UI_COLORS["panel_bg"])
     style.map(
         "App.Primary.TButton",
         background=[("active", UI_COLORS["primary_active"]), ("disabled", UI_COLORS["secondary"])],
@@ -246,6 +290,44 @@ def apply_theme(root):
         "TNotebook.Tab",
         background=[("selected", UI_COLORS["primary"]), ("active", UI_COLORS["secondary_active"])],
         foreground=[("selected", UI_COLORS["text"])],
+    )
+
+    # LabelFrame styles
+    style.configure(
+        "App.TLabelframe",
+        background=UI_COLORS["card_bg"],
+        borderwidth=1,
+        relief="solid",
+        padding=10,
+    )
+    style.configure(
+        "App.TLabelframe.Label",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+    )
+    style.configure(
+        "App.Card.TLabelframe",
+        background=UI_COLORS["card_bg"],
+        borderwidth=1,
+        relief="solid",
+    )
+
+    # Progressbar style
+    style.configure(
+        "App.Horizontal.TProgressbar",
+        troughcolor=UI_COLORS["entry_bg"],
+        background=UI_COLORS["primary"],
+        thickness=12,
+    )
+
+    # Checkbutton style
+    style.configure(
+        "App.TCheckbutton",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["text"],
+        focuscolor=UI_COLORS["primary"],
+        indicatorcolor=UI_COLORS["entry_bg"],
     )
 
 
