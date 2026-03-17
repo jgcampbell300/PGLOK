@@ -7,9 +7,9 @@ import threading
 import time
 import json
 
-from timer_db import TimerDatabase, get_db_path, DEFAULT_TIMER_DURATIONS
-from chat_monitor import ChatLogMonitor
-from config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme, configure_menu_theme
+from src.timer_db import TimerDatabase, get_db_path, DEFAULT_TIMER_DURATIONS, DEFAULT_BOSS_DURATIONS
+from src.chat.monitor import ChatLogMonitor
+from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme, configure_menu_theme
 
 # Timer window state file
 TIMER_STATE_FILE = Path.home() / ".pglok" / "timer_state.json"
@@ -85,18 +85,37 @@ class TimerWindow:
         # Always on top and window geometry
         self.always_on_top_var = tk.BooleanVar(value=self._get_ui_pref("timer_always_on_top", False))
         
-        # Get saved geometry with fallback
-        saved_geometry = self._get_ui_pref("timer_window_geometry", "400x300+100+100")
-        
-        # Create window with proper default size
-        self.window = tk.Toplevel(parent.root)
-        self.window.title("⏱️ PGLOK Timer System")
-        self.window.geometry("400x300+100+100")  # Set proper default size first
-        self.window.minsize(300, 200)    # Minimum size to ensure status bar visibility
-        
-        # Apply theme
-        apply_theme(self.window)
-        
+        # Create window using themed helper so geometry and theme are consistent
+        try:
+            # prefer parent's helper (PGLOKApp.create_themed_toplevel)
+            if hasattr(parent, 'create_themed_toplevel'):
+                self.window = parent.create_themed_toplevel("timer", "Timers", on_close=self._on_close)
+            else:
+                # fallback to centralized setup
+                from src.config.window_state import setup_window
+                self.window = tk.Toplevel(parent.root)
+                setup_window(self.window, "timer", min_w=300, min_h=200, on_close=self._on_close)
+        except Exception:
+            # ultimate fallback
+            self.window = tk.Toplevel(parent.root)
+            self.window.title("⏱️ PGLOK Timer System")
+            self.window.minsize(300, 200)
+            try:
+                apply_theme(self.window)
+            except Exception:
+                pass
+
+        # Apply any legacy saved geometry from parent prefs if present
+        try:
+            legacy_geom = self._get_ui_pref("timer_window_geometry", None)
+            if legacy_geom:
+                try:
+                    self.window.geometry(legacy_geom)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # Initialize status variables
         self.status_var = tk.StringVar(value="Ready")
         self.monitor_status_var = tk.StringVar(value="🟢 Chat Monitoring Active") if self.chat_monitor else None
@@ -133,13 +152,13 @@ class TimerWindow:
     
     def _build_ui(self):
         """Build the timer UI."""
-        # Main container
-        main_frame = ttk.Frame(self.window, padding=10, style="App.TFrame")
+        # Main container (more compact padding)
+        main_frame = ttk.Frame(self.window, padding=6, style="App.TFrame")
         main_frame.pack(fill="both", expand=True)
         
         # Header with title and always on top button
         header_frame = ttk.Frame(main_frame, style="App.Panel.TFrame")
-        header_frame.pack(fill="x", pady=(0, 10))
+        header_frame.pack(fill="x", pady=(0, 6))
         
         title_label = ttk.Label(header_frame, text="⏱️ Game Timer System", style="App.Title.TLabel")
         title_label.pack(side="left")
@@ -151,7 +170,7 @@ class TimerWindow:
         self.always_on_top_button = ttk.Button(header_frame, text="📌 Always on Top", 
                                              command=self._toggle_always_on_top,
                                              style="App.Secondary.TButton")
-        self.always_on_top_button.pack(side="right", padx=(10, 0))
+        self.always_on_top_button.pack(side="right", padx=(6, 0))
         
         # Apply initial always on top state
         if self.always_on_top_var.get():
@@ -160,7 +179,7 @@ class TimerWindow:
         
         # Status bar - between header and tabs for better visibility
         status_frame = ttk.Frame(main_frame, style="App.TFrame")
-        status_frame.pack(fill="x", pady=(5, 10))
+        status_frame.pack(fill="x", pady=(3, 6))
         
         # Status bar content - single line
         ttk.Label(status_frame, textvariable=self.status_var, 
@@ -217,12 +236,12 @@ class TimerWindow:
         h_scroll.pack(side="bottom", fill="x")
         
         # Header (kept above the horizontal strip)
-        header_frame = ttk.Frame(scrollable_frame, style="App.TFrame")
-        header_frame.pack(fill="x", pady=(0, 10))
+        header_frame = ttk.Frame(scrollable_frame, style="App.Card.TFrame")
+        header_frame.pack(fill="x", pady=(0, 4))
         
         headers = ["ID", "Activity", "Duration", "Status", "Actions"]
         for i, header in enumerate(headers):
-            label = ttk.Label(header_frame, text=header, style="App.Header.TLabel")
+            label = ttk.Label(header_frame, text=header, style="App.Card.Header.TLabel")
             label.grid(row=0, column=i, padx=10, pady=5, sticky="w")
         
         # Active timers container (place timers horizontally inside scrollable_frame)
@@ -234,14 +253,14 @@ class TimerWindow:
     def _build_management_ui(self):
         """Build the timer management interface."""
         # Manual timer controls
-        manual_frame = ttk.LabelFrame(self.management_frame, text="⏱️ Manual Timer", padding=10, style="App.Card.TFrame")
-        manual_frame.pack(fill="x", pady=(0, 10))
+        manual_frame = ttk.LabelFrame(self.management_frame, text="⏱️ Manual Timer", padding=6, style="App.Card.TLabelframe")
+        manual_frame.pack(fill="x", pady=(0, 6))
         
         # Timer selection
-        select_frame = ttk.Frame(manual_frame, style="App.TFrame")
+        select_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
         select_frame.pack(fill="x", pady=(0, 10))
         
-        ttk.Label(select_frame, text="Activity:", style="App.TLabel").grid(row=0, column=0, sticky="w", padx=5)
+        ttk.Label(select_frame, text="Activity:", style="App.Card.TLabel").grid(row=0, column=0, sticky="w", padx=5)
         
         self.activity_var = tk.StringVar()
         self.activity_combo = ttk.Combobox(select_frame, textvariable=self.activity_var, style="App.TCombobox", width=25)
@@ -262,13 +281,13 @@ class TimerWindow:
             self.activity_combo.set(activities[0])
         
         # Custom duration
-        ttk.Label(select_frame, text="Duration (seconds):", style="App.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
+        ttk.Label(select_frame, text="Duration (seconds):", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
         
         duration_entry = ttk.Entry(select_frame, textvariable=self.duration_var, style="App.TEntry", width=15)
         duration_entry.grid(row=1, column=1, padx=5, pady=(10, 0), sticky="ew")
         
         # Notes
-        ttk.Label(select_frame, text="Notes:", style="App.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
+        ttk.Label(select_frame, text="Notes:", style="App.Card.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
         
         notes_entry = ttk.Entry(select_frame, textvariable=self.notes_var, style="App.TEntry", width=30)
         notes_entry.grid(row=2, column=1, padx=5, pady=(10, 0), sticky="ew")
@@ -279,12 +298,12 @@ class TimerWindow:
         self.notes_var.trace_add('write', lambda *args: self._save_timer_selection())
         
         # Buttons
-        button_frame = ttk.Frame(manual_frame, style="App.TFrame")
-        button_frame.pack(fill="x", pady=15)
+        button_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
+        button_frame.pack(fill="x", pady=8)
         
-        ttk.Button(button_frame, text="▶️ Start Timer", command=self._start_manual_timer, style="App.Primary.TButton").pack(side="left", padx=5)
-        ttk.Button(button_frame, text="⏹️ Stop All", command=self._stop_all_timers, style="App.Secondary.TButton").pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🗑️ Clear All", command=self._clear_all_timers, style="App.Secondary.TButton").pack(side="left", padx=5)
+        ttk.Button(button_frame, text="▶️ Start Timer", command=self._start_manual_timer, style="App.Primary.TButton").pack(side="left", padx=4)
+        ttk.Button(button_frame, text="⏹️ Stop All", command=self._stop_all_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
+        ttk.Button(button_frame, text="🗑️ Clear All", command=self._clear_all_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
         
         # Configure grid weights
         select_frame.columnconfigure(1, weight=1)
@@ -295,7 +314,7 @@ class TimerWindow:
             chat_frame.pack(fill="x", pady=(10, 0))
             
             self.auto_start_var = tk.BooleanVar(value=self._get_ui_pref("timer_auto_start", True))
-            ttk.Checkbutton(chat_frame, text="Auto-start timers from chat events", variable=self.auto_start_var, style="App.TCheckbutton", command=self._toggle_auto_monitoring).pack(anchor="w")
+            ttk.Checkbutton(chat_frame, text="Auto-start timers from chat events", variable=self.auto_start_var, style="App.Card.TCheckbutton", command=self._toggle_auto_monitoring).pack(anchor="w")
             
             ttk.Button(chat_frame, text="🔄 Scan Now", command=self._scan_chat_now, style="App.Secondary.TButton").pack(pady=(10, 0), anchor="w")
     
@@ -332,21 +351,20 @@ class TimerWindow:
     def _build_boss_timers_ui(self):
         """Build the boss timers display."""
         # Manual boss timer controls
-        manual_frame = ttk.LabelFrame(self.boss_frame, text="👹 Manual Boss Timer", padding=10, style="App.Card.TLabelframe")
-        manual_frame.pack(fill="x", pady=(0, 10))
+        manual_frame = ttk.LabelFrame(self.boss_frame, text="👹 Manual Boss Timer", padding=6, style="App.Card.TLabelframe")
+        manual_frame.pack(fill="x", pady=(0, 6))
         
         # Boss selection
-        select_frame = ttk.Frame(manual_frame, style="App.TFrame")
+        select_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
         select_frame.pack(fill="x", pady=(0, 10))
         
-        ttk.Label(select_frame, text="Boss:", style="App.TLabel").grid(row=0, column=0, sticky="w", padx=5)
+        ttk.Label(select_frame, text="Boss:", style="App.Card.TLabel").grid(row=0, column=0, sticky="w", padx=5)
         
         self.boss_var = tk.StringVar()
         self.boss_combo = ttk.Combobox(select_frame, textvariable=self.boss_var, style="App.TCombobox", width=30)
         self.boss_combo.grid(row=0, column=1, padx=5, sticky="ew")
         
         # Populate with available bosses
-        from timer_db import DEFAULT_BOSS_DURATIONS
         bosses = []
         for event_key, event_data in DEFAULT_BOSS_DURATIONS.items():
             bosses.append(f"{event_data['description']} ({event_key})")
@@ -361,7 +379,7 @@ class TimerWindow:
             self.boss_var.set(bosses[0])
         
         # Custom duration
-        ttk.Label(select_frame, text="Duration (seconds):", style="App.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
+        ttk.Label(select_frame, text="Duration (seconds):", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
         
         self.boss_duration_var = tk.StringVar()
         duration_entry = ttk.Entry(select_frame, textvariable=self.boss_duration_var, style="App.TEntry", width=15)
@@ -373,7 +391,7 @@ class TimerWindow:
             self.boss_duration_var.set(last_boss_duration)
         
         # Notes
-        ttk.Label(select_frame, text="Notes:", style="App.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
+        ttk.Label(select_frame, text="Notes:", style="App.Card.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
         
         notes_entry = ttk.Entry(select_frame, textvariable=self.boss_notes_var, style="App.TEntry", width=30)
         notes_entry.grid(row=2, column=1, padx=5, pady=(10, 0), sticky="ew")
@@ -384,15 +402,15 @@ class TimerWindow:
         self.boss_notes_var.trace_add('write', lambda *args: self._save_boss_selection())
         
         # Buttons
-        button_frame = ttk.Frame(manual_frame)
-        button_frame.pack(fill="x", pady=15)
+        button_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
+        button_frame.pack(fill="x", pady=8)
         
-        ttk.Button(button_frame, text="👹 Start Boss Timer", command=self._start_boss_timer, style="App.Primary.TButton").pack(side="left", padx=5)
-        ttk.Button(button_frame, text="⏹️ Stop Boss Timers", command=self._stop_boss_timers, style="App.Secondary.TButton").pack(side="left", padx=5)
+        ttk.Button(button_frame, text="👹 Start Boss Timer", command=self._start_boss_timer, style="App.Primary.TButton").pack(side="left", padx=4)
+        ttk.Button(button_frame, text="⏹️ Stop Boss Timers", command=self._stop_boss_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
         
         # Active boss timers
-        active_frame = ttk.LabelFrame(self.boss_frame, text="🔴 Active Boss Timers", padding=10, style="App.Card.TLabelframe")
-        active_frame.pack(fill="both", expand=True, pady=(10, 0))
+        active_frame = ttk.LabelFrame(self.boss_frame, text="🔴 Active Boss Timers", padding=6, style="App.Card.TLabelframe")
+        active_frame.pack(fill="both", expand=True, pady=(6, 0))
         
         # Scrollable frame for active boss timers
         canvas = tk.Canvas(active_frame, highlightthickness=0)
@@ -535,7 +553,7 @@ class TimerWindow:
             no_timers_label = ttk.Label(self.active_boss_timers_frame 
                                      , text="No active boss timers" 
                                      , style="App.Muted.TLabel")
-            no_timers_label.pack(pady=20)
+            no_timers_label.pack(pady=8)
             return
         
         # Display each active boss timer
@@ -552,14 +570,13 @@ class TimerWindow:
         info_frame.pack(fill="x", padx=10, pady=10)
         
         # Boss name with special styling
-        ttk.Label(info_frame, text=f"👹 {timer['event_name'].title()}", style="App.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(info_frame, text=f"👹 {timer['event_name'].title()}", style="App.Card.TLabel").grid(row=0, column=0, sticky="w")
         
         # Duration
         duration_str = self._format_duration(timer['current_duration_seconds'])
-        ttk.Label(info_frame, text=f"⏱️ {duration_str}", style="App.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Label(info_frame, text=f"⏱️ {duration_str}", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 0))
         
         # Progress bar
-        from timer_db import DEFAULT_BOSS_DURATIONS
         boss_key = f"boss:{timer['event_name']}"
         max_duration = DEFAULT_BOSS_DURATIONS.get(boss_key, {}).get('duration', 900)
         progress_var = tk.DoubleVar(value=min(timer['current_duration_seconds'] / max_duration, 1.0))
@@ -819,7 +836,7 @@ class TimerWindow:
         
         # ID and Activity
         ttk.Label(info_frame, text=f"#{timer['id']}", style="App.Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(info_frame, text=timer['event_name'], style="App.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(info_frame, text=timer['event_name'], style="App.Card.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
         
         # Duration
         duration_str = self._format_duration(timer['current_duration_seconds'])
