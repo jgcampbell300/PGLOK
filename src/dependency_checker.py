@@ -284,16 +284,24 @@ class DependencyChecker:
                 messagebox.showerror("Error", "PGLOK application window is no longer available")
                 return None
             
-            # Create modal window
-            checker_window = tk.Toplevel(self.parent_app.root)
-            checker_window.title("PGLOK Dependencies")
-            checker_window.geometry("700x500")
-            checker_window.transient(self.parent_app.root)
-            checker_window.grab_set()
-            
-            # Apply theme
-            checker_window.configure(bg=self.colors["bg"])
-            
+            # Create modal window using app helper so theme and geometry persist
+            if hasattr(self.parent_app, 'create_themed_toplevel'):
+                checker_window = self.parent_app.create_themed_toplevel("dependency_checker", "Dependencies")
+            else:
+                checker_window = tk.Toplevel(self.parent_app.root)
+                try:
+                    from src.config.window_state import setup_window
+                    setup_window(checker_window, "dependency_checker", min_w=700, min_h=500)
+                except Exception:
+                    pass
+
+            # Make modal
+            try:
+                checker_window.transient(self.parent_app.root)
+                checker_window.grab_set()
+            except Exception:
+                pass
+
             # Main frame
             main_frame = ttk.Frame(checker_window, style="App.Card.TFrame", padding=20)
             main_frame.pack(fill="both", expand=True)

@@ -95,17 +95,12 @@ def apply_theme(root):
         borderwidth=1,
         relief="solid",
     )
+    # Default labels live on panel background
     style.configure(
         "App.TLabel",
         background=UI_COLORS["panel_bg"],
         foreground=UI_COLORS["text"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
-    )
-    style.configure(
-        "App.Muted.TLabel",
-        background=UI_COLORS["panel_bg"],
-        foreground=UI_COLORS["muted_text"],
-        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
     )
     style.configure(
         "App.Header.TLabel",
@@ -128,6 +123,38 @@ def apply_theme(root):
     style.configure(
         "App.Muted.TLabel",
         background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
+    )
+
+    # Card-specific label styles (use inside card backgrounds)
+    style.configure(
+        "App.Card.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+    )
+    style.configure(
+        "App.Card.Header.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size_header"], "bold"),
+    )
+    style.configure(
+        "App.Card.Title.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size_header"], "bold"),
+    )
+    style.configure(
+        "App.Card.Status.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+    )
+    style.configure(
+        "App.Card.Muted.TLabel",
+        background=UI_COLORS["card_bg"],
         foreground=UI_COLORS["muted_text"],
         font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
     )
@@ -325,6 +352,14 @@ def apply_theme(root):
     style.configure(
         "App.TCheckbutton",
         background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["text"],
+        focuscolor=UI_COLORS["primary"],
+        indicatorcolor=UI_COLORS["entry_bg"],
+    )
+    # Card-specific checkbutton that blends with card background (use inside Card.TLabelframe)
+    style.configure(
+        "App.Card.TCheckbutton",
+        background=UI_COLORS["card_bg"],
         foreground=UI_COLORS["text"],
         focuscolor=UI_COLORS["primary"],
         indicatorcolor=UI_COLORS["entry_bg"],
