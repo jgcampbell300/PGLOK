@@ -8,7 +8,7 @@ import time
 import json
 
 from src.timer_db import TimerDatabase, get_db_path, DEFAULT_TIMER_DURATIONS, DEFAULT_BOSS_DURATIONS
-from src.chat.monitor import ChatLogMonitor
+from src.chat_monitor import ChatLogMonitor
 from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme, configure_menu_theme
 
 # Timer window state file
