@@ -126,14 +126,14 @@ class TimerWindow:
         
         self._build_ui()
         
-        # Apply saved geometry after UI is built to prevent size override
-        self.window.geometry(saved_geometry)
+        # Restore saved geometry after UI is built to prevent size override
+        self._restore_window_geometry()
         
         # Force window to update its size
         self.window.update_idletasks()
         
         # Apply geometry again after a delay to ensure it takes effect
-        self.window.after(100, lambda: self.window.geometry(saved_geometry))
+        self.window.after(100, self._restore_window_geometry)
         
         # Refresh timers only after window is fully shown
         self.window.after(50, self._refresh_timers)
