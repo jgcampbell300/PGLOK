@@ -1,24 +1,26 @@
-# PGLOK v0.1.4 Release
+# PGLOK v0.1.7 Release
 
 ## 🎉 Features
 
-### Chat Monitor Improvements
-- **Combined Status/Error Tabs**: Status and error messages now appear together in a single "System" tab
-- **Improved Organization**: Reduced tab clutter while maintaining message filtering
-- **Better User Experience**: System messages are logically grouped together
+### Timer System Overhaul
+- **New Timer Window**: Replaced Data toolbar button with dedicated Timers feature
+- **Compact UI Layout**: Reduced padding and spacing for space-efficient timer display
+- **Window State Persistence**: Timers window now restores geometry and position
 
-### Previous Enhancements
-- **Automatic Update System**: Checks for updates on startup and installs automatically
-- **Linux Tar Extraction**: Fixed issues with .tar.gz and .tar file extraction
-- **Safe Extraction**: Prevents dangerous symlink warnings during installation
-- **Professional Icons**: Custom application branding for all platforms
+### Chat Monitor Integration
+- **Timer Chat Integration**: Timer window now uses the main chat monitor for log processing
+- **Fixed Missing Methods**: Resolved NameError issues with chat log scanning
+
+### UI Improvements
+- **Standardized Window Creation**: Consistent Toplevel creation across all windows
+- **Better Window Management**: Improved geometry restoration for all popup windows
 
 ## 📦 Installation
 
 ### Option 1: Download Package (Recommended)
 ```bash
 # Download Linux executable package
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.4.tar.gz -o PGLOK.tar.gz
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.7.tar.gz -o PGLOK.tar.gz
 
 # Extract and install
 tar -xzf PGLOK.tar.gz
@@ -29,7 +31,7 @@ cd PGLOK-*
 ### Option 2: Download Source
 ```bash
 # Download source code
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-v0.1.4-source.tar.gz -o PGLOK-source.tar.gz
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-v0.1.7-source.tar.gz -o PGLOK-source.tar.gz
 
 # Extract and install
 tar -xzf PGLOK-source.tar.gz
@@ -46,7 +48,7 @@ cd PGLOK
 
 ## 🔄 Auto-Update
 
-PGLOK now includes automatic update functionality:
+PGLOK includes automatic update functionality:
 - ✅ Checks for updates on startup
 - ✅ Downloads and installs automatically
 - ✅ Restarts application when needed
@@ -54,9 +56,9 @@ PGLOK now includes automatic update functionality:
 
 ## 🐛 Bug Fixes
 
-- Fixed Linux tar.gz extraction issues
-- Combined Status/Error tabs for better organization
-- Improved error handling in update system
+- Fixed NameError in timer window geometry restoration
+- Fixed missing chat log processing methods in timer window
+- Standardized Toplevel window creation across the application
 
 ## 🚀 Platform Support
 
