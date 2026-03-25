@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from pathlib import Path
 from datetime import datetime
 
@@ -29,7 +29,11 @@ import sys
 from src.database.database_manager import get_database_manager
 
 # Import base addon
-sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    addon_root = Path(sys._MEIPASS) / "addons"
+else:
+    addon_root = Path(__file__).resolve().parent.parent / "addons"
+sys.path.insert(0, str(addon_root))
 from base_addon import BaseAddon
 
 

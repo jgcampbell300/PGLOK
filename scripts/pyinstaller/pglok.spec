@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_submodules
 project_root = Path(os.getcwd())
 
 datas = []
-for rel_path in ("src/config", "src/assets", "src/data"):
+for rel_path in ("src/config", "src/assets", "src/data", "addons"):
     src_path = project_root / rel_path
     if src_path.exists():
         datas.append((str(src_path), rel_path))

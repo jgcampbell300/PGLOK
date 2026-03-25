@@ -1,78 +1,35 @@
-# PGLOK v0.1.7 Release
+# PGLOK v0.1.8 Release
 
-## 🎉 Features
+## Highlights
 
-### Timer System Overhaul
-- **New Timer Window**: Replaced Data toolbar button with dedicated Timers feature
-- **Compact UI Layout**: Reduced padding and spacing for space-efficient timer display
-- **Window State Persistence**: Timers window now restores geometry and position
+- Fixed the Linux auto-update loop in source installs.
+- Added fallback to GitHub release tarballs when a release has no uploaded assets.
+- Prevented repo-based updates from overwriting local config, databases, virtualenv files, and build output.
+- Fixed standalone Linux packaging so bundled builds can load top-level addons correctly.
+- Fixed the update completion dialog path by importing `messagebox` in the main app.
 
-### Chat Monitor Integration
-- **Timer Chat Integration**: Timer window now uses the main chat monitor for log processing
-- **Fixed Missing Methods**: Resolved NameError issues with chat log scanning
+## Linux Packaging
 
-### UI Improvements
-- **Standardized Window Creation**: Consistent Toplevel creation across all windows
-- **Better Window Management**: Improved geometry restoration for all popup windows
+- Rebuilt the standalone Linux executable from the fixed checkout.
+- Updated the PyInstaller spec to include the top-level `addons/` directory.
+- Verified the packaged executable starts cleanly from `~/.local/bin/PGLOK`.
 
-## 📦 Installation
+## Auto-Update Behavior
 
-### Option 1: Download Package (Recommended)
+- Release checks now fall back to GitHub `tarball_url`/`zipball_url` when release assets are missing.
+- Linux `.tar.gz` and `.tgz` downloads are detected correctly.
+- Install and restart paths now resolve to the actual app root for both source and frozen runs.
+
+## Installation
+
 ```bash
-# Download Linux executable package
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.7.tar.gz -o PGLOK.tar.gz
-
-# Extract and install
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.8.tar.gz -o PGLOK.tar.gz
 tar -xzf PGLOK.tar.gz
-cd PGLOK-*
+cd PGLOK-Linux-v0.1.8
 ./install.sh
 ```
 
-### Option 2: Download Source
-```bash
-# Download source code
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-v0.1.7-source.tar.gz -o PGLOK-source.tar.gz
+## Assets
 
-# Extract and install
-tar -xzf PGLOK-source.tar.gz
-cd PGLOK-*
-./install_linux.sh --desktop
-```
-
-### Option 3: Clone Repository
-```bash
-git clone https://github.com/jgcampbell300/PGLOK.git
-cd PGLOK
-./install_linux.sh --desktop
-```
-
-## 🔄 Auto-Update
-
-PGLOK includes automatic update functionality:
-- ✅ Checks for updates on startup
-- ✅ Downloads and installs automatically
-- ✅ Restarts application when needed
-- ✅ Falls back to manual update if needed
-
-## 🐛 Bug Fixes
-
-- Fixed NameError in timer window geometry restoration
-- Fixed missing chat log processing methods in timer window
-- Standardized Toplevel window creation across the application
-
-## 🚀 Platform Support
-
-- ✅ Linux (tar.gz packages)
-- ✅ Windows (zip packages) 
-- ✅ macOS (dmg packages)
-- ✅ Source code (tar.gz)
-
-## 📋 Requirements
-
-- Python 3.8+ (for source installation)
-- 100MB disk space minimum
-- 500MB+ for game data
-
----
-
-**Note**: This is a third-party tool and is not affiliated with Elder Game or Project Gorgon.
+- `PGLOK-Linux-v0.1.8.tar.gz`
+- `PGLOK-v0.1.8-source.tar.gz`
