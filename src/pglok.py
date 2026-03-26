@@ -120,6 +120,10 @@ class PGLOKApp:
         self.chat_tab_text = {}
         self.chat_info_var = tk.StringVar(value="Lines: 0    Date: --    Time: --    File: None")
         self.chat_lines_seen = 0
+        # Character and game info tracking
+        self.current_character = tk.StringVar(value="Unknown")
+        self.current_area = tk.StringVar(value="Unknown")
+        self.current_guild = tk.StringVar(value="None")
         self.character_count_var = tk.StringVar(value="Characters Loaded: 0")
         self.path_vars = {label: tk.StringVar() for label in UI_TEXT["path_labels"]}
         self.status_var = tk.StringVar(value=UI_TEXT["status_ready"])
@@ -130,6 +134,7 @@ class PGLOKApp:
         self.global_search_results = []
         self._global_search_after_id = None
         self.alpha_button = None
+        self.pin_var = tk.BooleanVar(value=False)
         self.entry_spellcheck = EntrySpellcheckBinder()
         
         # Timer configuration variables
@@ -157,7 +162,7 @@ class PGLOKApp:
 
         self.refresh_config_view()
         self._restore_always_on_top_state()
-        self.show_page("home")
+        self.show_page("chat")
         self._refresh_character_cache()
         self._restore_open_windows()
         self.root.after(150, self._raise_main_window_default)
@@ -166,24 +171,15 @@ class PGLOKApp:
             self.locate_pg()
 
     def _build_layout(self):
-        # Create main paned window for resizable layout
-        self.main_paned = ttk.PanedWindow(self.app_frame, orient="vertical", style="App.TFrame")
-        self.main_paned.pack(fill="both", expand=True)
-        
-        # Top section for toolbar and content
-        self.top_section = ttk.Frame(self.main_paned, style="App.TFrame")
-        self.main_paned.add(self.top_section, weight=1)
-        
         # Toolbar
-        toolbar = ttk.Frame(self.top_section, style="App.Panel.TFrame")
+        toolbar = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
         toolbar.pack(fill="x", pady=(0, 3))
-        ttk.Button(toolbar, text="Chat", command=self._open_chat, style="App.Secondary.TButton").pack(side="left")
         ttk.Button(
             toolbar,
             text="Characters",
             command=self.open_character_browser_window,
             style="App.Secondary.TButton",
-        ).pack(side="left", padx=(3, 0))
+        ).pack(side="left")
         ttk.Button(toolbar, text="Timers", command=self._open_timer, style="App.Secondary.TButton").pack(
             side="left", padx=(3, 0)
         )
@@ -194,9 +190,8 @@ class PGLOKApp:
             side="left", padx=(3, 0)
         )
         ttk.Button(toolbar, text="Planner", command=self._open_planner, style="App.Secondary.TButton").pack(side="left", padx=(3, 0))
-        self.pin_button = ttk.Button(toolbar, text="PIN: OFF", command=self._toggle_always_on_top, style="App.Primary.TButton")
-        self.pin_button.pack(side="left", padx=(3, 0))
 
+        # Right side: Alpha version button
         self.alpha_button = ttk.Button(
             toolbar,
             text=f"ALPHA v{__version__}",
@@ -205,22 +200,23 @@ class PGLOKApp:
         )
         self.alpha_button.pack(side="right")
 
-        # Content area
-        self.page_container = ttk.Frame(self.top_section, style="App.Panel.TFrame")
+        # Status bar (pinned to bottom) - pack FIRST to reserve space
+        self.status_section = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
+        self.status_section.pack(fill="x", side="bottom")
+        
+        # Create persistent status bar
+        self._create_status_bar()
+
+        # Content area (expands to fill remaining space)
+        self.page_container = ttk.Frame(self.app_frame, style="App.Panel.TFrame")
         self.page_container.pack(fill="both", expand=True)
 
         self.home_page = ttk.Frame(self.page_container, style="App.Panel.TFrame")
         self._build_home_page()
 
-        # Status bar section (always visible, not resizable)
-        self.status_section = ttk.Frame(self.main_paned, style="App.Panel.TFrame")
-        self.main_paned.add(self.status_section, weight=0)  # Weight 0 means it won't resize
-        
-        # Create persistent status bar
-        self._create_status_bar()
-        
-        # Configure paned window - let it handle sizing naturally
-        # The weight=0 on status section should keep it small
+        # Chat page (initially hidden)
+        self.chat_page = ttk.Frame(self.page_container, style="App.Panel.TFrame")
+        self._build_chat_page()
 
     def _create_status_bar(self):
         """Create the persistent status bar."""
@@ -241,11 +237,14 @@ class PGLOKApp:
         self.status_icon.pack(side="left")
         ttk.Label(left_status, textvariable=self.status_var, style="App.Status.TLabel").pack(side="left", padx=(4, 8))
         
-        # Center status - additional info (expands)
+        # Center status - character info (expands)
         self.center_status = ttk.Frame(status_row, style="App.Panel.TFrame")
         self.center_status.grid(row=0, column=1, sticky="we")
         self.center_info_var = tk.StringVar(value="")
         ttk.Label(self.center_status, textvariable=self.center_info_var, style="App.Muted.TLabel").pack(side="left")
+        
+        # Update center status with character info
+        self._update_center_status()
         
         # Right status - character count
         right_status = ttk.Frame(status_row, style="App.Panel.TFrame")
@@ -281,6 +280,15 @@ class PGLOKApp:
     def set_center_status(self, message):
         """Set center status information."""
         self.center_info_var.set(message)
+        
+    def _update_center_status(self):
+        """Update center status with current character info."""
+        char = self.current_character.get()
+        area = self.current_area.get()
+        if char and char != "Unknown":
+            self.set_center_status(f"👤 {char}  📍 {area}")
+        else:
+            self.set_center_status("")
         
     def set_status_color(self, color):
         """Set status icon color."""
@@ -319,6 +327,8 @@ class PGLOKApp:
         view_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(view_menu)
         view_menu.add_command(label="Home", command=lambda: self.show_page("home"))
+        view_menu.add_separator()
+        view_menu.add_checkbutton(label="Always on Top", variable=self.pin_var, command=self._toggle_always_on_top)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
         document_menu = tk.Menu(menu_bar, tearoff=0)
@@ -345,7 +355,7 @@ class PGLOKApp:
         tools_menu.add_command(label="Itemizer", command=self._open_itemizer)
         tools_menu.add_command(label="Planner", command=self._open_planner)
         tools_menu.add_command(label="Timer", command=self._open_timer)
-        tools_menu.add_command(label="Chat", command=self._open_chat)
+        tools_menu.add_command(label="Food Comparison", command=self._open_food_comparison)
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         # Addons menu
@@ -780,11 +790,28 @@ class PGLOKApp:
             traceback.print_exc()
 
     def _open_chat(self):
-        self.open_chat_window()
+        """Show the integrated chat page in the main window."""
+        self.show_page("chat")
     
     def _open_duration_manager(self):
         """Open the duration manager window."""
         self.status_var.set("Duration manager not implemented yet.")
+    def _open_food_comparison(self):
+        """Open the food comparison and tracking window."""
+        try:
+            from src.food_comparison import FoodComparisonWindow
+            
+            # Get current character name from tracked info
+            character = self.current_character.get() if hasattr(self, 'current_character') else "Unknown"
+            
+            # Create and show the food comparison window
+            food_window = FoodComparisonWindow(self.root, character)
+            self.status_var.set("Food comparison window opened")
+            
+        except Exception as e:
+            self.status_var.set(f"Error opening food comparison: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _save_timer_settings(self):
         """Save timer settings to preferences."""
@@ -903,7 +930,7 @@ class PGLOKApp:
             shell,
             maps_dir=config.DATA_DIR / "maps",
             status_callback=self.status_var.set,
-            selected_map=self._get_ui_pref("map_tools_last_map", ""),
+            selected_map=self.current_area.get() or self._get_ui_pref("map_tools_last_map", ""),
             on_map_change=lambda name: self._set_ui_pref("map_tools_last_map", name),
         )
         self.map_tools_browser = browser
@@ -959,6 +986,8 @@ class PGLOKApp:
         self.chat_notebook.pack(fill="both", expand=True)
         self.chat_tab_text = {}
         self._ensure_chat_tab("All")
+        self._ensure_chat_tab("Other")
+        self._ensure_chat_tab("Info")
 
         self.chat_window.update_idletasks()
         req_w = max(920, self.chat_window.winfo_reqwidth())
@@ -1026,6 +1055,9 @@ class PGLOKApp:
                 for line in lines:
                     channel = self._extract_chat_channel(line)
                     
+                    # Parse game info from chat lines
+                    self._parse_game_info(line)
+                    
                     # Combine Status and Error channels into System tab
                     if channel in ["Status", "Error"]:
                         combined_channel = "System"
@@ -1035,11 +1067,129 @@ class PGLOKApp:
                     self._append_chat_line("All", line)
                     self._append_chat_line(combined_channel, line)
                 self.chat_lines_seen += len(lines)
+                self._update_info_tab()
             self._update_chat_info(current_file)
         except Exception as exc:
             self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}")
 
         self.chat_after_id = self.root.after(500, self._chat_poll_tick)
+
+    def _parse_game_info(self, line):
+        """Parse login, logout, area, and guild info from chat lines."""
+        import re
+        lower = line.lower()
+        
+        # Login detection - various patterns
+        login_patterns = [
+            "you have entered",
+            "welcome to",
+            "logged in as",
+            "login:"
+        ]
+        for pattern in login_patterns:
+            if pattern in lower:
+                # Try to extract character name from various formats
+                # Format: "You have entered [Area] as [Character]"
+                # Format: "Welcome to [Area], [Character]!"
+                # Format: "Logged in as: [Character]"
+                
+                # Look for character name after "as" or comma
+                match = re.search(r"as\s+(\w+)", line, re.IGNORECASE)
+                if match:
+                    self.current_character.set(match.group(1))
+                    self._append_chat_line("Info", f"[LOGIN] Character: {match.group(1)}")
+                
+                # Look for area/zone
+                area_match = re.search(r"entered\s+([\w\s]+?)(?:\s+as|,)", line, re.IGNORECASE)
+                if area_match:
+                    self.current_area.set(area_match.group(1).strip())
+                break
+        
+        # Logout detection
+        logout_patterns = ["you have left", "logged out", "disconnected", "logout"]
+        for pattern in logout_patterns:
+            if pattern in lower:
+                self._append_chat_line("Info", f"[LOGOUT] {self.current_character.get()}")
+                break
+        
+        # Area/Zone change detection
+        area_patterns = [
+            "you have entered",
+            "you are now in",
+            "area:",
+            "zone:",
+            "location:",
+            "entered",
+            "warped to",
+            "teleported to",
+        ]
+        for pattern in area_patterns:
+            if pattern in lower:
+                # More flexible regex for area detection
+                # Try multiple patterns to extract area name
+                area_match = None
+                
+                # Pattern 1: "entered [AreaName] as" or "entered [AreaName],"
+                area_match = re.search(r"entered\s+([\w\s'\-]+?)(?:\s+as|,|\s*!|$)", line, re.IGNORECASE)
+                
+                # Pattern 2: "now in [AreaName]" or "in [AreaName]"
+                if not area_match:
+                    area_match = re.search(r"(?:now\s+)?in\s+([\w\s'\-]+?)(?:\.|!|$)", line, re.IGNORECASE)
+                
+                # Pattern 3: "to [AreaName]" (for warped/teleported)
+                if not area_match:
+                    area_match = re.search(r"(?:to|into)\s+([\w\s'\-]+?)(?:\.|!|$)", line, re.IGNORECASE)
+                
+                # Pattern 4: "area: [AreaName]" or "zone: [AreaName]"
+                if not area_match:
+                    area_match = re.search(r"(?:area|zone|location):\s*([\w\s'\-]+?)(?:\.|!|$)", line, re.IGNORECASE)
+                
+                if area_match:
+                    area = area_match.group(1).strip()
+                    if area and area != self.current_area.get():
+                        self.current_area.set(area)
+                        self._append_chat_line("Info", f"[AREA] {area}")
+                break
+        
+        # Guild info detection
+        if "guild" in lower:
+            # Look for guild mentions
+            guild_match = re.search(r'guild["\s:]+([\w\s]+)', line, re.IGNORECASE)
+            if guild_match:
+                guild = guild_match.group(1).strip()
+                self.current_guild.set(guild)
+                self._append_chat_line("Info", f"[GUILD] {guild}")
+            
+            # Guild login/logout of other members
+            if "has come online" in lower or "has gone offline" in lower:
+                self._append_chat_line("Info", f"[GUILD] {line.strip()}")
+
+    def _update_info_tab(self):
+        """Update the Info tab with current game information."""
+        text = self._ensure_chat_tab("Info")
+        if text is None:
+            return
+        
+        # Update center status bar with character info
+        self._update_center_status()
+        
+        # Clear and rebuild info display
+        text.configure(state="normal")
+        text.delete("1.0", tk.END)
+        
+        info_lines = [
+            "=== Character Info ===",
+            f"Character: {self.current_character.get()}",
+            f"Area: {self.current_area.get()}",
+            f"Guild: {self.current_guild.get()}",
+            "",
+            "=== Recent Events ===",
+        ]
+        
+        for line in info_lines:
+            text.insert(tk.END, line + "\n")
+        
+        text.configure(state="disabled")
 
     def _extract_chat_channel(self, line):
         lower = line.lower()
@@ -1110,109 +1260,54 @@ class PGLOKApp:
         )
 
     def _toggle_always_on_top(self):
-        new_state = not bool(self.always_on_top_var.get())
-        self.always_on_top_var.set(new_state)
+        """Toggle always on top state from checkbox."""
+        new_state = self.pin_var.get()
         self.root.attributes("-topmost", new_state)
-        if self.pin_button is not None:
-            self.pin_button.configure(text="PIN: ON" if new_state else "PIN: OFF")
         self._set_ui_pref("always_on_top", new_state)
 
     def _restore_always_on_top_state(self):
+        """Restore always on top state from preferences."""
         value = bool(self._get_ui_pref("always_on_top", False))
-        self.always_on_top_var.set(value)
+        self.pin_var.set(value)
         self.root.attributes("-topmost", value)
-        if self.pin_button is not None:
-            self.pin_button.configure(text="PIN: ON" if value else "PIN: OFF")
 
     def _build_home_page(self):
         self.home_paned = None
-        search_card = ttk.Frame(self.home_page, padding=8, style="App.Card.TFrame")
-        search_card.pack(fill="both", expand=True)
-
-        ttk.Label(search_card, text="Global Search", style="App.Header.TLabel").pack(anchor="w")
-
-        search_row = ttk.Frame(search_card, style="App.Card.TFrame")
-        search_row.pack(fill="x", pady=(4, 4))
-        search_entry = ttk.Entry(search_row, textvariable=self.global_search_var, style="App.TEntry")
-        search_entry.pack(side="left", fill="x", expand=True)
-        self.entry_spellcheck.register(search_entry)
-        search_entry.bind("<Return>", lambda _e: self._start_global_search())
-        search_entry.bind("<Button-1>", lambda _e: self._select_all_text(search_entry))
-        ttk.Button(
-            search_row,
-            text="Search",
-            command=self._start_global_search,
-            style="App.Primary.TButton",
-        ).pack(side="left", padx=(6, 4))
-        ttk.Button(
-            search_row,
-            text="Reset",
-            command=self._reset_global_search,
-            style="App.Secondary.TButton",
-        ).pack(side="left")
-
-        results_wrap = ttk.Frame(search_card, style="App.Card.TFrame")
-        results_wrap.pack(fill="both", expand=True)
-
-        self.global_search_paned = ttk.Panedwindow(results_wrap, orient="vertical", style="App.TPanedwindow")
-        self.global_search_paned.pack(fill="both", expand=True)
-        self.global_search_paned.bind("<ButtonRelease-1>", self._on_global_search_pane_resize)
-        results_top = ttk.Frame(self.global_search_paned, style="App.Card.TFrame")
-        results_bottom = ttk.Frame(self.global_search_paned, style="App.Card.TFrame")
-        self.global_search_paned.add(results_top, weight=3)
-        self.global_search_paned.add(results_bottom, weight=2)
-        try:
-            self.global_search_paned.pane(results_top, minsize=90)
-            self.global_search_paned.pane(results_bottom, minsize=90)
-        except tk.TclError:
-            pass
-
-        results_tree_wrap = ttk.Frame(results_top, style="App.Card.TFrame")
-        results_tree_wrap.pack(fill="both", expand=True)
-        results_tree_scroll = ttk.Scrollbar(results_tree_wrap, orient="vertical", style="App.Vertical.TScrollbar")
-        results_tree_scroll.pack(side="right", fill="y")
-        self.global_search_results_tree = ttk.Treeview(
-            results_tree_wrap,
-            columns=("source", "title", "location"),
-            show="headings",
-            height=7,
-            style="App.Treeview",
-            yscrollcommand=results_tree_scroll.set,
-        )
-        self.global_search_results_tree.heading("source", text="Source")
-        self.global_search_results_tree.heading("title", text="Found")
-        self.global_search_results_tree.heading("location", text="Where")
-        self.global_search_results_tree.column("source", width=120, stretch=False)
-        self.global_search_results_tree.column("title", width=260, stretch=False)
-        self.global_search_results_tree.column("location", width=520, stretch=True)
-        self.global_search_results_tree.pack(side="left", fill="both", expand=True)
-        results_tree_scroll.configure(command=self.global_search_results_tree.yview)
-        self.global_search_results_tree.bind("<<TreeviewSelect>>", self._on_global_search_select)
-
-        detail_wrap = ttk.Frame(results_bottom, style="App.Card.TFrame")
-        detail_wrap.pack(fill="both", expand=True, pady=(4, 0))
-        detail_scroll = ttk.Scrollbar(detail_wrap, orient="vertical", style="App.Vertical.TScrollbar")
-        detail_scroll.pack(side="right", fill="y")
-        self.global_search_detail_text = tk.Text(
-            detail_wrap,
-            height=5,
-            wrap="word",
-            bg=UI_COLORS["entry_bg"],
-            fg=UI_COLORS["text"],
-            insertbackground=UI_COLORS["text"],
-            borderwidth=1,
-            relief="solid",
-            highlightthickness=1,
-            highlightbackground=UI_COLORS["entry_border"],
-            highlightcolor=UI_COLORS["accent"],
-            yscrollcommand=detail_scroll.set,
-        )
-        self.global_search_detail_text.pack(side="left", fill="both", expand=True)
-        detail_scroll.configure(command=self.global_search_detail_text.yview)
-        self._set_global_search_detail("")
-        self.root.after(120, self._restore_global_search_split)
-        self.root.after(140, self._restore_global_search_state)
         self._ensure_home_layout_visible()
+
+    def _build_chat_page(self):
+        """Build the integrated chat monitor page."""
+        # Header with controls
+        header = ttk.Frame(self.chat_page, style="App.Panel.TFrame")
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="Chat Monitor", style="App.Header.TLabel").pack(side="left")
+        
+        control_frame = ttk.Frame(header, style="App.Panel.TFrame")
+        control_frame.pack(side="right")
+        
+        ttk.Button(control_frame, text="Start", command=self._start_chat_monitor, style="App.Primary.TButton").pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(control_frame, text="Stop", command=self._stop_chat_monitor, style="App.Secondary.TButton").pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(control_frame, text="Clear", command=self._clear_chat_output, style="App.Secondary.TButton").pack(side="left")
+
+        # Info bar
+        info = ttk.Frame(self.chat_page, style="App.Card.TFrame", padding=8)
+        info.pack(fill="x", pady=(0, 8))
+        ttk.Label(info, textvariable=self.chat_info_var, style="App.Status.TLabel").pack(anchor="w")
+
+        # Chat notebook with tabs
+        output_wrap = ttk.Frame(self.chat_page, style="App.Card.TFrame", padding=8)
+        output_wrap.pack(fill="both", expand=True)
+        self.chat_notebook = ttk.Notebook(output_wrap)
+        self.chat_notebook.pack(fill="both", expand=True)
+        
+        # Create tabs
+        self._ensure_chat_tab("All")
+        self._ensure_chat_tab("Other")
+        self._ensure_chat_tab("Info")
 
     def _on_home_pane_resize(self, _event=None):
         self._save_home_split()
@@ -3482,9 +3577,19 @@ class PGLOKApp:
         self._load_data_rows(reset_offset=False)
 
     def show_page(self, page_name):
-        for page in (self.home_page,):
-            page.pack_forget()
-        self.home_page.pack(fill="both", expand=True)
+        """Show a specific page in the content area."""
+        # Hide all pages
+        self.home_page.pack_forget()
+        self.chat_page.pack_forget()
+        
+        # Show requested page
+        if page_name == "home":
+            self.home_page.pack(fill="both", expand=True)
+        elif page_name == "chat":
+            self.chat_page.pack(fill="both", expand=True)
+            # Auto-start chat monitor if not running
+            if not self.chat_polling:
+                self._start_chat_monitor()
 
     def _apply_startup_geometry(self):
         self.root.update_idletasks()
@@ -3565,8 +3670,6 @@ class PGLOKApp:
             self.open_itemizer_window()
         if self._is_window_marked_open("character_browser"):
             self.open_character_browser_window()
-        if self._is_window_marked_open("chat_monitor"):
-            self.open_chat_window()
         if self._is_window_marked_open("map_tools"):
             self.open_map_tools_window()
 
@@ -3672,7 +3775,6 @@ class PGLOKApp:
             "character_browser",
             self.character_browser_window is not None and self.character_browser_window.winfo_exists(),
         )
-        self._set_window_open_state("chat_monitor", self.chat_window is not None and self.chat_window.winfo_exists())
         self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
         self._save_window_geometry("settings", self.settings_window)
         self._save_data_browser_pane_split()
@@ -3691,7 +3793,6 @@ class PGLOKApp:
         self._set_ui_pref("itemizer_search", self.itemizer_search_var.get().strip())
         self._set_ui_pref("itemizer_offset", int(self.itemizer_offset))
         self._save_window_geometry("character_browser", self.character_browser_window)
-        self._save_window_geometry("chat_monitor", self.chat_window)
         self._save_window_geometry("map_tools", self.map_tools_window)
         self._stop_chat_monitor()
         self.root.destroy()
