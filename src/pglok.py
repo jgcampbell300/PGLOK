@@ -124,6 +124,9 @@ class PGLOKApp:
         self.current_character = tk.StringVar(value="Unknown")
         self.current_area = tk.StringVar(value="Unknown")
         self.current_guild = tk.StringVar(value="None")
+        
+        # Add trace to update map when area changes
+        self.current_area.trace_add("write", self._on_area_change)
         self.character_count_var = tk.StringVar(value="Characters Loaded: 0")
         self.path_vars = {label: tk.StringVar() for label in UI_TEXT["path_labels"]}
         self.status_var = tk.StringVar(value=UI_TEXT["status_ready"])
@@ -145,6 +148,11 @@ class PGLOKApp:
         # Addon manager will be initialized lazily
         self.addon_manager = None
         self.addons_menu = None
+        
+        # Player position monitor
+        self.player_monitor = None
+        self.player_position_var = tk.StringVar(value="")
+        self._player_pos_after_id = None
 
         apply_theme(self.root)
         self.root.title(UI_ATTRS["window_title"])
@@ -169,6 +177,9 @@ class PGLOKApp:
         self._check_for_upgrade_async()
         if config.PG_BASE is None:
             self.locate_pg()
+        
+        # Start player position monitoring
+        self._start_player_monitor()
 
     def _build_layout(self):
         # Toolbar
@@ -285,10 +296,42 @@ class PGLOKApp:
         """Update center status with current character info."""
         char = self.current_character.get()
         area = self.current_area.get()
+        pos_str = self.player_position_var.get()
         if char and char != "Unknown":
-            self.set_center_status(f"👤 {char}  📍 {area}")
+            if pos_str:
+                self.set_center_status(f"👤 {char}  📍 {area}  📍 {pos_str}")
+            else:
+                self.set_center_status(f"👤 {char}  📍 {area}")
         else:
             self.set_center_status("")
+    
+    def _start_player_monitor(self):
+        """Initialize and start the player position monitor."""
+        try:
+            from src.player.monitor import PlayerLogMonitor
+            self.player_monitor = PlayerLogMonitor()
+            self._poll_player_position()
+        except Exception as e:
+            print(f"Failed to start player monitor: {e}")
+    
+    def _poll_player_position(self):
+        """Poll for player position updates."""
+        if self.player_monitor:
+            try:
+                pos = self.player_monitor.get_latest_position()
+                if pos:
+                    pos_str = f"X:{pos.x:.1f} Y:{pos.y:.1f} Z:{pos.z:.1f}"
+                    self.player_position_var.set(pos_str)
+                    self._update_center_status()
+                    print(f"[DEBUG] Position updated: {pos_str}")
+                else:
+                    print(f"[DEBUG] No new position found")
+            except Exception as e:
+                print(f"[DEBUG] Position error: {e}")
+                pass  # Silently fail - position tracking is optional
+        
+        # Schedule next poll in 2 seconds
+        self._player_pos_after_id = self.root.after(2000, self._poll_player_position)
         
     def set_status_color(self, color):
         """Set status icon color."""
@@ -581,44 +624,61 @@ class PGLOKApp:
                 update_success = perform_auto_update(__version__)
                 
                 def apply_result():
-                    if update_success:
-                        # Show success message and restart
-                        messagebox.showinfo(
-                            "Update Complete", 
-                            f"PGLOK has been updated successfully!\n\nThe application will restart to apply the update."
-                        )
-                        self.root.after(1000, self._restart_application)
-                    else:
-                        # Check if update is available but auto-install failed
-                        from src.updater import fetch_latest_repo_version, parse_version_key
-                        
-                        latest_version, _ = fetch_latest_repo_version()
-                        if latest_version:
-                            current_key = parse_version_key(__version__)
-                            latest_key = parse_version_key(latest_version)
-                            
-                            if current_key and latest_key and latest_key > current_key:
-                                def apply_upgrade_state():
-                                    if self.alpha_button is None:
-                                        return
-                                    self.alpha_button.configure(
-                                        text="Update Available!", 
-                                        command=lambda: webbrowser.open(RELEASES_URL)
-                                    )
-                                    self.status_var.set(f"Update available: {__version__} → {latest_version}")
-                                
-                                self.root.after(0, apply_upgrade_state)
-                            else:
-                                self.status_var.set("PGLOK is up to date")
+                    try:
+                        if update_success:
+                            # Show success message and restart
+                            messagebox.showinfo(
+                                "Update Complete", 
+                                f"PGLOK has been updated successfully!\n\nThe application will restart to apply the update."
+                            )
+                            self.root.after(1000, self._restart_application)
                         else:
-                            self.status_var.set("Unable to check for updates")
+                            # Check if update is available but auto-install failed
+                            from src.updater import fetch_latest_repo_version, parse_version_key
+                            
+                            latest_version, _ = fetch_latest_repo_version()
+                            if latest_version:
+                                current_key = parse_version_key(__version__)
+                                latest_key = parse_version_key(latest_version)
+                                
+                                if current_key and latest_key and latest_key > current_key:
+                                    def apply_upgrade_state():
+                                        if self.alpha_button is None:
+                                            return
+                                        self.alpha_button.configure(
+                                            text="Update Available!", 
+                                            command=lambda: webbrowser.open(RELEASES_URL)
+                                        )
+                                        self.status_var.set(f"Update available: {__version__} → {latest_version}")
+                                    
+                                    self.root.after(0, apply_upgrade_state)
+                                else:
+                                    self.status_var.set("PGLOK is up to date")
+                            else:
+                                self.status_var.set("Unable to check for updates")
+                    except RuntimeError:
+                        # Main thread is not in main loop (window closed)
+                        pass
+                    except Exception as e:
+                        print(f"Update check result error: {e}")
 
-                self.root.after(0, apply_result)
+                try:
+                    self.root.after(0, apply_result)
+                except RuntimeError:
+                    # Main thread is not in main loop (window closed)
+                    pass
                 
             except Exception as exc:
                 def show_error():
-                    self.status_var.set(f"Update check failed: {exc}")
-                self.root.after(0, show_error)
+                    try:
+                        self.status_var.set(f"Update check failed: {exc}")
+                    except RuntimeError:
+                        pass
+                try:
+                    self.root.after(0, show_error)
+                except RuntimeError:
+                    # Main thread is not in main loop (window closed)
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
     
@@ -1163,6 +1223,32 @@ class PGLOKApp:
             # Guild login/logout of other members
             if "has come online" in lower or "has gone offline" in lower:
                 self._append_chat_line("Info", f"[GUILD] {line.strip()}")
+
+    def _on_area_change(self, *args):
+        """Handle area change - update map browser if open."""
+        new_area = self.current_area.get()
+        
+        # Update map browser if it's open
+        if self.map_tools_browser is not None and self.map_tools_window is not None:
+            if self.map_tools_window.winfo_exists():
+                # Check if the new area matches a map file
+                browser = self.map_tools_browser
+                available_maps = browser.map_combo["values"] if browser.map_combo else []
+                
+                # Try to find matching map (case-insensitive, partial match)
+                if available_maps:
+                    # Direct match first
+                    if new_area in available_maps:
+                        browser.selected_map_var.set(new_area)
+                        browser._on_map_selected()
+                        return
+                    
+                    # Partial match (e.g., "Serbule" matches "Serbule.png")
+                    for map_name in available_maps:
+                        if new_area.lower() in map_name.lower() or map_name.lower() in new_area.lower():
+                            browser.selected_map_var.set(map_name)
+                            browser._on_map_selected()
+                            return
 
     def _update_info_tab(self):
         """Update the Info tab with current game information."""
