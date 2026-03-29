@@ -104,6 +104,47 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
     return None
 
 
+def get_inventory_grid_settings(config_data: Dict) -> Optional[Tuple[int, int]]:
+    """Extract inventory grid columns and slot size from config.
+    
+    Returns: (columns, slot_size) or None if not found
+    """
+    try:
+        # Look for grid configuration entries
+        # Common patterns: inventoryColumns, InventoryColumns, inventory_columns, itemSize, slot_size, etc.
+        for col_key in ['inventoryColumns', 'InventoryColumns', 'inventory_columns', 
+                        'invColumns', 'inv_columns', 'gridColumns', 'grid_columns']:
+            if col_key in config_data:
+                columns = int(config_data[col_key])
+                
+                # Look for slot/item size
+                slot_size = 40  # default
+                for size_key in ['itemSlotSize', 'ItemSlotSize', 'slotSize', 'slot_size', 
+                                'inventorySlotSize', 'inventory_slot_size']:
+                    if size_key in config_data:
+                        slot_size = int(config_data[size_key])
+                        break
+                
+                return (columns, slot_size)
+    except (ValueError, KeyError) as e:
+        print(f"Error extracting inventory grid settings: {e}")
+    
+    return None
+
+
+def calculate_grid_columns_from_width(window_width: int, padding: int = 20, gap: int = 4, 
+                                       slot_size: int = 40) -> int:
+    """Calculate number of columns that fit in the given window width.
+    
+    Formula: (window_width - padding) / (slot_size + gap)
+    """
+    available_width = window_width - padding
+    if slot_size <= 0:
+        return 1
+    columns = max(1, available_width // (slot_size + gap))
+    return columns
+
+
 @dataclass
 class SurveyItem:
     """Represents a survey item found in the world."""
@@ -831,6 +872,22 @@ class SurveyHelperWindow(tk.Toplevel):
         offset_spinbox.pack(side='left', padx=4)
         ttk.Button(arrange_frame, text="Apply", command=self._set_inv_offset, style="App.Secondary.TButton").pack(side='left', padx=4)
         
+        # Grid sizing controls
+        grid_frame = tk.Frame(arrange_frame, bg=UI_COLORS["panel_bg"])
+        grid_frame.pack(fill='x', pady=2)
+        
+        ttk.Label(grid_frame, text="Columns:", style="App.TLabel").pack(side='left', padx=4)
+        self.cols_var = tk.IntVar(value=self.settings.grid_cols)
+        ttk.Spinbox(grid_frame, from_=1, to=20, textvariable=self.cols_var, width=3, 
+                   style="App.TSpinbox", command=self._update_grid_calc).pack(side='left', padx=2)
+        
+        ttk.Label(grid_frame, text="Slot Size:", style="App.TLabel").pack(side='left', padx=4)
+        self.slot_size_var = tk.IntVar(value=self.settings.slot_size)
+        ttk.Spinbox(grid_frame, from_=20, to=80, textvariable=self.slot_size_var, width=3,
+                   style="App.TSpinbox", command=self._update_grid_calc).pack(side='left', padx=2)
+        
+        ttk.Button(grid_frame, text="Apply", command=self._apply_grid_settings, style="App.Secondary.TButton").pack(side='left', padx=2)
+        
         # Overlay controls - use tk.LabelFrame with dark theme colors
         overlay_frame = tk.LabelFrame(frame, text="Overlays", padx=4, pady=3,
                                       bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
@@ -939,6 +996,23 @@ class SurveyHelperWindow(tk.Toplevel):
         
         if self.inv_overlay:
             self.inv_overlay._draw_grid()  # Redraw with new offset
+    
+    def _update_grid_calc(self):
+        """Update grid calculation (called on spinbox change)."""
+        # Just update the variables, don't apply yet
+        pass
+    
+    def _apply_grid_settings(self):
+        """Apply new grid column and slot size settings."""
+        cols = self.cols_var.get()
+        slot_size = self.slot_size_var.get()
+        
+        self.settings.grid_cols = cols
+        self.settings.slot_size = slot_size
+        self.settings.save()
+        
+        if self.inv_overlay:
+            self.inv_overlay._draw_grid()  # Redraw with new settings
     
     def _show_map(self):
         """Toggle the map overlay open/closed."""
@@ -1057,25 +1131,48 @@ class SurveyHelperWindow(tk.Toplevel):
         try:
             config_data = parse_gorgon_config(config_path)
             inv_dims = get_inventory_window_dims(config_data)
+            grid_settings = get_inventory_grid_settings(config_data)
+            
+            info_msg = f"Found GorgonConfig.txt at:\n{config_path}\n\n"
             
             if inv_dims:
                 x, y, width, height = inv_dims
-                messagebox.showinfo("Config Found", 
-                    f"Found inventory window:\n"
-                    f"Position: ({x}, {y})\n"
-                    f"Size: {width}x{height}\n\n"
-                    f"Overlay windows will use this size.\n"
-                    f"Close and reopen overlays to apply.")
+                info_msg += f"Inventory Window:\n"
+                info_msg += f"  Position: ({x}, {y})\n"
+                info_msg += f"  Size: {width}x{height}\n\n"
                 
-                # Save the dimensions for future use
+                # Save position and size
                 self.settings.inv_position = (x, y)
                 self.settings.inv_size = (width, height)
+                
+                # Auto-calculate columns if slot size known, or use from config
+                if grid_settings:
+                    columns, slot_size = grid_settings
+                    self.settings.grid_cols = columns
+                    self.settings.slot_size = slot_size
+                    info_msg += f"Grid Settings (from config):\n"
+                    info_msg += f"  Columns: {columns}\n"
+                    info_msg += f"  Slot Size: {slot_size}px\n"
+                else:
+                    # Auto-calculate columns based on window width and default slot size
+                    slot_size = self.settings.slot_size
+                    columns = calculate_grid_columns_from_width(width, padding=20, slot_size=slot_size)
+                    self.settings.grid_cols = columns
+                    info_msg += f"Grid Settings (auto-calculated):\n"
+                    info_msg += f"  Columns: {columns} (based on width)\n"
+                    info_msg += f"  Slot Size: {slot_size}px (default)\n"
+                
+                # Update UI controls
+                self.count_var.set(self.settings.survey_count)
+                
+                info_msg += f"\nClose and reopen overlays to apply new settings."
+                
                 self.settings.save()
+                messagebox.showinfo("Config Synced", info_msg)
             else:
                 messagebox.showinfo("Config Found", 
-                    f"Found GorgonConfig.txt at:\n{config_path}\n\n"
-                    f"Could not extract inventory window dimensions.\n"
-                    f"File format may have changed.")
+                    info_msg + "Could not extract inventory window dimensions.\n"
+                    "File format may have changed.")
         except Exception as e:
             messagebox.showerror("Error", f"Error reading config: {e}")
     
