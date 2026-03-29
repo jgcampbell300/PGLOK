@@ -698,6 +698,8 @@ class MapOverlay(tk.Toplevel):
     def _close_window(self):
         """Close window, ensuring all settings are saved first."""
         self.settings.save()
+        # Unbind Configure event to prevent saving position during destruction
+        self.unbind('<Configure>')
         if self.on_close_callback:
             self.on_close_callback()
         self.destroy()
@@ -705,6 +707,8 @@ class MapOverlay(tk.Toplevel):
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
+        # Unbind Configure event to prevent saving position during destruction
+        self.unbind('<Configure>')
         if self.on_close_callback:
             self.on_close_callback()
         self.destroy()
@@ -925,6 +929,8 @@ class InventoryOverlay(tk.Toplevel):
     def _close_window(self):
         """Close window, ensuring all settings are saved first."""
         self.settings.save()
+        # Unbind Configure event to prevent saving position during destruction
+        self.unbind('<Configure>')
         if self.on_close_callback:
             self.on_close_callback()
         self.destroy()
@@ -932,6 +938,8 @@ class InventoryOverlay(tk.Toplevel):
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
+        # Unbind Configure event to prevent saving position during destruction
+        self.unbind('<Configure>')
         if self.on_close_callback:
             self.on_close_callback()
         self.destroy()
