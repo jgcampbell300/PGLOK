@@ -65,6 +65,7 @@ class PGLOKApp:
         self.itemizer_window = None
         self.map_tools_window = None
         self.map_tools_browser = None
+        self.survey_helper_window = None
         self.home_paned = None
         self.itemizer_paned = None
         self.itemizer_bottom_paned = None
@@ -820,7 +821,10 @@ class PGLOKApp:
         """Open the Survey Helper window."""
         try:
             from src.survey import open_survey_helper
-            open_survey_helper(self.root)
+            if self.survey_helper_window is None or not self.survey_helper_window.winfo_exists():
+                self.survey_helper_window = open_survey_helper(self.root)
+            else:
+                self.survey_helper_window.lift()
             self.status_var.set("Survey Helper opened")
         except Exception as e:
             self.status_var.set(f"Error opening survey helper: {e}")
@@ -3767,6 +3771,8 @@ class PGLOKApp:
             self.open_character_browser_window()
         if self._is_window_marked_open("map_tools"):
             self.open_map_tools_window()
+        if self._is_window_marked_open("survey_helper"):
+            self._open_survey_helper()
 
     def _raise_main_window_default(self):
         try:
@@ -3871,6 +3877,7 @@ class PGLOKApp:
             self.character_browser_window is not None and self.character_browser_window.winfo_exists(),
         )
         self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
+        self._set_window_open_state("survey_helper", self.survey_helper_window is not None and self.survey_helper_window.winfo_exists())
         self._save_window_geometry("settings", self.settings_window)
         self._save_data_browser_pane_split()
         self._save_data_browser_display_pane_split()
