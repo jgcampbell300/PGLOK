@@ -1,8 +1,8 @@
 {
   "chatlog_dir": "/home/jgcampbell300/.config/unity3d/Elder Game/Project Gorgon/ChatLogs",
   "survey_count": 68,
-  "map_opacity": 0.75,
-  "inv_opacity": 0.85,
+  "map_opacity": 0.4810126582278481,
+  "inv_opacity": 0.5025316455696203,
   "map_clickthrough": false,
   "inv_clickthrough": false,
   "grid_cols": 10,
@@ -37,6 +37,6 @@
     767,
     900
   ],
-  "map_was_open": true,
+  "map_was_open": false,
   "inventory_was_open": true
 }

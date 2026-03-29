@@ -1193,6 +1193,8 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.map_overlay.lift()
             self.map_open = True
             self.map_button.config(text="🗺 Hide Map")
+            # Ensure slider is in sync with overlay opacity
+            self.map_opacity_var.set(self.settings.map_opacity)
     
     def _on_map_closed(self):
         """Called when map overlay is closed by user."""
@@ -1220,6 +1222,8 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.inv_overlay.lift()
             self.inventory_open = True
             self.inv_button.config(text="📦 Hide Inventory")
+            # Ensure slider is in sync with overlay opacity
+            self.inv_opacity_var.set(self.settings.inv_opacity)
     
     def _on_inv_closed(self):
         """Called when inventory overlay is closed by user."""
