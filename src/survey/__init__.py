@@ -907,6 +907,10 @@ class InventoryOverlay(tk.Toplevel):
             self.settings.inv_size = (width, height)
             self.settings.save()
     
+    def _enable_configure_tracking(self):
+        """Enable Configure event tracking after window initialization."""
+        self._skip_configure = False
+    
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
         self.settings.survey_count = count
