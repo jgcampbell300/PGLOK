@@ -502,6 +502,9 @@ class MapOverlay(tk.Toplevel):
         
         # Skip Configure events during initialization
         self._skip_configure = True
+        # Track previous position to detect user movement
+        self._prev_position = None
+        self._prev_size = None
         
         # Bind events
         self.canvas.bind('<Button-1>', self._on_click)
@@ -557,13 +560,32 @@ class MapOverlay(tk.Toplevel):
         self._skip_configure = False
     
     def _enable_configure_tracking_and_opacity(self):
-        """Enable Configure tracking and apply opacity after window settles."""
+        """Enable Configure tracking and apply opacity after window settles.
+        
+        Store the initial position/size so we can detect user movement during the skip window.
+        """
         self._skip_configure = False
+        self._prev_position = (self.winfo_x(), self.winfo_y())
+        self._prev_size = (self.winfo_width(), self.winfo_height())
         self.attributes('-alpha', self.settings.map_opacity)
     
     def _on_resize(self, event):
+        """Handle Configure events - save position/size when window changes."""
         # Skip Configure events during initialization to avoid spurious saves
         if self._skip_configure:
+            # But if position has changed significantly, user moved it - capture it
+            if self._prev_position:
+                curr_pos = (self.winfo_x(), self.winfo_y())
+                curr_size = (self.winfo_width(), self.winfo_height())
+                # Check if position/size differs from what we expect
+                if curr_pos != self._prev_position or curr_size != self._prev_size:
+                    # User moved or resized - save this new position
+                    if curr_size[0] > 50 and curr_size[1] > 50:
+                        self.settings.map_position = curr_pos
+                        self.settings.map_size = curr_size
+                        self.settings.save()
+                        self._prev_position = curr_pos
+                        self._prev_size = curr_size
             return
         
         # Only save position/size if window has reasonable dimensions
@@ -781,6 +803,9 @@ class InventoryOverlay(tk.Toplevel):
         
         # Skip Configure events during initialization
         self._skip_configure = True
+        # Track previous position to detect user movement
+        self._prev_position = None
+        self._prev_size = None
         
         # Bind events
         self.canvas.bind('<Button-3>', self._start_drag)
@@ -931,8 +956,22 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def _on_resize(self, event):
+        """Handle Configure events - save position/size when window changes."""
         # Skip Configure events during initialization to avoid spurious saves
         if self._skip_configure:
+            # But if position has changed significantly, user moved it - capture it
+            if self._prev_position:
+                curr_pos = (self.winfo_x(), self.winfo_y())
+                curr_size = (self.winfo_width(), self.winfo_height())
+                # Check if position/size differs from what we expect
+                if curr_pos != self._prev_position or curr_size != self._prev_size:
+                    # User moved or resized - save this new position
+                    if curr_size[0] > 50 and curr_size[1] > 50:
+                        self.settings.inv_position = curr_pos
+                        self.settings.inv_size = curr_size
+                        self.settings.save()
+                        self._prev_position = curr_pos
+                        self._prev_size = curr_size
             return
         
         # Only save position/size if window has reasonable dimensions
@@ -949,8 +988,13 @@ class InventoryOverlay(tk.Toplevel):
         self._skip_configure = False
     
     def _enable_configure_tracking_and_opacity(self):
-        """Enable Configure tracking and apply opacity after window settles."""
+        """Enable Configure tracking and apply opacity after window settles.
+        
+        Store the initial position/size so we can detect user movement during the skip window.
+        """
         self._skip_configure = False
+        self._prev_position = (self.winfo_x(), self.winfo_y())
+        self._prev_size = (self.winfo_width(), self.winfo_height())
         self.attributes('-alpha', self.settings.inv_opacity)
     
     def set_survey_count(self, count: int):

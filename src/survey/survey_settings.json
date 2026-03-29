@@ -12,15 +12,15 @@
   "hotkey": "<num0>",
   "map_position": [
     5069,
-    1143
+    1145
   ],
   "inv_position": [
-    3904,
-    1337
+    3899,
+    1339
   ],
   "map_size": [
     451,
-    504
+    503
   ],
   "inv_size": [
     437,
@@ -30,7 +30,7 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    5822,
+    5823,
     1259
   ],
   "main_window_size": [
