@@ -1069,16 +1069,19 @@ class SurveyHelperWindow(tk.Toplevel):
         # Position setting
         ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position, style="App.Secondary.TButton").pack(fill='x', pady=1)
         
-        # Opacity sliders
-        ttk.Label(overlay_frame, text="Map Opacity:", style="App.TLabel").pack(anchor='w', pady=(2, 0))
-        self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
-        ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.map_opacity_var, 
-                  command=self._update_map_opacity, style="App.Horizontal.TScale", orient='horizontal').pack(fill='x', pady=(0, 2))
+        # Opacity controls - use Spinbox for precise values
+        opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
+        opacity_frame.pack(fill='x', pady=1)
         
-        ttk.Label(overlay_frame, text="Inventory Opacity:", style="App.TLabel").pack(anchor='w', pady=(2, 0))
+        ttk.Label(opacity_frame, text="Map Opacity:", style="App.TLabel").pack(side='left', padx=4)
+        self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
+        ttk.Spinbox(opacity_frame, from_=0.1, to=1.0, textvariable=self.map_opacity_var, width=5,
+                   style="App.TSpinbox", command=self._update_map_opacity).pack(side='left', padx=2)
+        
+        ttk.Label(opacity_frame, text="Inv Opacity:", style="App.TLabel").pack(side='left', padx=4)
         self.inv_opacity_var = tk.DoubleVar(value=self.settings.inv_opacity)
-        ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.inv_opacity_var,
-                  command=self._update_inv_opacity, style="App.Horizontal.TScale", orient='horizontal').pack(fill='x', pady=(0, 2))
+        ttk.Spinbox(opacity_frame, from_=0.1, to=1.0, textvariable=self.inv_opacity_var, width=5,
+                   style="App.TSpinbox", command=self._update_inv_opacity).pack(side='left', padx=2)
         
         # Click-through toggle buttons
         clickthrough_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
