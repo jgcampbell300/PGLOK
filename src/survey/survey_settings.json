@@ -11,12 +11,12 @@
   "inv_offset": 10,
   "hotkey": "<num0>",
   "map_position": [
-    5074,
-    1175
+    5075,
+    1205
   ],
   "inv_position": [
-    3851,
-    1369
+    3856,
+    1519
   ],
   "map_size": [
     451,
@@ -30,8 +30,8 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    6197,
-    1215
+    6198,
+    1245
   ],
   "main_window_size": [
     419,

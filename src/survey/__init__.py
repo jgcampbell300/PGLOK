@@ -1181,8 +1181,10 @@ class SurveyHelperWindow(tk.Toplevel):
             
             if inv_dims:
                 x, y, width, height = inv_dims
-                info_msg += f"Inventory Window:\n"
-                info_msg += f"  Size: {width}x{height}\n\n"
+                info_msg += f"Game Configuration:\n"
+                info_msg += f"  Game Resolution: {config_data.get('PrefsFullScreenWidth', '?')}x{config_data.get('PrefsFullScreenHeight', '?')}\n"
+                info_msg += f"  Inventory Window Size: {width}x{height}px\n"
+                info_msg += f"  Inventory Rel. Pos: ({x}, {y})\n\n"
                 
                 # NOTE: We don't use x,y from config because they're relative to game UI,
                 # not absolute screen coordinates. User must position overlay manually.
@@ -1203,19 +1205,21 @@ class SurveyHelperWindow(tk.Toplevel):
                     columns = calculate_grid_columns_from_width(width, slot_size=slot_size)
                     self.settings.grid_cols = columns
                     info_msg += f"Grid Settings (auto-calculated):\n"
-                    info_msg += f"  Columns: {columns} (estimate)\n"
+                    info_msg += f"  Columns: {columns}\n"
                     info_msg += f"  Slot Size: {slot_size}px\n"
                 
                 # Update UI controls
                 self.cols_var.set(self.settings.grid_cols)
                 self.slot_size_var.set(self.settings.slot_size)
                 
-                info_msg += f"\n💡 Position overlay manually:\n"
+                info_msg += f"\n💡 To position overlay on middle monitor:\n"
                 info_msg += f"  1. Close this overlay (if open)\n"
                 info_msg += f"  2. Click 'Show Inventory'\n"
-                info_msg += f"  3. Drag overlay over game window\n"
+                info_msg += f"  3. Move overlay to match game window\n"
+                info_msg += f"     (Use middle monitor as target)\n"
                 info_msg += f"  4. Position will auto-save\n\n"
-                info_msg += f"Close and reopen to apply size."
+                info_msg += f"Click Apply if you adjusted Columns.\n"
+                info_msg += f"Close and reopen overlay to use new size."
                 
                 self.settings.save()
                 messagebox.showinfo("Config Synced", info_msg)
