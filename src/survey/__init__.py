@@ -50,6 +50,36 @@ def set_window_icon(window, icon_path: str = "icon.png"):
         pass
 
 
+def parse_geometry(geom_string: str) -> Optional[Tuple[int, int, int, int]]:
+    """Parse a geometry string (WIDTHxHEIGHT+X+Y) into components.
+    
+    Args:
+        geom_string: Geometry string like "400x300+100+50"
+    
+    Returns:
+        Tuple of (width, height, x, y) or None if parsing fails
+    """
+    match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', geom_string)
+    if match:
+        return tuple(map(int, match.groups()))
+    return None
+
+
+def save_window_geometry(window) -> Dict[str, Tuple[int, int]]:
+    """Save window position and size using the actual geometry string.
+    
+    This uses wm_geometry() which returns the true geometry that was set,
+    avoiding the coordinate offset issues that occur when reconstructing
+    geometry from winfo_x/y/width/height.
+    
+    Returns:
+        Dict with 'position': (x, y) and 'size': (width, height)
+    """
+    geom = window.wm_geometry()
+    w, h, x, y = parse_geometry(geom)
+    return {'position': (x, y), 'size': (w, h)}
+
+
 def find_gorgon_config() -> Optional[Path]:
     """Search for GorgonConfig.txt or GorgonSettings.txt across different OS locations."""
     import sys
@@ -502,9 +532,6 @@ class MapOverlay(tk.Toplevel):
         
         # Skip Configure events during initialization
         self._skip_configure = True
-        # Track previous position to detect user movement
-        self._prev_position = None
-        self._prev_size = None
         
         # Bind events
         self.canvas.bind('<Button-1>', self._on_click)
@@ -560,42 +587,24 @@ class MapOverlay(tk.Toplevel):
         self._skip_configure = False
     
     def _enable_configure_tracking_and_opacity(self):
-        """Enable Configure tracking and apply opacity after window settles.
-        
-        Store the initial position/size so we can detect user movement during the skip window.
-        """
+        """Enable Configure tracking and apply opacity after window settles."""
         self._skip_configure = False
-        self._prev_position = (self.winfo_x(), self.winfo_y())
-        self._prev_size = (self.winfo_width(), self.winfo_height())
         self.attributes('-alpha', self.settings.map_opacity)
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
-        # Skip Configure events during initialization to avoid spurious saves
-        if self._skip_configure:
-            # But if position has changed significantly, user moved it - capture it
-            if self._prev_position:
-                curr_pos = (self.winfo_x(), self.winfo_y())
-                curr_size = (self.winfo_width(), self.winfo_height())
-                # Check if position/size differs from what we expect
-                if curr_pos != self._prev_position or curr_size != self._prev_size:
-                    # User moved or resized - save this new position
-                    if curr_size[0] > 50 and curr_size[1] > 50:
-                        self.settings.map_position = curr_pos
-                        self.settings.map_size = curr_size
-                        self.settings.save()
-                        self._prev_position = curr_pos
-                        self._prev_size = curr_size
-            return
-        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
         height = self.winfo_height()
         if width > 50 and height > 50:
-            self.settings.map_position = (self.winfo_x(), self.winfo_y())
-            self.settings.map_size = (width, height)
-            self.settings.save()
+            # Use the actual geometry string to avoid coordinate offset issues
+            geom = self.wm_geometry()
+            w, h, x, y = parse_geometry(geom)
+            if w and h:
+                self.settings.map_position = (x, y)
+                self.settings.map_size = (w, h)
+                self.settings.save()
     
     def _on_click(self, event):
         if self._is_setting_position:
@@ -803,9 +812,6 @@ class InventoryOverlay(tk.Toplevel):
         
         # Skip Configure events during initialization
         self._skip_configure = True
-        # Track previous position to detect user movement
-        self._prev_position = None
-        self._prev_size = None
         
         # Bind events
         self.canvas.bind('<Button-3>', self._start_drag)
@@ -957,44 +963,26 @@ class InventoryOverlay(tk.Toplevel):
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
-        # Skip Configure events during initialization to avoid spurious saves
-        if self._skip_configure:
-            # But if position has changed significantly, user moved it - capture it
-            if self._prev_position:
-                curr_pos = (self.winfo_x(), self.winfo_y())
-                curr_size = (self.winfo_width(), self.winfo_height())
-                # Check if position/size differs from what we expect
-                if curr_pos != self._prev_position or curr_size != self._prev_size:
-                    # User moved or resized - save this new position
-                    if curr_size[0] > 50 and curr_size[1] > 50:
-                        self.settings.inv_position = curr_pos
-                        self.settings.inv_size = curr_size
-                        self.settings.save()
-                        self._prev_position = curr_pos
-                        self._prev_size = curr_size
-            return
-        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
         height = self.winfo_height()
         if width > 50 and height > 50:
-            self.settings.inv_position = (self.winfo_x(), self.winfo_y())
-            self.settings.inv_size = (width, height)
-            self.settings.save()
+            # Use the actual geometry string to avoid coordinate offset issues
+            geom = self.wm_geometry()
+            w, h, x, y = parse_geometry(geom)
+            if w and h:
+                self.settings.inv_position = (x, y)
+                self.settings.inv_size = (w, h)
+                self.settings.save()
     
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
         self._skip_configure = False
     
     def _enable_configure_tracking_and_opacity(self):
-        """Enable Configure tracking and apply opacity after window settles.
-        
-        Store the initial position/size so we can detect user movement during the skip window.
-        """
+        """Enable Configure tracking and apply opacity after window settles."""
         self._skip_configure = False
-        self._prev_position = (self.winfo_x(), self.winfo_y())
-        self._prev_size = (self.winfo_width(), self.winfo_height())
         self.attributes('-alpha', self.settings.inv_opacity)
     
     def set_survey_count(self, count: int):
