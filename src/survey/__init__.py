@@ -665,8 +665,11 @@ class SurveyHelperWindow(tk.Toplevel):
         # Bind Configure event to save window size/position on changes
         self.bind('<Configure>', self._on_main_window_configure)
         
-        # Apply PGLOK theme
+        # Apply PGLOK theme - this sets window background and TTK styles
         apply_theme(self)
+        
+        # Explicitly set window background to ensure it shows (not just frame)
+        self.configure(bg=UI_COLORS["bg"])
         
         self._build_ui()
         self._restore_overlays()
