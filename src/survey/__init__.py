@@ -9,6 +9,8 @@ from tkinter import ttk, messagebox
 import re
 import json
 import math
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass, asdict
@@ -187,6 +189,62 @@ def calculate_grid_columns_from_width(window_width: int, padding: int = 50, gap:
         return 1
     columns = max(1, available_width // (slot_size + gap))
     return columns
+
+
+def find_game_window() -> Optional[Tuple[int, int, int, int]]:
+    """Find Project Gorgon game window position and size.
+    
+    Returns: (x, y, width, height) or None if not found
+    Works on Linux with wmctrl. Returns None on other platforms.
+    """
+    if sys.platform != 'linux':
+        return None
+    
+    try:
+        # Use wmctrl to find window info
+        result = subprocess.run(
+            ['wmctrl', '-l', '-p', '-G'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        # Parse output to find "Project Gorgon" window
+        for line in result.stdout.splitlines():
+            if 'Project Gorgon' in line and 'jgcampbell300@' not in line:  # Exclude file browser
+                parts = line.split()
+                if len(parts) >= 7:
+                    try:
+                        # Format: window_id desktop pid x y width height host name...
+                        x = int(parts[3])
+                        y = int(parts[4])
+                        width = int(parts[5])
+                        height = int(parts[6])
+                        return (x, y, width, height)
+                    except (ValueError, IndexError):
+                        pass
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    return None
+
+
+def calculate_overlay_position(game_pos: Tuple[int, int, int, int], 
+                               rel_x: float, rel_y: float) -> Tuple[int, int]:
+    """Calculate absolute overlay position from game window and relative coordinates.
+    
+    Args:
+        game_pos: (game_x, game_y, game_width, game_height)
+        rel_x: Relative X position within game window (e.g., M value from GorgonSettings)
+        rel_y: Relative Y position within game window (e.g., L value from GorgonSettings)
+    
+    Returns: (abs_x, abs_y) - absolute screen coordinates
+    """
+    game_x, game_y, _, _ = game_pos
+    abs_x = game_x + int(rel_x)
+    abs_y = game_y + int(rel_y)
+    return (abs_x, abs_y)
+
 
 
 @dataclass
@@ -1180,15 +1238,34 @@ class SurveyHelperWindow(tk.Toplevel):
             info_msg = f"Found config at:\n{config_path}\n\n"
             
             if inv_dims:
-                x, y, width, height = inv_dims
+                rel_x, rel_y, width, height = inv_dims
                 info_msg += f"Game Configuration:\n"
                 info_msg += f"  Game Resolution: {config_data.get('PrefsFullScreenWidth', '?')}x{config_data.get('PrefsFullScreenHeight', '?')}\n"
                 info_msg += f"  Inventory Window Size: {width}x{height}px\n"
-                info_msg += f"  Inventory Rel. Pos: ({x}, {y})\n\n"
+                info_msg += f"  Inventory Rel. Pos: ({rel_x}, {rel_y})\n\n"
                 
-                # NOTE: We don't use x,y from config because they're relative to game UI,
-                # not absolute screen coordinates. User must position overlay manually.
-                # Only save size
+                # Try to find game window and calculate absolute position
+                game_pos = find_game_window()
+                if game_pos:
+                    game_x, game_y, game_w, game_h = game_pos
+                    abs_x, abs_y = calculate_overlay_position(game_pos, rel_x, rel_y)
+                    self.settings.inv_position = (abs_x, abs_y)
+                    self.settings.inv_size = (width, height)
+                    info_msg += f"Game Window Detected:\n"
+                    info_msg += f"  Position: ({game_x}, {game_y})\n"
+                    info_msg += f"  Size: {game_w}x{game_h}\n\n"
+                    info_msg += f"✓ Overlay position calculated!\n"
+                    info_msg += f"  Overlay will appear at ({abs_x}, {abs_y})\n\n"
+                else:
+                    # Manual positioning fallback
+                    info_msg += f"⚠ Could not detect game window.\n"
+                    info_msg += f"  (wmctrl not found or game not running)\n\n"
+                    info_msg += f"💡 Manual positioning:\n"
+                    info_msg += f"  1. Click 'Show Inventory'\n"
+                    info_msg += f"  2. Drag overlay to match game\n"
+                    info_msg += f"  3. Position auto-saves\n\n"
+                
+                # Save size
                 self.settings.inv_size = (width, height)
                 
                 # Auto-calculate columns if slot size known, or use from config
@@ -1212,14 +1289,7 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.cols_var.set(self.settings.grid_cols)
                 self.slot_size_var.set(self.settings.slot_size)
                 
-                info_msg += f"\n💡 To position overlay on middle monitor:\n"
-                info_msg += f"  1. Close this overlay (if open)\n"
-                info_msg += f"  2. Click 'Show Inventory'\n"
-                info_msg += f"  3. Move overlay to match game window\n"
-                info_msg += f"     (Use middle monitor as target)\n"
-                info_msg += f"  4. Position will auto-save\n\n"
-                info_msg += f"Click Apply if you adjusted Columns.\n"
-                info_msg += f"Close and reopen overlay to use new size."
+                info_msg += f"\nClose and reopen overlay to apply."
                 
                 self.settings.save()
                 messagebox.showinfo("Config Synced", info_msg)

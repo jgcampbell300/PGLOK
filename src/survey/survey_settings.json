@@ -2,7 +2,7 @@
   "chatlog_dir": "/home/jgcampbell300/.config/unity3d/Elder Game/Project Gorgon/ChatLogs",
   "survey_count": 25,
   "map_opacity": 0.36528925619834707,
-  "inv_opacity": 0.315702479338843,
+  "inv_opacity": 0.25619834710743805,
   "map_clickthrough": false,
   "inv_clickthrough": false,
   "grid_cols": 12,
@@ -11,12 +11,12 @@
   "inv_offset": 10,
   "hotkey": "<num0>",
   "map_position": [
-    5075,
-    1205
+    5077,
+    1265
   ],
   "inv_position": [
-    3856,
-    1519
+    3899,
+    1395
   ],
   "map_size": [
     451,
@@ -30,8 +30,8 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    6198,
-    1245
+    6192,
+    1128
   ],
   "main_window_size": [
     419,
