@@ -471,6 +471,9 @@ class MapOverlay(tk.Toplevel):
         self._drag_data = {'x': 0, 'y': 0}
         self._is_setting_position = False
         
+        # Skip Configure events during initialization
+        self._skip_configure = True
+        
         # Bind events
         self.canvas.bind('<Button-1>', self._on_click)
         self.canvas.bind('<Button-3>', self._start_drag)
@@ -498,6 +501,9 @@ class MapOverlay(tk.Toplevel):
         # Restore clickthrough if previously enabled
         if self.settings.map_clickthrough:
             self.set_clickthrough(True)
+        
+        # Enable Configure tracking after window settles (avoid spurious saves during init)
+        self.after(250, self._enable_configure_tracking)
     
     def _create_resize_handle(self):
         """Create a resize handle in the bottom-right corner."""
@@ -517,7 +523,15 @@ class MapOverlay(tk.Toplevel):
             new_h = max(100, self._resize_start['h'] + dy)
             self.geometry(f"{new_w}x{new_h}")
     
+    def _enable_configure_tracking(self):
+        """Enable Configure event tracking after window initialization."""
+        self._skip_configure = False
+    
     def _on_resize(self, event):
+        # Skip Configure events during initialization to avoid spurious saves
+        if self._skip_configure:
+            return
+        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
@@ -732,6 +746,9 @@ class InventoryOverlay(tk.Toplevel):
         # Dragging
         self._drag_data = {'x': 0, 'y': 0}
         
+        # Skip Configure events during initialization
+        self._skip_configure = True
+        
         # Bind events
         self.canvas.bind('<Button-3>', self._start_drag)
         self.canvas.bind('<B3-Motion>', self._on_drag)
@@ -764,6 +781,9 @@ class InventoryOverlay(tk.Toplevel):
             self.set_clickthrough(True)
         
         self._draw_grid()
+        
+        # Enable Configure tracking after window settles (avoid spurious saves during init)
+        self.after(250, self._enable_configure_tracking)
     
     def _create_resize_handle(self):
         self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
@@ -878,6 +898,10 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def _on_resize(self, event):
+        # Skip Configure events during initialization to avoid spurious saves
+        if self._skip_configure:
+            return
+        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
