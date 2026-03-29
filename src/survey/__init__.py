@@ -85,6 +85,8 @@ class SurveySettings:
         self.scale_factor: Optional[float] = None  # pixels per meter
         self.origin_x: Optional[float] = None  # player position on map
         self.origin_y: Optional[float] = None
+        self.main_window_position: Optional[Tuple[int, int]] = None  # (x, y)
+        self.main_window_size: Optional[Tuple[int, int]] = None  # (width, height)
         
         self.load()
     
@@ -119,6 +121,11 @@ class SurveySettings:
                 self.origin_x = data.get('origin_x')
                 self.origin_y = data.get('origin_y')
                 
+                if data.get('main_window_position'):
+                    self.main_window_position = tuple(data['main_window_position'])
+                if data.get('main_window_size'):
+                    self.main_window_size = tuple(data['main_window_size'])
+                
             except Exception as e:
                 print(f"Error loading survey settings: {e}")
     
@@ -142,6 +149,8 @@ class SurveySettings:
             'scale_factor': self.scale_factor,
             'origin_x': self.origin_x,
             'origin_y': self.origin_y,
+            'main_window_position': list(self.main_window_position) if self.main_window_position else None,
+            'main_window_size': list(self.main_window_size) if self.main_window_size else None,
         }
         
         try:
@@ -202,6 +211,10 @@ class MapOverlay(tk.Toplevel):
             self.geometry(f"{self.settings.map_size[0]}x{self.settings.map_size[1]}")
         else:
             self.geometry("400x400")
+        
+        # Restore clickthrough if previously enabled
+        if self.settings.map_clickthrough:
+            self.set_clickthrough(True)
     
     def _create_resize_handle(self):
         """Create a resize handle in the bottom-right corner."""
@@ -443,6 +456,10 @@ class InventoryOverlay(tk.Toplevel):
         else:
             self._calculate_size()
         
+        # Restore clickthrough if previously enabled
+        if self.settings.inv_clickthrough:
+            self.set_clickthrough(True)
+        
         self._draw_grid()
     
     def _create_resize_handle(self):
@@ -599,13 +616,21 @@ class SurveyHelperWindow(tk.Toplevel):
         super().__init__(parent)
         
         self.title("Survey Helper")
-        self.geometry("400x500")
         
         self.settings = SurveySettings()
         self.items: List[SurveyItem] = []
         self.current_route: List[int] = []
         self.current_route_index = 0
         self.session_start: Optional[datetime] = None
+        
+        # Restore main window geometry or use default
+        if self.settings.main_window_position and self.settings.main_window_size:
+            self.geometry(f"{self.settings.main_window_size[0]}x{self.settings.main_window_size[1]}"
+                         f"+{self.settings.main_window_position[0]}+{self.settings.main_window_position[1]}")
+        elif self.settings.main_window_size:
+            self.geometry(f"{self.settings.main_window_size[0]}x{self.settings.main_window_size[1]}")
+        else:
+            self.geometry("400x500")
         
         # Chat monitor
         self.chat_monitor: Optional[ChatLogMonitor] = None
@@ -614,6 +639,9 @@ class SurveyHelperWindow(tk.Toplevel):
         # Overlays
         self.map_overlay: Optional[MapOverlay] = None
         self.inv_overlay: Optional[InventoryOverlay] = None
+        
+        # Bind Configure event to save window size/position on changes
+        self.bind('<Configure>', self._on_main_window_configure)
         
         self._build_ui()
         self._start_chat_monitor()
@@ -985,12 +1013,22 @@ class SurveyHelperWindow(tk.Toplevel):
     def on_close(self):
         """Clean up on window close."""
         self._monitoring = False
-        self.settings.save()  # Save before destroying overlays
+        # Save main window geometry before closing
+        self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
+        self.settings.main_window_size = (self.winfo_width(), self.winfo_height())
+        self.settings.save()  # Save all settings before destroying overlays
         if self.map_overlay:
             self.map_overlay.destroy()
         if self.inv_overlay:
             self.inv_overlay.destroy()
         self.destroy()
+    
+    def _on_main_window_configure(self, event=None):
+        """Save main window position/size on resize/move."""
+        # Avoid saving during window creation/destruction
+        if self.winfo_exists():
+            self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
+            self.settings.main_window_size = (self.winfo_width(), self.winfo_height())
 
 
 def open_survey_helper(parent):
