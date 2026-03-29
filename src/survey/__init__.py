@@ -1217,7 +1217,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.settings.inv_offset = offset
         self.settings.save()
         
-        if self.inv_overlay:
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay._draw_grid()  # Redraw with new offset
     
     def _update_grid_calc(self):
@@ -1236,7 +1236,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.settings.slot_gap = gap
         self.settings.save()
         
-        if self.inv_overlay:
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay._draw_grid()  # Redraw with new settings
     
     def _show_map(self):
@@ -1315,7 +1315,7 @@ class SurveyHelperWindow(tk.Toplevel):
         percentage = self.map_opacity_var.get()
         decimal_value = percentage / 100.0
         self.settings.map_opacity = decimal_value
-        if self.map_overlay:
+        if self.map_overlay and self.map_overlay.winfo_exists():
             # update_opacity() will call save() for us
             self.map_overlay.update_opacity(decimal_value)
         else:
@@ -1327,7 +1327,7 @@ class SurveyHelperWindow(tk.Toplevel):
         percentage = self.inv_opacity_var.get()
         decimal_value = percentage / 100.0
         self.settings.inv_opacity = decimal_value
-        if self.inv_overlay:
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
             # update_opacity() will call save() for us
             self.inv_overlay.update_opacity(decimal_value)
         else:
