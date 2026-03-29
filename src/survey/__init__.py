@@ -22,6 +22,88 @@ import src.config.config as config
 from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme
 
 
+def find_gorgon_config() -> Optional[Path]:
+    """Search for GorgonConfig.txt across different OS locations."""
+    import sys
+    
+    possible_paths = []
+    
+    if sys.platform == 'win32':
+        # Windows paths
+        appdata = Path.home() / 'AppData' / 'Roaming' / 'ProjectGorgon'
+        localappdata = Path.home() / 'AppData' / 'Local' / 'ProjectGorgon'
+        possible_paths.extend([
+            appdata / 'GorgonConfig.txt',
+            localappdata / 'GorgonConfig.txt',
+            Path('C:/Program Files/ProjectGorgon/GorgonConfig.txt'),
+            Path('C:/Program Files (x86)/ProjectGorgon/GorgonConfig.txt'),
+        ])
+    elif sys.platform == 'darwin':
+        # macOS paths
+        home = Path.home()
+        possible_paths.extend([
+            home / 'Library' / 'Application Support' / 'ProjectGorgon' / 'GorgonConfig.txt',
+            home / 'Library' / 'Preferences' / 'ProjectGorgon' / 'GorgonConfig.txt',
+            home / '.projectgorgon' / 'GorgonConfig.txt',
+        ])
+    else:
+        # Linux paths
+        home = Path.home()
+        possible_paths.extend([
+            home / '.local' / 'share' / 'ProjectGorgon' / 'GorgonConfig.txt',
+            home / '.config' / 'ProjectGorgon' / 'GorgonConfig.txt',
+            home / '.projectgorgon' / 'GorgonConfig.txt',
+        ])
+    
+    # Search for the file
+    for path in possible_paths:
+        try:
+            if path.exists():
+                return path
+        except Exception:
+            pass
+    
+    return None
+
+
+def parse_gorgon_config(config_path: Path) -> Dict:
+    """Parse GorgonConfig.txt to extract window positions and sizes."""
+    config_data = {}
+    try:
+        with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    config_data[key.strip()] = value.strip()
+    except Exception as e:
+        print(f"Error parsing GorgonConfig.txt: {e}")
+    
+    return config_data
+
+
+def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int, int]]:
+    """Extract inventory window position and size from config.
+    
+    Returns: (x, y, width, height) or None if not found
+    """
+    try:
+        # Look for inventory window config entries
+        # Common patterns: inventoryWindowX, inventoryWindowY, inventoryWindowWidth, inventoryWindowHeight
+        # or Inventory_WindowX, Inventory_WindowY, Inventory_WindowWidth, Inventory_WindowHeight
+        for x_key in ['inventoryWindowX', 'Inventory_WindowX', 'InventoryWindowX']:
+            if x_key in config_data:
+                x = int(config_data[x_key])
+                y = int(config_data.get(x_key.replace('X', 'Y'), 0))
+                width = int(config_data.get(x_key.replace('X', 'Width'), 400))
+                height = int(config_data.get(x_key.replace('X', 'Height'), 300))
+                return (x, y, width, height)
+    except (ValueError, KeyError) as e:
+        print(f"Error extracting inventory dimensions: {e}")
+    
+    return None
+
+
 @dataclass
 class SurveyItem:
     """Represents a survey item found in the world."""
@@ -792,6 +874,9 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_clickthrough_btn.pack(side='left', padx=2)
         self._update_inv_clickthrough_btn()
         
+        # GorgonConfig sync button
+        ttk.Button(overlay_frame, text="🔄 Sync with Game Window", command=self._sync_with_gorgon_config, style="App.Secondary.TButton").pack(fill='x', pady=1)
+        
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=4, pady=3,
                                     bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
@@ -961,6 +1046,38 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update inventory click-through button text."""
         state = "ON" if self.inv_clickthrough_var.get() else "OFF"
         self.inv_clickthrough_btn.config(text=f"📦 Click-Through: {state}")
+    
+    def _sync_with_gorgon_config(self):
+        """Search for and sync overlay windows with GorgonConfig.txt."""
+        config_path = find_gorgon_config()
+        if config_path is None:
+            messagebox.showwarning("Config Not Found", "Could not find GorgonConfig.txt.\n\nSearched common locations for your OS.")
+            return
+        
+        try:
+            config_data = parse_gorgon_config(config_path)
+            inv_dims = get_inventory_window_dims(config_data)
+            
+            if inv_dims:
+                x, y, width, height = inv_dims
+                messagebox.showinfo("Config Found", 
+                    f"Found inventory window:\n"
+                    f"Position: ({x}, {y})\n"
+                    f"Size: {width}x{height}\n\n"
+                    f"Overlay windows will use this size.\n"
+                    f"Close and reopen overlays to apply.")
+                
+                # Save the dimensions for future use
+                self.settings.inv_position = (x, y)
+                self.settings.inv_size = (width, height)
+                self.settings.save()
+            else:
+                messagebox.showinfo("Config Found", 
+                    f"Found GorgonConfig.txt at:\n{config_path}\n\n"
+                    f"Could not extract inventory window dimensions.\n"
+                    f"File format may have changed.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error reading config: {e}")
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
