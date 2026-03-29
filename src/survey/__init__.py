@@ -594,6 +594,10 @@ class MapOverlay(tk.Toplevel):
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
+        # Skip Configure events during initialization
+        if self._skip_configure:
+            return
+        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
@@ -972,6 +976,10 @@ class InventoryOverlay(tk.Toplevel):
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
+        # Skip Configure events during initialization
+        if self._skip_configure:
+            return
+        
         # Only save position/size if window has reasonable dimensions
         # (avoid saving during destruction or minimization)
         width = self.winfo_width()
