@@ -50,19 +50,20 @@ def set_window_icon(window, icon_path: str = "icon.png"):
         pass
 
 
-def parse_geometry(geom_string: str) -> Optional[Tuple[int, int, int, int]]:
+def parse_geometry(geom_string: str) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
     """Parse a geometry string (WIDTHxHEIGHT+X+Y) into components.
     
     Args:
         geom_string: Geometry string like "400x300+100+50"
     
     Returns:
-        Tuple of (width, height, x, y) or None if parsing fails
+        Tuple of (width, height, x, y) where each may be None if parsing fails
     """
     match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', geom_string)
     if match:
-        return tuple(map(int, match.groups()))
-    return None
+        w, h, x, y = map(int, match.groups())
+        return (w, h, x, y)
+    return (None, None, None, None)
 
 
 def save_window_geometry(window) -> Dict[str, Tuple[int, int]]:
@@ -633,7 +634,11 @@ class MapOverlay(tk.Toplevel):
         x = event.x_root - self._drag_data['x']
         y = event.y_root - self._drag_data['y']
         self.geometry(f"+{x}+{y}")
-        self.settings.map_position = (x, y)
+        # Read back the actual geometry to account for window manager adjustments
+        geom = self.wm_geometry()
+        w, h, actual_x, actual_y = parse_geometry(geom)
+        if actual_x is not None and actual_y is not None:
+            self.settings.map_position = (actual_x, actual_y)
         self.settings.save()
     
     def set_setting_position_mode(self, enabled: bool):
@@ -958,7 +963,11 @@ class InventoryOverlay(tk.Toplevel):
         x = event.x_root - self._drag_data['x']
         y = event.y_root - self._drag_data['y']
         self.geometry(f"+{x}+{y}")
-        self.settings.inv_position = (x, y)
+        # Read back the actual geometry to account for window manager adjustments
+        geom = self.wm_geometry()
+        w, h, actual_x, actual_y = parse_geometry(geom)
+        if actual_x is not None and actual_y is not None:
+            self.settings.inv_position = (actual_x, actual_y)
         self.settings.save()
     
     def _on_resize(self, event):
