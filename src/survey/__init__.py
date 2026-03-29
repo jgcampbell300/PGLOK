@@ -78,6 +78,7 @@ class SurveySettings:
         self.grid_cols: int = 10
         self.slot_size: int = 40
         self.slot_gap: int = 4
+        self.inv_offset: int = 0  # blank slots before first item
         self.hotkey: str = "<num0>"
         self.map_position: Optional[Tuple[int, int]] = None
         self.inv_position: Optional[Tuple[int, int]] = None
@@ -109,6 +110,7 @@ class SurveySettings:
                 self.grid_cols = data.get('grid_cols', 10)
                 self.slot_size = data.get('slot_size', 40)
                 self.slot_gap = data.get('slot_gap', 4)
+                self.inv_offset = data.get('inv_offset', 0)
                 self.hotkey = data.get('hotkey', '<num0>')
                 
                 if data.get('map_position'):
@@ -147,6 +149,7 @@ class SurveySettings:
             'grid_cols': self.grid_cols,
             'slot_size': self.slot_size,
             'slot_gap': self.slot_gap,
+            'inv_offset': self.inv_offset,
             'hotkey': self.hotkey,
             'map_position': list(self.map_position) if self.map_position else None,
             'inv_position': list(self.inv_position) if self.inv_position else None,
@@ -504,7 +507,8 @@ class InventoryOverlay(tk.Toplevel):
     def _calculate_size(self):
         """Calculate window size based on grid settings."""
         cols = self.settings.grid_cols
-        rows = (self.settings.survey_count + cols - 1) // cols if self.settings.survey_count > 0 else 1
+        total_slots = self.settings.survey_count + self.settings.inv_offset
+        rows = (total_slots + cols - 1) // cols if total_slots > 0 else 1
         
         width = cols * self.settings.slot_size + (cols - 1) * self.settings.slot_gap + 20
         height = rows * self.settings.slot_size + (rows - 1) * self.settings.slot_gap + 20
@@ -517,7 +521,8 @@ class InventoryOverlay(tk.Toplevel):
             return
         
         cols = self.settings.grid_cols
-        rows = (self.settings.survey_count + cols - 1) // cols
+        total_slots = self.settings.survey_count + self.settings.inv_offset
+        rows = (total_slots + cols - 1) // cols
         
         # Calculate slot size to fit
         available_w = self.winfo_width() - 20
@@ -536,12 +541,14 @@ class InventoryOverlay(tk.Toplevel):
         
         cols = self.settings.grid_cols
         count = max(self.settings.survey_count, 1)
-        rows = (count + cols - 1) // cols
+        offset = self.settings.inv_offset
+        total_slots = count + offset  # Include blank slots in calculation
+        rows = (total_slots + cols - 1) // cols
         
         slot = self.settings.slot_size
         gap = self.settings.slot_gap
         
-        for i in range(count):
+        for i in range(total_slots):
             row = i // cols
             col = i % cols
             
@@ -550,24 +557,34 @@ class InventoryOverlay(tk.Toplevel):
             x2 = x1 + slot
             y2 = y1 + slot
             
-            # Draw slot
-            color = UI_COLORS["primary"] if i in self.filled_slots else UI_COLORS["secondary"]
-            outline = UI_COLORS["text"] if i in self.filled_slots else UI_COLORS["muted_text"]
-            
-            rect = self.canvas.create_rectangle(
-                x1, y1, x2, y2,
-                fill=color, outline=outline, width=2,
-                tags=f'slot_{i}'
-            )
-            
-            # Add number
-            self.canvas.create_text(
-                (x1 + x2) // 2, (y1 + y2) // 2,
-                text=str(i + 1),
-                fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold')
-            )
-            
-            self.slots.append(rect)
+            # Skip blank slots at the beginning
+            if i < offset:
+                # Draw empty slot (grayed out)
+                self.canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    fill=UI_COLORS["card_bg"], outline=UI_COLORS["entry_border"], width=1,
+                    tags=f'blank_{i}'
+                )
+            else:
+                item_idx = i - offset
+                # Draw slot
+                color = UI_COLORS["primary"] if item_idx in self.filled_slots else UI_COLORS["secondary"]
+                outline = UI_COLORS["text"] if item_idx in self.filled_slots else UI_COLORS["muted_text"]
+                
+                rect = self.canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    fill=color, outline=outline, width=2,
+                    tags=f'slot_{item_idx}'
+                )
+                
+                # Add number
+                self.canvas.create_text(
+                    (x1 + x2) // 2, (y1 + y2) // 2,
+                    text=str(item_idx + 1),
+                    fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold')
+                )
+                
+                self.slots.append(rect)
     
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
@@ -719,6 +736,19 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Spinbox(count_frame, from_=0, to=100, textvariable=self.count_var, width=5, style="App.TSpinbox").pack(side='left', padx=4)
         ttk.Button(count_frame, text="Set Count", command=self._set_survey_count, style="App.Secondary.TButton").pack(side='left', padx=4)
         
+        # Inventory arrangement - use tk.LabelFrame with dark theme colors
+        arrange_frame = tk.LabelFrame(frame, text="Inventory Arrangement", padx=4, pady=3,
+                                      bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                      font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                      borderwidth=1, relief="solid")
+        arrange_frame.pack(fill='x', pady=3)
+        
+        ttk.Label(arrange_frame, text="Blank Spaces Before 1st Item:", style="App.TLabel").pack(anchor='w')
+        self.offset_var = tk.IntVar(value=self.settings.inv_offset)
+        offset_spinbox = ttk.Spinbox(arrange_frame, from_=0, to=100, textvariable=self.offset_var, width=5, style="App.TSpinbox")
+        offset_spinbox.pack(side='left', padx=4)
+        ttk.Button(arrange_frame, text="Apply", command=self._set_inv_offset, style="App.Secondary.TButton").pack(side='left', padx=4)
+        
         # Overlay controls - use tk.LabelFrame with dark theme colors
         overlay_frame = tk.LabelFrame(frame, text="Overlays", padx=4, pady=3,
                                       bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
@@ -801,6 +831,15 @@ class SurveyHelperWindow(tk.Toplevel):
         for i in range(count):
             if self.inv_overlay:
                 self.inv_overlay.mark_slot_filled(i)
+    
+    def _set_inv_offset(self):
+        """Set the inventory blank space offset."""
+        offset = self.offset_var.get()
+        self.settings.inv_offset = offset
+        self.settings.save()
+        
+        if self.inv_overlay:
+            self.inv_overlay._draw_grid()  # Redraw with new offset
     
     def _show_map(self):
         """Toggle the map overlay open/closed."""
