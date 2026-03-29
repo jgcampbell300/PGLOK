@@ -188,10 +188,17 @@ class MapOverlay(tk.Toplevel):
         # Resize handle
         self._create_resize_handle()
         
+        # Close handler to save position/size
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        
         # Restore position/size
-        if self.settings.map_position:
+        if self.settings.map_position and self.settings.map_size:
+            # Combine geometry call: WIDTHxHEIGHT+X+Y
+            self.geometry(f"{self.settings.map_size[0]}x{self.settings.map_size[1]}"
+                         f"+{self.settings.map_position[0]}+{self.settings.map_position[1]}")
+        elif self.settings.map_position:
             self.geometry(f"+{self.settings.map_position[0]}+{self.settings.map_position[1]}")
-        if self.settings.map_size:
+        elif self.settings.map_size:
             self.geometry(f"{self.settings.map_size[0]}x{self.settings.map_size[1]}")
         else:
             self.geometry("400x400")
@@ -385,6 +392,11 @@ class MapOverlay(tk.Toplevel):
         else:
             self.attributes('-transparentcolor', '')
         self.settings.save()
+    
+    def _on_close(self):
+        """Handle window close event - save position/size before closing."""
+        self.settings.save()
+        self.destroy()
 
 
 class InventoryOverlay(tk.Toplevel):
@@ -412,14 +424,21 @@ class InventoryOverlay(tk.Toplevel):
         # Resize handle
         self._create_resize_handle()
         
+        # Close handler to save position/size
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        
         # Slots
         self.slots: List[int] = []  # Canvas item IDs
         self.filled_slots: set = set()
         
         # Restore position/size
-        if self.settings.inv_position:
+        if self.settings.inv_position and self.settings.inv_size:
+            # Combine geometry call: WIDTHxHEIGHT+X+Y
+            self.geometry(f"{self.settings.inv_size[0]}x{self.settings.inv_size[1]}"
+                         f"+{self.settings.inv_position[0]}+{self.settings.inv_position[1]}")
+        elif self.settings.inv_position:
             self.geometry(f"+{self.settings.inv_position[0]}+{self.settings.inv_position[1]}")
-        if self.settings.inv_size:
+        elif self.settings.inv_size:
             self.geometry(f"{self.settings.inv_size[0]}x{self.settings.inv_size[1]}")
         else:
             self._calculate_size()
@@ -566,6 +585,11 @@ class InventoryOverlay(tk.Toplevel):
         else:
             self.attributes('-transparentcolor', '')
         self.settings.save()
+    
+    def _on_close(self):
+        """Handle window close event - save position/size before closing."""
+        self.settings.save()
+        self.destroy()
 
 
 class SurveyHelperWindow(tk.Toplevel):
@@ -961,6 +985,7 @@ class SurveyHelperWindow(tk.Toplevel):
     def on_close(self):
         """Clean up on window close."""
         self._monitoring = False
+        self.settings.save()  # Save before destroying overlays
         if self.map_overlay:
             self.map_overlay.destroy()
         if self.inv_overlay:
