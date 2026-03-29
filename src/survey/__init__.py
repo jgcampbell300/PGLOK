@@ -125,15 +125,29 @@ def get_ui_scale(config_data: Dict) -> float:
 
 
 def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int, int]]:
-    """Extract inventory window position and size from config.
+    """Extract inventory GRID window position and size from config.
     
-    Returns: (x, y, width, height) or None if not found
+    Returns: (x, y, grid_width, height) or None if not found
+    
+    Note: WinPosition_InventoryWindow includes both the bags sidebar AND main grid.
+    We subtract the sidebar width to get the actual grid dimensions.
+    
     Applies UI scaling factor if found in config
     Handles both legacy key-value format and Unity3D WinPosition format
     """
     try:
         # Get UI scale factor
         scale = get_ui_scale(config_data)
+        
+        # Get sidebar width (bags bar on left side)
+        sidebar_width = 0
+        if 'WinPosition_InventorySidebarWidth' in config_data:
+            try:
+                sidebar_width = int(float(config_data['WinPosition_InventorySidebarWidth']) * scale)
+            except (ValueError, TypeError):
+                sidebar_width = int(58 * scale)  # Default if parse fails
+        else:
+            sidebar_width = int(58 * scale)  # Fallback default
         
         # Try Unity3D format first: WinPosition_InventoryWindow = "M20.86581;L63.52591;617.4161;463.7999|T|T||-1|-1"
         if 'WinPosition_InventoryWindow' in config_data:
@@ -147,9 +161,16 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
                     # Format: M<x>;L<y>;<width>;<height>
                     x = int(float(parts[0][1:]) * scale)  # Remove 'M' prefix, apply scale
                     y = int(float(parts[1][1:]) * scale)  # Remove 'L' prefix, apply scale
-                    width = int(float(parts[2]) * scale)  # Apply scale
+                    total_width = int(float(parts[2]) * scale)  # Total window width (with sidebar)
                     height = int(float(parts[3]) * scale)  # Apply scale
-                    return (x, y, width, height)
+                    
+                    # Calculate main grid width by subtracting sidebar width
+                    grid_width = total_width - sidebar_width
+                    
+                    # Add sidebar offset to X position to move grid to the right of sidebar
+                    grid_x = x + sidebar_width
+                    
+                    return (grid_x, y, grid_width, height)
                 except (ValueError, IndexError):
                     pass
         
@@ -195,19 +216,24 @@ def get_inventory_grid_settings(config_data: Dict) -> Optional[Tuple[int, int]]:
     return None
 
 
-def calculate_grid_columns_from_width(window_width: int, padding: int = 50, gap: int = 4, 
-                                       slot_size: int = 50) -> int:
+def calculate_grid_columns_from_width(window_width: int, slot_size: int = 32, gap: int = 4) -> int:
     """Calculate number of columns that fit in the given window width.
     
-    Formula: (window_width - padding) / (slot_size + gap)
+    Formula: window_width / (slot_size + gap)
     
-    Note: This is an estimate. Actual columns depend on UI decorations/scrollbars.
-    You can manually adjust via the Columns spinbox for your specific window size.
+    This accounts for the gap/padding between item slots but not left/right margins
+    (those are handled by the UI framework and vary per user setup).
+    
+    Args:
+        window_width: Grid width in pixels (from GorgonSettings)
+        slot_size: Item slot size in pixels (typically 32px, user can customize)
+        gap: Gap between slots in pixels (typically 4px)
+    
+    Returns: Estimated number of columns (user can fine-tune with spinbox)
     """
-    available_width = window_width - padding
     if slot_size <= 0:
         return 1
-    columns = max(1, available_width // (slot_size + gap))
+    columns = max(1, window_width // (slot_size + gap))
     return columns
 
 
