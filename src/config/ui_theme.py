@@ -351,6 +351,20 @@ def apply_theme(root):
         relief="solid",
     )
 
+    # Scale (slider) style
+    style.configure(
+        "App.Horizontal.TScale",
+        background=UI_COLORS["panel_bg"],
+        troughcolor=UI_COLORS["entry_bg"],
+        lightcolor=UI_COLORS["secondary"],
+        darkcolor=UI_COLORS["secondary"],
+        bordercolor=UI_COLORS["entry_border"],
+    )
+    style.map(
+        "App.Horizontal.TScale",
+        background=[("active", UI_COLORS["secondary_active"])],
+    )
+
     # Progressbar style
     style.configure(
         "App.Horizontal.TProgressbar",

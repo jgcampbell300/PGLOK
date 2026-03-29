@@ -741,12 +741,12 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Label(overlay_frame, text="Map Opacity:", style="App.TLabel").pack(anchor='w')
         self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
         ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.map_opacity_var, 
-                  command=self._update_map_opacity).pack(fill='x')
+                  command=self._update_map_opacity, style="App.Horizontal.TScale", orient='horizontal').pack(fill='x')
         
         ttk.Label(overlay_frame, text="Inventory Opacity:", style="App.TLabel").pack(anchor='w')
         self.inv_opacity_var = tk.DoubleVar(value=self.settings.inv_opacity)
         ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.inv_opacity_var,
-                  command=self._update_inv_opacity).pack(fill='x')
+                  command=self._update_inv_opacity, style="App.Horizontal.TScale", orient='horizontal').pack(fill='x')
         
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=5, pady=5,
