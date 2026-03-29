@@ -323,11 +323,7 @@ class PGLOKApp:
                     pos_str = f"X:{pos.x:.1f} Y:{pos.y:.1f} Z:{pos.z:.1f}"
                     self.player_position_var.set(pos_str)
                     self._update_center_status()
-                    print(f"[DEBUG] Position updated: {pos_str}")
-                else:
-                    print(f"[DEBUG] No new position found")
-            except Exception as e:
-                print(f"[DEBUG] Position error: {e}")
+            except Exception:
                 pass  # Silently fail - position tracking is optional
         
         # Schedule next poll in 2 seconds
@@ -393,6 +389,8 @@ class PGLOKApp:
         tools_menu.add_command(label="Data Browser", command=self.open_data_browser_window)
         tools_menu.add_separator()
         tools_menu.add_command(label="Map Tools", command=self.open_map_tools_window)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Survey Helper", command=self._open_survey_helper)
         tools_menu.add_separator()
         tools_menu.add_command(label="Fletcher", command=self._open_fletcher)
         tools_menu.add_command(label="Itemizer", command=self._open_itemizer)
@@ -817,6 +815,17 @@ class PGLOKApp:
             self.status_var.set(f"Opened reports folder: {folder_path}")
         except Exception as e:
             self.status_var.set(f"Error opening reports folder: {e}")
+
+    def _open_survey_helper(self):
+        """Open the Survey Helper window."""
+        try:
+            from src.survey import open_survey_helper
+            open_survey_helper(self.root)
+            self.status_var.set("Survey Helper opened")
+        except Exception as e:
+            self.status_var.set(f"Error opening survey helper: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _open_fletcher(self):
         self.status_var.set("Fletcher is not implemented yet.")

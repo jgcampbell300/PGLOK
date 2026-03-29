@@ -1,0 +1,958 @@
+"""Survey Helper - Tool to assist with Project Gorgon surveying.
+
+Monitors chat logs for survey results, displays item positions on map overlay,
+and tracks survey maps in inventory grid.
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import re
+import json
+import math
+from pathlib import Path
+from typing import Optional, List, Tuple, Dict
+from dataclasses import dataclass, asdict
+from datetime import datetime
+import threading
+import time
+
+from src.chat.monitor import ChatLogMonitor
+
+
+@dataclass
+class SurveyItem:
+    """Represents a survey item found in the world."""
+    name: str
+    distance: float
+    direction: str  # N, NE, E, SE, S, SW, W, NW
+    x: float = 0.0
+    y: float = 0.0
+    collected: bool = False
+    timestamp: Optional[datetime] = None
+    
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'distance': self.distance,
+            'direction': self.direction,
+            'x': self.x,
+            'y': self.y,
+            'collected': self.collected,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'SurveyItem':
+        ts = None
+        if data.get('timestamp'):
+            try:
+                ts = datetime.fromisoformat(data['timestamp'])
+            except:
+                pass
+        return cls(
+            name=data['name'],
+            distance=data['distance'],
+            direction=data['direction'],
+            x=data.get('x', 0.0),
+            y=data.get('y', 0.0),
+            collected=data.get('collected', False),
+            timestamp=ts
+        )
+
+
+class SurveySettings:
+    """Manages survey helper settings."""
+    
+    SETTINGS_FILE = Path(__file__).parent / 'survey_settings.json'
+    
+    def __init__(self):
+        self.chatlog_dir: Optional[Path] = None
+        self.survey_count: int = 0
+        self.map_opacity: float = 0.7
+        self.inv_opacity: float = 0.7
+        self.map_clickthrough: bool = False
+        self.inv_clickthrough: bool = False
+        self.grid_cols: int = 10
+        self.slot_size: int = 40
+        self.slot_gap: int = 4
+        self.hotkey: str = "<num0>"
+        self.map_position: Optional[Tuple[int, int]] = None
+        self.inv_position: Optional[Tuple[int, int]] = None
+        self.map_size: Optional[Tuple[int, int]] = None
+        self.inv_size: Optional[Tuple[int, int]] = None
+        self.scale_factor: Optional[float] = None  # pixels per meter
+        self.origin_x: Optional[float] = None  # player position on map
+        self.origin_y: Optional[float] = None
+        
+        self.load()
+    
+    def load(self):
+        """Load settings from file."""
+        if self.SETTINGS_FILE.exists():
+            try:
+                with open(self.SETTINGS_FILE, 'r') as f:
+                    data = json.load(f)
+                
+                self.chatlog_dir = Path(data['chatlog_dir']) if data.get('chatlog_dir') else None
+                self.survey_count = data.get('survey_count', 0)
+                self.map_opacity = data.get('map_opacity', 0.7)
+                self.inv_opacity = data.get('inv_opacity', 0.7)
+                self.map_clickthrough = data.get('map_clickthrough', False)
+                self.inv_clickthrough = data.get('inv_clickthrough', False)
+                self.grid_cols = data.get('grid_cols', 10)
+                self.slot_size = data.get('slot_size', 40)
+                self.slot_gap = data.get('slot_gap', 4)
+                self.hotkey = data.get('hotkey', '<num0>')
+                
+                if data.get('map_position'):
+                    self.map_position = tuple(data['map_position'])
+                if data.get('inv_position'):
+                    self.inv_position = tuple(data['inv_position'])
+                if data.get('map_size'):
+                    self.map_size = tuple(data['map_size'])
+                if data.get('inv_size'):
+                    self.inv_size = tuple(data['inv_size'])
+                
+                self.scale_factor = data.get('scale_factor')
+                self.origin_x = data.get('origin_x')
+                self.origin_y = data.get('origin_y')
+                
+            except Exception as e:
+                print(f"Error loading survey settings: {e}")
+    
+    def save(self):
+        """Save settings to file."""
+        data = {
+            'chatlog_dir': str(self.chatlog_dir) if self.chatlog_dir else None,
+            'survey_count': self.survey_count,
+            'map_opacity': self.map_opacity,
+            'inv_opacity': self.inv_opacity,
+            'map_clickthrough': self.map_clickthrough,
+            'inv_clickthrough': self.inv_clickthrough,
+            'grid_cols': self.grid_cols,
+            'slot_size': self.slot_size,
+            'slot_gap': self.slot_gap,
+            'hotkey': self.hotkey,
+            'map_position': list(self.map_position) if self.map_position else None,
+            'inv_position': list(self.inv_position) if self.inv_position else None,
+            'map_size': list(self.map_size) if self.map_size else None,
+            'inv_size': list(self.inv_size) if self.inv_size else None,
+            'scale_factor': self.scale_factor,
+            'origin_x': self.origin_x,
+            'origin_y': self.origin_y,
+        }
+        
+        try:
+            with open(self.SETTINGS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Error saving survey settings: {e}")
+
+
+class MapOverlay(tk.Toplevel):
+    """Transparent overlay window for the map with survey dots."""
+    
+    def __init__(self, parent, settings: SurveySettings, on_click_callback=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.on_click_callback = on_click_callback
+        
+        self.title("Survey Map")
+        self.attributes('-topmost', True)
+        self.attributes('-alpha', self.settings.map_opacity)
+        
+        # Remove window decorations
+        self.overrideredirect(False)
+        
+        # Canvas for drawing
+        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
+        self.canvas.pack(fill='both', expand=True)
+        
+        # Items to display
+        self.survey_items: List[SurveyItem] = []
+        self.player_dot = None
+        self.scale_indicator = None
+        
+        # Dragging
+        self._drag_data = {'x': 0, 'y': 0}
+        self._is_setting_position = False
+        
+        # Bind events
+        self.canvas.bind('<Button-1>', self._on_click)
+        self.canvas.bind('<Button-3>', self._start_drag)
+        self.canvas.bind('<B3-Motion>', self._on_drag)
+        self.bind('<Configure>', self._on_resize)
+        
+        # Resize handle
+        self._create_resize_handle()
+        
+        # Restore position/size
+        if self.settings.map_position:
+            self.geometry(f"+{self.settings.map_position[0]}+{self.settings.map_position[1]}")
+        if self.settings.map_size:
+            self.geometry(f"{self.settings.map_size[0]}x{self.settings.map_size[1]}")
+        else:
+            self.geometry("400x400")
+    
+    def _create_resize_handle(self):
+        """Create a resize handle in the bottom-right corner."""
+        self.resize_handle = tk.Frame(self, bg='gray', width=15, height=15)
+        self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
+        self.resize_handle.bind('<Button-1>', self._start_resize)
+        self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
+    
+    def _start_resize(self, event):
+        self._resize_start = {'x': event.x_root, 'y': event.y_root, 'w': self.winfo_width(), 'h': self.winfo_height()}
+    
+    def _on_resize_drag(self, event):
+        if hasattr(self, '_resize_start'):
+            dx = event.x_root - self._resize_start['x']
+            dy = event.y_root - self._resize_start['y']
+            new_w = max(100, self._resize_start['w'] + dx)
+            new_h = max(100, self._resize_start['h'] + dy)
+            self.geometry(f"{new_w}x{new_h}")
+    
+    def _on_resize(self, event):
+        self.settings.map_size = (self.winfo_width(), self.winfo_height())
+        self.settings.save()
+    
+    def _on_click(self, event):
+        if self._is_setting_position:
+            # Setting player position
+            self.settings.origin_x = event.x
+            self.settings.origin_y = event.y
+            self._is_setting_position = False
+            self._draw_player_dot()
+            if self.on_click_callback:
+                self.on_click_callback(event.x, event.y, 'set_origin')
+        else:
+            # Check if clicked on an item
+            items = self.canvas.find_overlapping(event.x-10, event.y-10, event.x+10, event.y+10)
+            for item in items:
+                tags = self.canvas.gettags(item)
+                if tags and tags[0].startswith('item_'):
+                    idx = int(tags[0].split('_')[1])
+                    if self.on_click_callback:
+                        self.on_click_callback(event.x, event.y, 'item_clicked', idx)
+    
+    def _start_drag(self, event):
+        self._drag_data['x'] = event.x_root - self.winfo_x()
+        self._drag_data['y'] = event.y_root - self.winfo_y()
+    
+    def _on_drag(self, event):
+        x = event.x_root - self._drag_data['x']
+        y = event.y_root - self._drag_data['y']
+        self.geometry(f"+{x}+{y}")
+        self.settings.map_position = (x, y)
+        self.settings.save()
+    
+    def set_setting_position_mode(self, enabled: bool):
+        """Enable/disable position setting mode."""
+        self._is_setting_position = enabled
+        if enabled:
+            self.canvas.config(cursor='crosshair')
+        else:
+            self.canvas.config(cursor='')
+    
+    def _draw_player_dot(self):
+        """Draw the player position dot."""
+        if self.player_dot:
+            self.canvas.delete(self.player_dot)
+        
+        if self.settings.origin_x and self.settings.origin_y:
+            x, y = self.settings.origin_x, self.settings.origin_y
+            self.player_dot = self.canvas.create_oval(
+                x-5, y-5, x+5, y+5,
+                fill='cyan', outline='white', width=2,
+                tags='player'
+            )
+    
+    def add_survey_item(self, item: SurveyItem) -> bool:
+        """Add a survey item to the map. Returns True if placed automatically."""
+        if self.settings.scale_factor is None or self.settings.origin_x is None:
+            # Need calibration first
+            return False
+        
+        # Calculate position based on distance and direction
+        angle = self._direction_to_angle(item.direction)
+        dx = item.distance * math.cos(angle) * self.settings.scale_factor
+        dy = item.distance * math.sin(angle) * self.settings.scale_factor
+        
+        item.x = self.settings.origin_x + dx
+        item.y = self.settings.origin_y - dy  # Y is inverted in canvas
+        
+        self.survey_items.append(item)
+        self._draw_item(item, len(self.survey_items) - 1)
+        return True
+    
+    def _direction_to_angle(self, direction: str) -> float:
+        """Convert direction to angle in radians (0 = East, CCW)."""
+        angles = {
+            'E': 0, 'NE': math.pi/4, 'N': math.pi/2, 'NW': 3*math.pi/4,
+            'W': math.pi, 'SW': 5*math.pi/4, 'S': 3*math.pi/2, 'SE': 7*math.pi/4
+        }
+        return angles.get(direction, 0)
+    
+    def _draw_item(self, item: SurveyItem, index: int):
+        """Draw a survey item on the map."""
+        color = 'green' if not item.collected else 'gray'
+        
+        # Dot
+        self.canvas.create_oval(
+            item.x-8, item.y-8, item.x+8, item.y+8,
+            fill=color, outline='white', width=2,
+            tags=(f'item_{index}', f'item_dot_{index}')
+        )
+        
+        # Label
+        self.canvas.create_text(
+            item.x, item.y-15,
+            text=f"{index+1}. {item.name[:15]}",
+            fill='white', font=('Arial', 8, 'bold'),
+            tags=(f'item_{index}', f'item_label_{index}')
+        )
+        
+        # Distance line
+        if self.settings.origin_x:
+            self.canvas.create_line(
+                self.settings.origin_x, self.settings.origin_y,
+                item.x, item.y,
+                fill='yellow', dash=(3, 3), width=1,
+                tags=(f'item_{index}', f'item_line_{index}')
+            )
+    
+    def calibrate_from_click(self, item_index: int, click_x: float, click_y: float):
+        """Calibrate scale factor from a known item click."""
+        if item_index >= len(self.survey_items):
+            return
+        
+        item = self.survey_items[item_index]
+        
+        # Calculate distance in pixels
+        pixel_dist = math.sqrt((click_x - self.settings.origin_x)**2 + 
+                               (click_y - self.settings.origin_y)**2)
+        
+        # Calculate scale factor (pixels per meter)
+        if item.distance > 0:
+            self.settings.scale_factor = pixel_dist / item.distance
+            self.settings.save()
+            
+            # Recalculate all item positions
+            self.clear_items()
+            for i, si in enumerate(self.survey_items):
+                angle = self._direction_to_angle(si.direction)
+                dx = si.distance * math.cos(angle) * self.settings.scale_factor
+                dy = si.distance * math.sin(angle) * self.settings.scale_factor
+                si.x = self.settings.origin_x + dx
+                si.y = self.settings.origin_y - dy
+                self._draw_item(si, i)
+    
+    def clear_items(self):
+        """Clear all survey items from the map."""
+        self.canvas.delete('item_')
+    
+    def mark_collected(self, index: int):
+        """Mark an item as collected."""
+        if 0 <= index < len(self.survey_items):
+            self.survey_items[index].collected = True
+            # Redraw as gray
+            self.canvas.itemconfig(f'item_dot_{index}', fill='gray')
+    
+    def highlight_next(self, index: int):
+        """Highlight the next item to collect."""
+        # Reset all highlights
+        for i in range(len(self.survey_items)):
+            if not self.survey_items[i].collected:
+                self.canvas.itemconfig(f'item_dot_{i}', outline='white', width=2)
+        
+        # Highlight next
+        if 0 <= index < len(self.survey_items):
+            self.canvas.itemconfig(f'item_dot_{index}', outline='red', width=4)
+    
+    def update_opacity(self, value: float):
+        """Update window opacity."""
+        self.attributes('-alpha', value)
+        self.settings.map_opacity = value
+        self.settings.save()
+    
+    def set_clickthrough(self, enabled: bool):
+        """Set click-through mode."""
+        self.settings.map_clickthrough = enabled
+        if enabled:
+            self.attributes('-transparentcolor', 'black')
+        else:
+            self.attributes('-transparentcolor', '')
+        self.settings.save()
+
+
+class InventoryOverlay(tk.Toplevel):
+    """Transparent overlay window for inventory grid."""
+    
+    def __init__(self, parent, settings: SurveySettings):
+        super().__init__(parent)
+        self.settings = settings
+        
+        self.title("Survey Inventory")
+        self.attributes('-topmost', True)
+        self.attributes('-alpha', self.settings.inv_opacity)
+        
+        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
+        self.canvas.pack(fill='both', expand=True)
+        
+        # Dragging
+        self._drag_data = {'x': 0, 'y': 0}
+        
+        # Bind events
+        self.canvas.bind('<Button-3>', self._start_drag)
+        self.canvas.bind('<B3-Motion>', self._on_drag)
+        self.bind('<Configure>', self._on_resize)
+        
+        # Resize handle
+        self._create_resize_handle()
+        
+        # Slots
+        self.slots: List[int] = []  # Canvas item IDs
+        self.filled_slots: set = set()
+        
+        # Restore position/size
+        if self.settings.inv_position:
+            self.geometry(f"+{self.settings.inv_position[0]}+{self.settings.inv_position[1]}")
+        if self.settings.inv_size:
+            self.geometry(f"{self.settings.inv_size[0]}x{self.settings.inv_size[1]}")
+        else:
+            self._calculate_size()
+        
+        self._draw_grid()
+    
+    def _create_resize_handle(self):
+        self.resize_handle = tk.Frame(self, bg='gray', width=15, height=15)
+        self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
+        self.resize_handle.bind('<Button-1>', self._start_resize)
+        self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
+    
+    def _start_resize(self, event):
+        self._resize_start = {'x': event.x_root, 'y': event.y_root, 
+                              'w': self.winfo_width(), 'h': self.winfo_height()}
+    
+    def _on_resize_drag(self, event):
+        if hasattr(self, '_resize_start'):
+            dx = event.x_root - self._resize_start['x']
+            dy = event.y_root - self._resize_start['y']
+            new_w = max(100, self._resize_start['w'] + dx)
+            new_h = max(100, self._resize_start['h'] + dy)
+            self.geometry(f"{new_w}x{new_h}")
+            self._recalculate_grid()
+    
+    def _calculate_size(self):
+        """Calculate window size based on grid settings."""
+        cols = self.settings.grid_cols
+        rows = (self.settings.survey_count + cols - 1) // cols if self.settings.survey_count > 0 else 1
+        
+        width = cols * self.settings.slot_size + (cols - 1) * self.settings.slot_gap + 20
+        height = rows * self.settings.slot_size + (rows - 1) * self.settings.slot_gap + 20
+        
+        self.geometry(f"{width}x{height}")
+    
+    def _recalculate_grid(self):
+        """Recalculate slot size based on window size."""
+        if self.settings.survey_count == 0:
+            return
+        
+        cols = self.settings.grid_cols
+        rows = (self.settings.survey_count + cols - 1) // cols
+        
+        # Calculate slot size to fit
+        available_w = self.winfo_width() - 20
+        available_h = self.winfo_height() - 20
+        
+        slot_w = (available_w - (cols - 1) * self.settings.slot_gap) // cols
+        slot_h = (available_h - (rows - 1) * self.settings.slot_gap) // rows
+        
+        self.settings.slot_size = min(slot_w, slot_h, 50)
+        self._draw_grid()
+    
+    def _draw_grid(self):
+        """Draw the inventory grid."""
+        self.canvas.delete('all')
+        self.slots = []
+        
+        cols = self.settings.grid_cols
+        count = max(self.settings.survey_count, 1)
+        rows = (count + cols - 1) // cols
+        
+        slot = self.settings.slot_size
+        gap = self.settings.slot_gap
+        
+        for i in range(count):
+            row = i // cols
+            col = i % cols
+            
+            x1 = 10 + col * (slot + gap)
+            y1 = 10 + row * (slot + gap)
+            x2 = x1 + slot
+            y2 = y1 + slot
+            
+            # Draw slot
+            color = 'green' if i in self.filled_slots else 'darkgray'
+            outline = 'white' if i in self.filled_slots else 'gray'
+            
+            rect = self.canvas.create_rectangle(
+                x1, y1, x2, y2,
+                fill=color, outline=outline, width=2,
+                tags=f'slot_{i}'
+            )
+            
+            # Add number
+            self.canvas.create_text(
+                (x1 + x2) // 2, (y1 + y2) // 2,
+                text=str(i + 1),
+                fill='white', font=('Arial', 10, 'bold')
+            )
+            
+            self.slots.append(rect)
+    
+    def _start_drag(self, event):
+        self._drag_data['x'] = event.x_root - self.winfo_x()
+        self._drag_data['y'] = event.y_root - self.winfo_y()
+    
+    def _on_drag(self, event):
+        x = event.x_root - self._drag_data['x']
+        y = event.y_root - self._drag_data['y']
+        self.geometry(f"+{x}+{y}")
+        self.settings.inv_position = (x, y)
+        self.settings.save()
+    
+    def _on_resize(self, event):
+        self.settings.inv_size = (self.winfo_width(), self.winfo_height())
+        self.settings.save()
+    
+    def set_survey_count(self, count: int):
+        """Update the number of survey maps."""
+        self.settings.survey_count = count
+        self._calculate_size()
+        self._draw_grid()
+        self.settings.save()
+    
+    def mark_slot_filled(self, index: int):
+        """Mark a slot as having a survey map."""
+        if 0 <= index < len(self.slots):
+            self.filled_slots.add(index)
+            self.canvas.itemconfig(f'slot_{index}', fill='green', outline='white')
+    
+    def mark_slot_empty(self, index: int):
+        """Mark a slot as empty (collected)."""
+        if index in self.filled_slots:
+            self.filled_slots.remove(index)
+            self.canvas.itemconfig(f'slot_{index}', fill='darkgray', outline='gray')
+    
+    def clear_all(self):
+        """Clear all filled slots."""
+        self.filled_slots.clear()
+        self._draw_grid()
+    
+    def update_opacity(self, value: float):
+        """Update window opacity."""
+        self.attributes('-alpha', value)
+        self.settings.inv_opacity = value
+        self.settings.save()
+    
+    def set_clickthrough(self, enabled: bool):
+        """Set click-through mode."""
+        self.settings.inv_clickthrough = enabled
+        if enabled:
+            self.attributes('-transparentcolor', 'black')
+        else:
+            self.attributes('-transparentcolor', '')
+        self.settings.save()
+
+
+class SurveyHelperWindow(tk.Toplevel):
+    """Main control panel for the Survey Helper."""
+    
+    def __init__(self, parent):
+        super().__init__(parent)
+        
+        self.title("Survey Helper")
+        self.geometry("400x500")
+        
+        self.settings = SurveySettings()
+        self.items: List[SurveyItem] = []
+        self.current_route: List[int] = []
+        self.current_route_index = 0
+        self.session_start: Optional[datetime] = None
+        
+        # Chat monitor
+        self.chat_monitor: Optional[ChatLogMonitor] = None
+        self._monitoring = False
+        
+        # Overlays
+        self.map_overlay: Optional[MapOverlay] = None
+        self.inv_overlay: Optional[InventoryOverlay] = None
+        
+        self._build_ui()
+        self._start_chat_monitor()
+    
+    def _build_ui(self):
+        """Build the control panel UI."""
+        frame = ttk.Frame(self, padding=10)
+        frame.pack(fill='both', expand=True)
+        
+        # Title
+        ttk.Label(frame, text="🔍 Survey Helper", font=('Arial', 14, 'bold')).pack(pady=5)
+        
+        # ChatLog directory
+        dir_frame = ttk.LabelFrame(frame, text="ChatLogs Folder", padding=5)
+        dir_frame.pack(fill='x', pady=5)
+        
+        self.dir_var = tk.StringVar(value=str(self.settings.chatlog_dir) if self.settings.chatlog_dir else "Not set")
+        ttk.Label(dir_frame, textvariable=self.dir_var, wraplength=300).pack(fill='x')
+        ttk.Button(dir_frame, text="💬 Set Folder", command=self._set_chatlog_dir).pack(pady=2)
+        
+        # Survey count
+        count_frame = ttk.LabelFrame(frame, text="Survey Maps", padding=5)
+        count_frame.pack(fill='x', pady=5)
+        
+        self.count_var = tk.IntVar(value=self.settings.survey_count)
+        ttk.Spinbox(count_frame, from_=0, to=100, textvariable=self.count_var, width=5).pack(side='left', padx=5)
+        ttk.Button(count_frame, text="Set Count", command=self._set_survey_count).pack(side='left', padx=5)
+        
+        # Overlay controls
+        overlay_frame = ttk.LabelFrame(frame, text="Overlays", padding=5)
+        overlay_frame.pack(fill='x', pady=5)
+        
+        btn_frame = ttk.Frame(overlay_frame)
+        btn_frame.pack(fill='x')
+        
+        ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory).pack(side='left', padx=2)
+        
+        # Position setting
+        ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position).pack(fill='x', pady=2)
+        
+        # Opacity sliders
+        ttk.Label(overlay_frame, text="Map Opacity:").pack(anchor='w')
+        self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
+        ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.map_opacity_var, 
+                  command=self._update_map_opacity).pack(fill='x')
+        
+        ttk.Label(overlay_frame, text="Inventory Opacity:").pack(anchor='w')
+        self.inv_opacity_var = tk.DoubleVar(value=self.settings.inv_opacity)
+        ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.inv_opacity_var,
+                  command=self._update_inv_opacity).pack(fill='x')
+        
+        # Route optimization
+        route_frame = ttk.LabelFrame(frame, text="Route Optimization", padding=5)
+        route_frame.pack(fill='x', pady=5)
+        
+        ttk.Button(route_frame, text="🗺 Optimize Route", command=self._optimize_route).pack(fill='x', pady=2)
+        
+        self.route_info_var = tk.StringVar(value="No route active")
+        ttk.Label(route_frame, textvariable=self.route_info_var).pack()
+        
+        nav_frame = ttk.Frame(route_frame)
+        nav_frame.pack(fill='x')
+        ttk.Button(nav_frame, text="← Previous", command=self._prev_item).pack(side='left', padx=2)
+        ttk.Button(nav_frame, text="Next →", command=self._next_item).pack(side='left', padx=2)
+        ttk.Button(nav_frame, text="Skip", command=self._skip_item).pack(side='left', padx=2)
+        
+        # Session info
+        self.session_var = tk.StringVar(value="Items found: 0")
+        ttk.Label(frame, textvariable=self.session_var, font=('Arial', 10, 'bold')).pack(pady=5)
+        
+        # Reset
+        ttk.Button(frame, text="🔄 Reset Session", command=self._reset_session).pack(fill='x', pady=5)
+        
+        # Status
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(frame, textvariable=self.status_var, foreground='gray').pack()
+    
+    def _set_chatlog_dir(self):
+        """Set the chatlog directory."""
+        from tkinter import filedialog
+        
+        dir_path = filedialog.askdirectory(title="Select ChatLogs Folder")
+        if dir_path:
+            self.settings.chatlog_dir = Path(dir_path)
+            self.dir_var.set(dir_path)
+            self.settings.save()
+            self._start_chat_monitor()
+    
+    def _set_survey_count(self):
+        """Set the number of survey maps."""
+        count = self.count_var.get()
+        self.settings.survey_count = count
+        self.settings.save()
+        
+        if self.inv_overlay:
+            self.inv_overlay.set_survey_count(count)
+        
+        # Mark all slots as filled initially
+        for i in range(count):
+            if self.inv_overlay:
+                self.inv_overlay.mark_slot_filled(i)
+    
+    def _show_map(self):
+        """Show the map overlay."""
+        if self.map_overlay is None or not self.map_overlay.winfo_exists():
+            self.map_overlay = MapOverlay(self, self.settings, self._on_map_click)
+        else:
+            self.map_overlay.lift()
+    
+    def _show_inventory(self):
+        """Show the inventory overlay."""
+        if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
+            self.inv_overlay = InventoryOverlay(self, self.settings)
+            # Fill slots based on survey count
+            for i in range(self.settings.survey_count):
+                self.inv_overlay.mark_slot_filled(i)
+        else:
+            self.inv_overlay.lift()
+    
+    def _set_player_position(self):
+        """Enable player position setting mode."""
+        self._show_map()
+        self.map_overlay.set_setting_position_mode(True)
+        self.status_var.set("Click on map to set your position")
+    
+    def _on_map_click(self, x: float, y: float, action: str, item_index: Optional[int] = None):
+        """Handle map click events."""
+        if action == 'set_origin':
+            self.status_var.set(f"Player position set: ({x:.0f}, {y:.0f})")
+        elif action == 'item_clicked' and item_index is not None:
+            # Calibrate from this item
+            if self.settings.scale_factor is None:
+                self.map_overlay.calibrate_from_click(item_index, x, y)
+                self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
+    
+    def _update_map_opacity(self, value):
+        """Update map overlay opacity."""
+        if self.map_overlay:
+            self.map_overlay.update_opacity(float(value))
+    
+    def _update_inv_opacity(self, value):
+        """Update inventory overlay opacity."""
+        if self.inv_overlay:
+            self.inv_overlay.update_opacity(float(value))
+    
+    def _start_chat_monitor(self):
+        """Start monitoring chat logs for survey messages."""
+        if self.settings.chatlog_dir is None:
+            return
+        
+        try:
+            self.chat_monitor = ChatLogMonitor(log_dir=self.settings.chatlog_dir)
+            self._monitoring = True
+            self._poll_chat()
+            self.status_var.set("Monitoring chat logs...")
+        except Exception as e:
+            self.status_var.set(f"Chat monitor error: {e}")
+    
+    def _poll_chat(self):
+        """Poll for new chat messages."""
+        if not self._monitoring or self.chat_monitor is None:
+            return
+        
+        try:
+            lines = self.chat_monitor.read_new_lines()
+            for line in lines:
+                self._parse_chat_line(line)
+        except Exception as e:
+            print(f"Chat poll error: {e}")
+        
+        # Schedule next poll
+        self.after(1000, self._poll_chat)
+    
+    def _parse_chat_line(self, line: str):
+        """Parse chat line for survey and collection messages."""
+        # Survey message pattern: [Status] The X is Ym DIR
+        # Example: [Status] The Ancient Tombstone is 45m NE
+        survey_match = re.search(
+            r'\[Status\]\s*The\s+(\S+(?:\s+\S+)*)\s+is\s+(\d+)m?\s*(N|NE|E|SE|S|SW|W|NW)?',
+            line,
+            re.IGNORECASE
+        )
+        
+        if survey_match:
+            name = survey_match.group(1).strip()
+            distance = float(survey_match.group(2))
+            direction = survey_match.group(3) or 'N'
+            
+            item = SurveyItem(
+                name=name,
+                distance=distance,
+                direction=direction.upper(),
+                timestamp=datetime.now()
+            )
+            
+            self.items.append(item)
+            
+            # Try to add to map
+            if self.map_overlay:
+                auto_placed = self.map_overlay.add_survey_item(item)
+                if not auto_placed:
+                    self.status_var.set(f"Found: {name} - Click map to calibrate")
+                else:
+                    self.status_var.set(f"Found: {name} at {distance}m {direction}")
+            
+            self._update_session_info()
+            return
+        
+        # Collection message pattern: "X collected!" or "You receive X"
+        collection_patterns = [
+            r'([^"]+)\s+collected!',
+            r'You\s+receive\s+(\S+(?:\s+\S+)*)',
+            r'You\s+loot\s+(\S+(?:\s+\S+)*)',
+        ]
+        
+        for pattern in collection_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                item_name = match.group(1).strip()
+                self._mark_item_collected(item_name)
+                break
+    
+    def _mark_item_collected(self, name: str):
+        """Mark a survey item as collected."""
+        # Find matching item
+        for i, item in enumerate(self.items):
+            if not item.collected and name.lower() in item.name.lower():
+                item.collected = True
+                
+                if self.map_overlay:
+                    self.map_overlay.mark_collected(i)
+                
+                # Remove from inventory grid
+                if self.inv_overlay:
+                    self.inv_overlay.mark_slot_empty(i)
+                
+                self.status_var.set(f"Collected: {item.name}")
+                self._update_session_info()
+                break
+    
+    def _optimize_route(self):
+        """Optimize route using nearest neighbor algorithm."""
+        if not self.items:
+            self.status_var.set("No items to optimize")
+            return
+        
+        if self.settings.origin_x is None:
+            self.status_var.set("Set player position first")
+            return
+        
+        # Get uncollected items
+        uncollected = [(i, item) for i, item in enumerate(self.items) if not item.collected]
+        
+        if not uncollected:
+            self.status_var.set("All items collected!")
+            return
+        
+        # Nearest neighbor algorithm
+        route = []
+        current_x, current_y = self.settings.origin_x, self.settings.origin_y
+        remaining = uncollected.copy()
+        
+        while remaining:
+            # Find nearest item
+            nearest_idx = None
+            nearest_dist = float('inf')
+            
+            for idx, (item_idx, item) in enumerate(remaining):
+                dist = math.sqrt((item.x - current_x)**2 + (item.y - current_y)**2)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_idx = idx
+            
+            if nearest_idx is not None:
+                item_idx, item = remaining.pop(nearest_idx)
+                route.append(item_idx)
+                current_x, current_y = item.x, item.y
+        
+        self.current_route = route
+        self.current_route_index = 0
+        
+        if self.session_start is None:
+            self.session_start = datetime.now()
+        
+        self._highlight_next_item()
+        self._update_route_info()
+        self.status_var.set(f"Route optimized: {len(route)} items")
+    
+    def _highlight_next_item(self):
+        """Highlight the next item in the route."""
+        if self.map_overlay and self.current_route_index < len(self.current_route):
+            idx = self.current_route[self.current_route_index]
+            self.map_overlay.highlight_next(idx)
+    
+    def _next_item(self):
+        """Go to next item in route."""
+        if self.current_route_index < len(self.current_route) - 1:
+            self.current_route_index += 1
+            self._highlight_next_item()
+            self._update_route_info()
+    
+    def _prev_item(self):
+        """Go to previous item in route."""
+        if self.current_route_index > 0:
+            self.current_route_index -= 1
+            self._highlight_next_item()
+            self._update_route_info()
+    
+    def _skip_item(self):
+        """Skip current item in route."""
+        if self.current_route_index < len(self.current_route):
+            idx = self.current_route[self.current_route_index]
+            self.items[idx].collected = True
+            if self.map_overlay:
+                self.map_overlay.mark_collected(idx)
+            self._next_item()
+    
+    def _update_route_info(self):
+        """Update route information display."""
+        if self.current_route and self.current_route_index < len(self.current_route):
+            idx = self.current_route[self.current_route_index]
+            item = self.items[idx]
+            self.route_info_var.set(f"Next: {item.name} ({item.distance}m {item.direction})")
+        else:
+            self.route_info_var.set("Route complete!")
+    
+    def _update_session_info(self):
+        """Update session statistics."""
+        total = len(self.items)
+        collected = sum(1 for item in self.items if item.collected)
+        self.session_var.set(f"Items: {collected}/{total} collected")
+    
+    def _reset_session(self):
+        """Reset the current session."""
+        self.items = []
+        self.current_route = []
+        self.current_route_index = 0
+        self.session_start = None
+        
+        if self.map_overlay:
+            self.map_overlay.survey_items = []
+            self.map_overlay.clear_items()
+        
+        if self.inv_overlay:
+            self.inv_overlay.clear_all()
+            for i in range(self.settings.survey_count):
+                self.inv_overlay.mark_slot_filled(i)
+        
+        self.session_var.set("Items found: 0")
+        self.route_info_var.set("No route active")
+        self.status_var.set("Session reset")
+    
+    def on_close(self):
+        """Clean up on window close."""
+        self._monitoring = False
+        if self.map_overlay:
+            self.map_overlay.destroy()
+        if self.inv_overlay:
+            self.inv_overlay.destroy()
+        self.destroy()
+
+
+def open_survey_helper(parent):
+    """Open the Survey Helper window."""
+    window = SurveyHelperWindow(parent)
+    window.protocol("WM_DELETE_WINDOW", window.on_close)
+    return window
