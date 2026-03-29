@@ -1235,13 +1235,25 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _update_map_opacity(self, value):
         """Update map overlay opacity."""
+        value = float(value)
+        self.settings.map_opacity = value
         if self.map_overlay:
-            self.map_overlay.update_opacity(float(value))
+            # update_opacity() will call save() for us
+            self.map_overlay.update_opacity(value)
+        else:
+            # Overlay not open, save directly
+            self.settings.save()
     
     def _update_inv_opacity(self, value):
         """Update inventory overlay opacity."""
+        value = float(value)
+        self.settings.inv_opacity = value
         if self.inv_overlay:
-            self.inv_overlay.update_opacity(float(value))
+            # update_opacity() will call save() for us
+            self.inv_overlay.update_opacity(value)
+        else:
+            # Overlay not open, save directly
+            self.settings.save()
     
     def _toggle_map_clickthrough(self):
         """Toggle map click-through mode."""
