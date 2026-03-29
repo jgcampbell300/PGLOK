@@ -1129,18 +1129,18 @@ class SurveyHelperWindow(tk.Toplevel):
         # Position setting
         ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position, style="App.Secondary.TButton").pack(fill='x', pady=1)
         
-        # Opacity controls - use Spinbox for precise values
+        # Opacity controls - use Spinbox for precise values (in percentage)
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         opacity_frame.pack(fill='x', pady=1)
         
-        ttk.Label(opacity_frame, text="Map Opacity:", style="App.TLabel").pack(side='left', padx=4)
-        self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
-        ttk.Spinbox(opacity_frame, from_=0.1, to=1.0, textvariable=self.map_opacity_var, width=5,
+        ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
+        self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
+        ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
                    style="App.TSpinbox", command=self._update_map_opacity).pack(side='left', padx=2)
         
-        ttk.Label(opacity_frame, text="Inv Opacity:", style="App.TLabel").pack(side='left', padx=4)
-        self.inv_opacity_var = tk.DoubleVar(value=self.settings.inv_opacity)
-        ttk.Spinbox(opacity_frame, from_=0.1, to=1.0, textvariable=self.inv_opacity_var, width=5,
+        ttk.Label(opacity_frame, text="Inv Opacity %:", style="App.TLabel").pack(side='left', padx=4)
+        self.inv_opacity_var = tk.IntVar(value=int(self.settings.inv_opacity * 100))
+        ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.inv_opacity_var, width=5,
                    style="App.TSpinbox", command=self._update_inv_opacity).pack(side='left', padx=2)
         
         # Click-through toggle buttons
@@ -1256,8 +1256,8 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.map_overlay.lift()
             self.map_open = True
             self.map_button.config(text="🗺 Hide Map")
-            # Ensure slider is in sync with overlay opacity
-            self.map_opacity_var.set(self.settings.map_opacity)
+            # Ensure spinbox is in sync with overlay opacity (convert decimal to percentage)
+            self.map_opacity_var.set(int(self.settings.map_opacity * 100))
     
     def _on_map_closed(self):
         """Called when map overlay is closed by user."""
@@ -1285,8 +1285,8 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.inv_overlay.lift()
             self.inventory_open = True
             self.inv_button.config(text="📦 Hide Inventory")
-            # Ensure slider is in sync with overlay opacity
-            self.inv_opacity_var.set(self.settings.inv_opacity)
+            # Ensure spinbox is in sync with overlay opacity (convert decimal to percentage)
+            self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
     
     def _on_inv_closed(self):
         """Called when inventory overlay is closed by user."""
@@ -1311,23 +1311,25 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
     
     def _update_map_opacity(self, value):
-        """Update map overlay opacity."""
-        value = float(value)
-        self.settings.map_opacity = value
+        """Update map overlay opacity (from percentage spinbox)."""
+        percentage = int(value)
+        decimal_value = percentage / 100.0
+        self.settings.map_opacity = decimal_value
         if self.map_overlay:
             # update_opacity() will call save() for us
-            self.map_overlay.update_opacity(value)
+            self.map_overlay.update_opacity(decimal_value)
         else:
             # Overlay not open, save directly
             self.settings.save()
     
     def _update_inv_opacity(self, value):
-        """Update inventory overlay opacity."""
-        value = float(value)
-        self.settings.inv_opacity = value
+        """Update inventory overlay opacity (from percentage spinbox)."""
+        percentage = int(value)
+        decimal_value = percentage / 100.0
+        self.settings.inv_opacity = decimal_value
         if self.inv_overlay:
             # update_opacity() will call save() for us
-            self.inv_overlay.update_opacity(value)
+            self.inv_overlay.update_opacity(decimal_value)
         else:
             # Overlay not open, save directly
             self.settings.save()
