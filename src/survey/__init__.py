@@ -235,6 +235,7 @@ class MapOverlay(tk.Toplevel):
             self.geometry(f"{new_w}x{new_h}")
     
     def _on_resize(self, event):
+        self.settings.map_position = (self.winfo_x(), self.winfo_y())
         self.settings.map_size = (self.winfo_width(), self.winfo_height())
         self.settings.save()
     
@@ -561,6 +562,7 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def _on_resize(self, event):
+        self.settings.inv_position = (self.winfo_x(), self.winfo_y())
         self.settings.inv_size = (self.winfo_width(), self.winfo_height())
         self.settings.save()
     

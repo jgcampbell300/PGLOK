@@ -21,5 +21,13 @@
   ],
   "scale_factor": null,
   "origin_x": null,
-  "origin_y": null
+  "origin_y": null,
+  "main_window_position": [
+    6207,
+    1392
+  ],
+  "main_window_size": [
+    400,
+    500
+  ]
 }
