@@ -1310,9 +1310,9 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.map_overlay.calibrate_from_click(item_index, x, y)
                 self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
     
-    def _update_map_opacity(self, value):
+    def _update_map_opacity(self):
         """Update map overlay opacity (from percentage spinbox)."""
-        percentage = int(value)
+        percentage = self.map_opacity_var.get()
         decimal_value = percentage / 100.0
         self.settings.map_opacity = decimal_value
         if self.map_overlay:
@@ -1322,9 +1322,9 @@ class SurveyHelperWindow(tk.Toplevel):
             # Overlay not open, save directly
             self.settings.save()
     
-    def _update_inv_opacity(self, value):
+    def _update_inv_opacity(self):
         """Update inventory overlay opacity (from percentage spinbox)."""
-        percentage = int(value)
+        percentage = self.inv_opacity_var.get()
         decimal_value = percentage / 100.0
         self.settings.inv_opacity = decimal_value
         if self.inv_overlay:
