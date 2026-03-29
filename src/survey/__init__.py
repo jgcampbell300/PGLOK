@@ -518,9 +518,14 @@ class MapOverlay(tk.Toplevel):
             self.geometry(f"{new_w}x{new_h}")
     
     def _on_resize(self, event):
-        self.settings.map_position = (self.winfo_x(), self.winfo_y())
-        self.settings.map_size = (self.winfo_width(), self.winfo_height())
-        self.settings.save()
+        # Only save position/size if window has reasonable dimensions
+        # (avoid saving during destruction or minimization)
+        width = self.winfo_width()
+        height = self.winfo_height()
+        if width > 50 and height > 50:
+            self.settings.map_position = (self.winfo_x(), self.winfo_y())
+            self.settings.map_size = (width, height)
+            self.settings.save()
     
     def _on_click(self, event):
         if self._is_setting_position:
@@ -869,9 +874,14 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def _on_resize(self, event):
-        self.settings.inv_position = (self.winfo_x(), self.winfo_y())
-        self.settings.inv_size = (self.winfo_width(), self.winfo_height())
-        self.settings.save()
+        # Only save position/size if window has reasonable dimensions
+        # (avoid saving during destruction or minimization)
+        width = self.winfo_width()
+        height = self.winfo_height()
+        if width > 50 and height > 50:
+            self.settings.inv_position = (self.winfo_x(), self.winfo_y())
+            self.settings.inv_size = (width, height)
+            self.settings.save()
     
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
