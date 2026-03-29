@@ -305,10 +305,12 @@ def perform_auto_update(current_version: str) -> bool:
 
             success = False
             suffixes = update_file.suffixes
-            if platform == "win32" and update_file.suffix == ".zip":
+            url_lower = download_url.lower()
+            if platform == "win32" and (update_file.suffix == ".zip" or ".zip" in url_lower):
                 success = install_update_windows(update_file)
             elif platform.startswith("linux") and (
-                update_file.suffix == ".tgz" or suffixes[-2:] == [".tar", ".gz"]
+                ".tgz" in url_lower or ".tar.gz" in url_lower or 
+                (len(suffixes) >= 2 and suffixes[-2].lower() == ".tar" and suffixes[-1].lower() == ".gz")
             ):
                 success = install_update_linux(update_file)
             elif platform == "darwin" and update_file.suffix == ".dmg":
