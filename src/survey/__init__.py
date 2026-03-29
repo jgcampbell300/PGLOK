@@ -479,7 +479,7 @@ class MapOverlay(tk.Toplevel):
         
         self.title("Survey Map")
         self.attributes('-topmost', True)
-        self.attributes('-alpha', self.settings.map_opacity)
+        # Don't set opacity yet - will be set after window settles
         
         # Set window icon for taskbar
         set_window_icon(self)
@@ -531,8 +531,8 @@ class MapOverlay(tk.Toplevel):
         if self.settings.map_clickthrough:
             self.set_clickthrough(True)
         
-        # Enable Configure tracking after window settles (avoid spurious saves during init)
-        self.after(250, self._enable_configure_tracking)
+        # Enable Configure tracking and apply opacity after window settles
+        self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _create_resize_handle(self):
         """Create a resize handle in the bottom-right corner."""
@@ -555,6 +555,11 @@ class MapOverlay(tk.Toplevel):
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
         self._skip_configure = False
+    
+    def _enable_configure_tracking_and_opacity(self):
+        """Enable Configure tracking and apply opacity after window settles."""
+        self._skip_configure = False
+        self.attributes('-alpha', self.settings.map_opacity)
     
     def _on_resize(self, event):
         # Skip Configure events during initialization to avoid spurious saves
@@ -763,7 +768,7 @@ class InventoryOverlay(tk.Toplevel):
         
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
-        self.attributes('-alpha', self.settings.inv_opacity)
+        # Don't set opacity yet - will be set after window settles
         
         # Set window icon for taskbar
         set_window_icon(self)
@@ -810,8 +815,8 @@ class InventoryOverlay(tk.Toplevel):
         
         self._draw_grid()
         
-        # Enable Configure tracking after window settles (avoid spurious saves during init)
-        self.after(250, self._enable_configure_tracking)
+        # Enable Configure tracking and apply opacity after window settles
+        self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _create_resize_handle(self):
         self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
@@ -942,6 +947,11 @@ class InventoryOverlay(tk.Toplevel):
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
         self._skip_configure = False
+    
+    def _enable_configure_tracking_and_opacity(self):
+        """Enable Configure tracking and apply opacity after window settles."""
+        self._skip_configure = False
+        self.attributes('-alpha', self.settings.inv_opacity)
     
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
