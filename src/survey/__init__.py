@@ -19,6 +19,7 @@ import time
 from src.chat.monitor import ChatLogMonitor
 from src.locate_PG import initialize_pg_base
 import src.config.config as config
+from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme
 
 
 @dataclass
@@ -176,7 +177,7 @@ class MapOverlay(tk.Toplevel):
         self.overrideredirect(False)
         
         # Canvas for drawing
-        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
+        self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         
         # Items to display
@@ -218,7 +219,7 @@ class MapOverlay(tk.Toplevel):
     
     def _create_resize_handle(self):
         """Create a resize handle in the bottom-right corner."""
-        self.resize_handle = tk.Frame(self, bg='gray', width=15, height=15)
+        self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
         self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
         self.resize_handle.bind('<Button-1>', self._start_resize)
         self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
@@ -286,7 +287,7 @@ class MapOverlay(tk.Toplevel):
             x, y = self.settings.origin_x, self.settings.origin_y
             self.player_dot = self.canvas.create_oval(
                 x-5, y-5, x+5, y+5,
-                fill='cyan', outline='white', width=2,
+                fill=UI_COLORS["accent"], outline=UI_COLORS["text"], width=2,
                 tags='player'
             )
     
@@ -318,12 +319,12 @@ class MapOverlay(tk.Toplevel):
     
     def _draw_item(self, item: SurveyItem, index: int):
         """Draw a survey item on the map."""
-        color = 'green' if not item.collected else 'gray'
+        color = UI_COLORS["primary"] if not item.collected else UI_COLORS["muted_text"]
         
         # Dot
         self.canvas.create_oval(
             item.x-8, item.y-8, item.x+8, item.y+8,
-            fill=color, outline='white', width=2,
+            fill=color, outline=UI_COLORS["text"], width=2,
             tags=(f'item_{index}', f'item_dot_{index}')
         )
         
@@ -331,7 +332,7 @@ class MapOverlay(tk.Toplevel):
         self.canvas.create_text(
             item.x, item.y-15,
             text=f"{index+1}. {item.name[:15]}",
-            fill='white', font=('Arial', 8, 'bold'),
+            fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-2), 'bold'),
             tags=(f'item_{index}', f'item_label_{index}')
         )
         
@@ -340,7 +341,7 @@ class MapOverlay(tk.Toplevel):
             self.canvas.create_line(
                 self.settings.origin_x, self.settings.origin_y,
                 item.x, item.y,
-                fill='yellow', dash=(3, 3), width=1,
+                fill=UI_COLORS["accent"], dash=(3, 3), width=1,
                 tags=(f'item_{index}', f'item_line_{index}')
             )
     
@@ -424,7 +425,7 @@ class InventoryOverlay(tk.Toplevel):
         self.attributes('-topmost', True)
         self.attributes('-alpha', self.settings.inv_opacity)
         
-        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
+        self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         
         # Dragging
@@ -464,7 +465,7 @@ class InventoryOverlay(tk.Toplevel):
         self._draw_grid()
     
     def _create_resize_handle(self):
-        self.resize_handle = tk.Frame(self, bg='gray', width=15, height=15)
+        self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
         self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
         self.resize_handle.bind('<Button-1>', self._start_resize)
         self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
@@ -532,8 +533,8 @@ class InventoryOverlay(tk.Toplevel):
             y2 = y1 + slot
             
             # Draw slot
-            color = 'green' if i in self.filled_slots else 'darkgray'
-            outline = 'white' if i in self.filled_slots else 'gray'
+            color = UI_COLORS["primary"] if i in self.filled_slots else UI_COLORS["secondary"]
+            outline = UI_COLORS["text"] if i in self.filled_slots else UI_COLORS["muted_text"]
             
             rect = self.canvas.create_rectangle(
                 x1, y1, x2, y2,
@@ -545,7 +546,7 @@ class InventoryOverlay(tk.Toplevel):
             self.canvas.create_text(
                 (x1 + x2) // 2, (y1 + y2) // 2,
                 text=str(i + 1),
-                fill='white', font=('Arial', 10, 'bold')
+                fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold')
             )
             
             self.slots.append(rect)
@@ -645,16 +646,19 @@ class SurveyHelperWindow(tk.Toplevel):
         # Bind Configure event to save window size/position on changes
         self.bind('<Configure>', self._on_main_window_configure)
         
+        # Apply PGLOK theme
+        apply_theme(self)
+        
         self._build_ui()
         self._start_chat_monitor()
     
     def _build_ui(self):
         """Build the control panel UI."""
-        frame = ttk.Frame(self, padding=10)
+        frame = ttk.Frame(self, padding=10, style="App.Panel.TFrame")
         frame.pack(fill='both', expand=True)
         
         # Title
-        ttk.Label(frame, text="🔍 Survey Helper", font=('Arial', 14, 'bold')).pack(pady=5)
+        ttk.Label(frame, text="🔍 Survey Helper", style="App.Header.TLabel").pack(pady=5)
         
         # ChatLog directory
         dir_frame = ttk.LabelFrame(frame, text="ChatLogs Folder", padding=5)
@@ -713,14 +717,14 @@ class SurveyHelperWindow(tk.Toplevel):
         
         # Session info
         self.session_var = tk.StringVar(value="Items found: 0")
-        ttk.Label(frame, textvariable=self.session_var, font=('Arial', 10, 'bold')).pack(pady=5)
+        ttk.Label(frame, textvariable=self.session_var, style="App.Title.TLabel").pack(pady=5)
         
         # Reset
         ttk.Button(frame, text="🔄 Reset Session", command=self._reset_session).pack(fill='x', pady=5)
         
         # Status
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(frame, textvariable=self.status_var, foreground='gray').pack()
+        ttk.Label(frame, textvariable=self.status_var, style="App.Status.TLabel").pack()
     
     def _set_chatlog_dir(self):
         """Set the chatlog directory."""
