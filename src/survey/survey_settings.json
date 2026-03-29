@@ -11,12 +11,12 @@
   "inv_offset": 10,
   "hotkey": "<num0>",
   "map_position": [
-    5070,
-    1134
+    5072,
+    1194
   ],
   "inv_position": [
-    3906,
-    1420
+    3908,
+    1480
   ],
   "map_size": [
     451,
@@ -30,13 +30,13 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    5807,
-    1259
+    100,
+    100
   ],
   "main_window_size": [
-    702,
+    767,
     900
   ],
-  "map_was_open": false,
-  "inventory_was_open": false
+  "map_was_open": true,
+  "inventory_was_open": true
 }

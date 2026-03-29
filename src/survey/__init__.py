@@ -1525,10 +1525,14 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _on_main_window_configure(self, event=None):
         """Save main window position/size on resize/move."""
-        # Avoid saving during window creation/destruction
+        # Avoid saving during window creation/destruction or when size is too small
         if self.winfo_exists():
-            self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
-            self.settings.main_window_size = (self.winfo_width(), self.winfo_height())
+            width = self.winfo_width()
+            height = self.winfo_height()
+            # Only save if window has reasonable size (not collapsed)
+            if width > 100 and height > 100:
+                self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
+                self.settings.main_window_size = (width, height)
     
     def _restore_overlays(self):
         """Restore map and/or inventory overlays if they were open before."""
