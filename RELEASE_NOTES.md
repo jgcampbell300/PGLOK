@@ -1,35 +1,35 @@
-# PGLOK v0.1.8 Release
+# PGLOK v0.1.9 Release
 
 ## Highlights
 
-- Fixed the Linux auto-update loop in source installs.
-- Added fallback to GitHub release tarballs when a release has no uploaded assets.
-- Prevented repo-based updates from overwriting local config, databases, virtualenv files, and build output.
-- Fixed standalone Linux packaging so bundled builds can load top-level addons correctly.
-- Fixed the update completion dialog path by importing `messagebox` in the main app.
+- Added Survey Helper tool for Project Gorgon surveying tasks.
+- Added player position tracking from Player.log for better gameplay analysis.
+- Added food comparison tool with caching and gourmand report import support.
+- Fixed Linux auto-updater tar.gz detection to properly identify release tarballs.
+- Improved threading error handling in the auto-update checker.
 
-## Linux Packaging
+## New Features
 
-- Rebuilt the standalone Linux executable from the fixed checkout.
-- Updated the PyInstaller spec to include the top-level `addons/` directory.
-- Verified the packaged executable starts cleanly from `~/.local/bin/PGLOK`.
+- **Survey Helper**: Streamlined interface for managing and tracking survey tasks across Project Gorgon.
+- **Player Position Tracking**: Automatically reads and displays current player position from Player.log.
+- **Food Comparison Tool**: Compare foods with integrated caching and gourmand report import functionality.
 
-## Auto-Update Behavior
+## Bug Fixes
 
-- Release checks now fall back to GitHub `tarball_url`/`zipball_url` when release assets are missing.
-- Linux `.tar.gz` and `.tgz` downloads are detected correctly.
-- Install and restart paths now resolve to the actual app root for both source and frozen runs.
+- Fixed tar.gz detection in Linux auto-updater to correctly identify and download release packages.
+- Resolved threading errors that could occur during update checks.
+- Improved compatibility with existing addon system.
 
 ## Installation
 
 ```bash
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.8.tar.gz -o PGLOK.tar.gz
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.1.9.tar.gz -o PGLOK.tar.gz
 tar -xzf PGLOK.tar.gz
-cd PGLOK-Linux-v0.1.8
+cd PGLOK-Linux-v0.1.9
 ./install.sh
 ```
 
 ## Assets
 
-- `PGLOK-Linux-v0.1.8.tar.gz`
-- `PGLOK-v0.1.8-source.tar.gz`
+- `PGLOK-Linux-v0.1.9.tar.gz`
+- `PGLOK-v0.1.9-source.tar.gz`

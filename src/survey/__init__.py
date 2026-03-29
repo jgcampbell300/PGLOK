@@ -17,6 +17,8 @@ import threading
 import time
 
 from src.chat.monitor import ChatLogMonitor
+from src.locate_PG import initialize_pg_base
+import src.config.config as config
 
 
 @dataclass
@@ -736,11 +738,26 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
+        # Try to auto-detect chat log directory if not manually set
+        if self.settings.chatlog_dir is None:
+            try:
+                # Ensure PG_BASE is initialized
+                if config.PG_BASE is None:
+                    initialize_pg_base(force=False)
+                
+                # Use auto-detected CHAT_DIR if available
+                if config.CHAT_DIR is not None:
+                    self.settings.chatlog_dir = config.CHAT_DIR
+                    self.settings.save()
+            except Exception as e:
+                print(f"Auto-detection failed: {e}")
+        
+        # Only proceed if we have a chat log directory
         if self.settings.chatlog_dir is None:
             return
         
         try:
-            self.chat_monitor = ChatLogMonitor(log_dir=self.settings.chatlog_dir)
+            self.chat_monitor = ChatLogMonitor(chat_dir=self.settings.chatlog_dir)
             self._monitoring = True
             self._poll_chat()
             self.status_var.set("Monitoring chat logs...")

@@ -43,16 +43,35 @@ fi
 
 echo "✅ pip is available"
 
+# Check if we need a virtual environment (for externally managed Python)
+NEED_VENV=false
+if ! "$PY_BIN" -m pip install --dry-run pip 2>/dev/null; then
+    echo "📝 System Python is externally managed, creating virtual environment..."
+    NEED_VENV=true
+fi
+
+if [[ "$NEED_VENV" == true ]] && [[ ! -f ".venv/bin/activate" ]]; then
+    echo "📦 Creating virtual environment..."
+    "$PY_BIN" -m venv .venv
+fi
+
 if [[ -f ".venv/bin/activate" ]]; then
-  # Prefer project venv when available.
-  echo "📦 Using existing virtual environment..."
-  # shellcheck disable=SC1091
-  source ".venv/bin/activate"
+    # Use project venv
+    echo "📦 Using virtual environment..."
+    # shellcheck disable=SC1091
+    source ".venv/bin/activate"
+    PY_BIN="python"
 fi
 
 echo "📦 Installing Python dependencies..."
-"$PY_BIN" -m pip install --upgrade pip
-"$PY_BIN" -m pip install -r requirements.txt
+if [[ -f ".venv/bin/activate" ]]; then
+    "$PY_BIN" -m pip install --upgrade pip
+    "$PY_BIN" -m pip install -r requirements.txt
+else
+    # Try with --break-system-packages as fallback
+    "$PY_BIN" -m pip install --upgrade pip --break-system-packages 2>/dev/null || "$PY_BIN" -m pip install --upgrade pip
+    "$PY_BIN" -m pip install -r requirements.txt --break-system-packages 2>/dev/null || "$PY_BIN" -m pip install -r requirements.txt
+fi
 
 echo "✅ Dependencies installed successfully"
 
