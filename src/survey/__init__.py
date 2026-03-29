@@ -23,37 +23,44 @@ from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme
 
 
 def find_gorgon_config() -> Optional[Path]:
-    """Search for GorgonConfig.txt across different OS locations."""
+    """Search for GorgonConfig.txt or GorgonSettings.txt across different OS locations."""
     import sys
     
     possible_paths = []
+    filenames = ['GorgonSettings.txt', 'GorgonConfig.txt']  # Try GorgonSettings first (more common on Linux)
     
     if sys.platform == 'win32':
         # Windows paths
         appdata = Path.home() / 'AppData' / 'Roaming' / 'ProjectGorgon'
         localappdata = Path.home() / 'AppData' / 'Local' / 'ProjectGorgon'
-        possible_paths.extend([
-            appdata / 'GorgonConfig.txt',
-            localappdata / 'GorgonConfig.txt',
-            Path('C:/Program Files/ProjectGorgon/GorgonConfig.txt'),
-            Path('C:/Program Files (x86)/ProjectGorgon/GorgonConfig.txt'),
-        ])
+        for filename in filenames:
+            possible_paths.extend([
+                appdata / filename,
+                localappdata / filename,
+                Path(f'C:/Program Files/ProjectGorgon/{filename}'),
+                Path(f'C:/Program Files (x86)/ProjectGorgon/{filename}'),
+            ])
     elif sys.platform == 'darwin':
         # macOS paths
         home = Path.home()
-        possible_paths.extend([
-            home / 'Library' / 'Application Support' / 'ProjectGorgon' / 'GorgonConfig.txt',
-            home / 'Library' / 'Preferences' / 'ProjectGorgon' / 'GorgonConfig.txt',
-            home / '.projectgorgon' / 'GorgonConfig.txt',
-        ])
+        for filename in filenames:
+            possible_paths.extend([
+                home / 'Library' / 'Application Support' / 'ProjectGorgon' / filename,
+                home / 'Library' / 'Preferences' / 'ProjectGorgon' / filename,
+                home / '.projectgorgon' / filename,
+            ])
     else:
         # Linux paths
         home = Path.home()
-        possible_paths.extend([
-            home / '.local' / 'share' / 'ProjectGorgon' / 'GorgonConfig.txt',
-            home / '.config' / 'ProjectGorgon' / 'GorgonConfig.txt',
-            home / '.projectgorgon' / 'GorgonConfig.txt',
-        ])
+        for filename in filenames:
+            possible_paths.extend([
+                # Unity3D config path (most common on Linux)
+                home / '.config' / 'unity3d' / 'Elder Game' / 'Project Gorgon' / filename,
+                # Fallback paths
+                home / '.local' / 'share' / 'ProjectGorgon' / filename,
+                home / '.config' / 'ProjectGorgon' / filename,
+                home / '.projectgorgon' / filename,
+            ])
     
     # Search for the file
     for path in possible_paths:
@@ -67,17 +74,34 @@ def find_gorgon_config() -> Optional[Path]:
 
 
 def parse_gorgon_config(config_path: Path) -> Dict:
-    """Parse GorgonConfig.txt to extract window positions and sizes."""
+    """Parse GorgonConfig.txt or GorgonSettings.txt to extract window positions and sizes.
+    
+    Handles both formats:
+    - Key=Value format (standard config)
+    - Tab-delimited format (Unity3D GorgonSettings.txt): type\tkey\tindex\tvalue
+    """
     config_data = {}
     try:
         with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 line = line.strip()
-                if '=' in line and not line.startswith('#'):
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Check for tab-delimited format (Unity3D)
+                if '\t' in line:
+                    parts = line.split('\t')
+                    if len(parts) >= 4:
+                        # Format: type\tkey\tindex\tvalue
+                        key = parts[1]
+                        value = parts[3]
+                        config_data[key] = value
+                # Check for key=value format
+                elif '=' in line:
                     key, value = line.split('=', 1)
                     config_data[key.strip()] = value.strip()
     except Exception as e:
-        print(f"Error parsing GorgonConfig.txt: {e}")
+        print(f"Error parsing config file: {e}")
     
     return config_data
 
@@ -86,11 +110,28 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
     """Extract inventory window position and size from config.
     
     Returns: (x, y, width, height) or None if not found
+    Handles both legacy key-value format and Unity3D WinPosition format
     """
     try:
-        # Look for inventory window config entries
-        # Common patterns: inventoryWindowX, inventoryWindowY, inventoryWindowWidth, inventoryWindowHeight
-        # or Inventory_WindowX, Inventory_WindowY, Inventory_WindowWidth, Inventory_WindowHeight
+        # Try Unity3D format first: WinPosition_InventoryWindow = "M20.86581;L63.52591;617.4161;463.7999|T|T||-1|-1"
+        if 'WinPosition_InventoryWindow' in config_data:
+            value = config_data['WinPosition_InventoryWindow']
+            # Extract the position part (before the first |)
+            pos_part = value.split('|')[0]
+            parts = pos_part.split(';')
+            
+            if len(parts) >= 4:
+                try:
+                    # Format: M<x>;L<y>;<width>;<height>
+                    x = int(float(parts[0][1:]))  # Remove 'M' prefix and convert
+                    y = int(float(parts[1][1:]))  # Remove 'L' prefix and convert
+                    width = int(float(parts[2]))
+                    height = int(float(parts[3]))
+                    return (x, y, width, height)
+                except (ValueError, IndexError):
+                    pass
+        
+        # Fallback to legacy format: inventoryWindowX, inventoryWindowY, etc.
         for x_key in ['inventoryWindowX', 'Inventory_WindowX', 'InventoryWindowX']:
             if x_key in config_data:
                 x = int(config_data[x_key])
@@ -98,7 +139,7 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
                 width = int(config_data.get(x_key.replace('X', 'Width'), 400))
                 height = int(config_data.get(x_key.replace('X', 'Height'), 300))
                 return (x, y, width, height)
-    except (ValueError, KeyError) as e:
+    except (ValueError, KeyError, IndexError) as e:
         print(f"Error extracting inventory dimensions: {e}")
     
     return None
