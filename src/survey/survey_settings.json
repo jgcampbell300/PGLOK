@@ -5,37 +5,37 @@
   "inv_opacity": 0.315702479338843,
   "map_clickthrough": false,
   "inv_clickthrough": false,
-  "grid_cols": 10,
+  "grid_cols": 13,
   "slot_size": 40,
   "slot_gap": 4,
   "inv_offset": 10,
   "hotkey": "<num0>",
   "map_position": [
-    5073,
-    1145
+    5074,
+    1175
   ],
   "inv_position": [
-    4365,
-    1350
+    5761,
+    1696
   ],
   "map_size": [
     451,
     508
   ],
   "inv_size": [
-    446,
-    499
+    617,
+    463
   ],
   "scale_factor": null,
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    6195,
-    1155
+    6196,
+    1185
   ],
   "main_window_size": [
     419,
-    658
+    839
   ],
   "map_was_open": false,
   "inventory_was_open": false

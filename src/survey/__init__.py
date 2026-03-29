@@ -173,11 +173,14 @@ def get_inventory_grid_settings(config_data: Dict) -> Optional[Tuple[int, int]]:
     return None
 
 
-def calculate_grid_columns_from_width(window_width: int, padding: int = 20, gap: int = 4, 
-                                       slot_size: int = 40) -> int:
+def calculate_grid_columns_from_width(window_width: int, padding: int = 50, gap: int = 4, 
+                                       slot_size: int = 50) -> int:
     """Calculate number of columns that fit in the given window width.
     
     Formula: (window_width - padding) / (slot_size + gap)
+    
+    Note: This is an estimate. Actual columns depend on UI decorations/scrollbars.
+    You can manually adjust via the Columns spinbox for your specific window size.
     """
     available_width = window_width - padding
     if slot_size <= 0:
@@ -1174,12 +1177,11 @@ class SurveyHelperWindow(tk.Toplevel):
             inv_dims = get_inventory_window_dims(config_data)
             grid_settings = get_inventory_grid_settings(config_data)
             
-            info_msg = f"Found GorgonConfig.txt at:\n{config_path}\n\n"
+            info_msg = f"Found config at:\n{config_path}\n\n"
             
             if inv_dims:
                 x, y, width, height = inv_dims
                 info_msg += f"Inventory Window:\n"
-                info_msg += f"  Position: ({x}, {y})\n"
                 info_msg += f"  Size: {width}x{height}\n\n"
                 
                 # Save position and size
@@ -1195,16 +1197,19 @@ class SurveyHelperWindow(tk.Toplevel):
                     info_msg += f"  Columns: {columns}\n"
                     info_msg += f"  Slot Size: {slot_size}px\n"
                 else:
-                    # Auto-calculate columns based on window width and default slot size
+                    # Auto-calculate columns based on window width
                     slot_size = self.settings.slot_size
-                    columns = calculate_grid_columns_from_width(width, padding=20, slot_size=slot_size)
+                    columns = calculate_grid_columns_from_width(width, slot_size=slot_size)
                     self.settings.grid_cols = columns
                     info_msg += f"Grid Settings (auto-calculated):\n"
-                    info_msg += f"  Columns: {columns} (based on width)\n"
-                    info_msg += f"  Slot Size: {slot_size}px (default)\n"
+                    info_msg += f"  Columns: {columns} (estimate)\n"
+                    info_msg += f"  Slot Size: {slot_size}px\n\n"
+                    info_msg += "⚠ Adjust Columns spinbox if needed\n"
+                    info_msg += "  (auto-calc may differ from your setup)\n"
                 
                 # Update UI controls
-                self.count_var.set(self.settings.survey_count)
+                self.cols_var.set(self.settings.grid_cols)
+                self.slot_size_var.set(self.settings.slot_size)
                 
                 info_msg += f"\nClose and reopen overlays to apply new settings."
                 
