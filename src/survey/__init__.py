@@ -416,6 +416,13 @@ class MapOverlay(tk.Toplevel):
             self.attributes('-transparentcolor', '')
         self.settings.save()
     
+    def _close_window(self):
+        """Close window, ensuring all settings are saved first."""
+        self.settings.save()
+        if self.on_close_callback:
+            self.on_close_callback()
+        self.destroy()
+    
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
@@ -617,6 +624,13 @@ class InventoryOverlay(tk.Toplevel):
             self.attributes('-transparentcolor', '')
         self.settings.save()
     
+    def _close_window(self):
+        """Close window, ensuring all settings are saved first."""
+        self.settings.save()
+        if self.on_close_callback:
+            self.on_close_callback()
+        self.destroy()
+    
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
@@ -781,7 +795,7 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.map_open:
             # Close the map
             if self.map_overlay and self.map_overlay.winfo_exists():
-                self.map_overlay.destroy()
+                self.map_overlay._close_window()
             self.map_open = False
             self.map_button.config(text="🗺 Show Map")
         else:
@@ -805,7 +819,7 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.inventory_open:
             # Close the inventory
             if self.inv_overlay and self.inv_overlay.winfo_exists():
-                self.inv_overlay.destroy()
+                self.inv_overlay._close_window()
             self.inventory_open = False
             self.inv_button.config(text="📦 Show Inventory")
         else:
