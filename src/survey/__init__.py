@@ -1184,8 +1184,9 @@ class SurveyHelperWindow(tk.Toplevel):
                 info_msg += f"Inventory Window:\n"
                 info_msg += f"  Size: {width}x{height}\n\n"
                 
-                # Save position and size
-                self.settings.inv_position = (x, y)
+                # NOTE: We don't use x,y from config because they're relative to game UI,
+                # not absolute screen coordinates. User must position overlay manually.
+                # Only save size
                 self.settings.inv_size = (width, height)
                 
                 # Auto-calculate columns if slot size known, or use from config
@@ -1203,15 +1204,18 @@ class SurveyHelperWindow(tk.Toplevel):
                     self.settings.grid_cols = columns
                     info_msg += f"Grid Settings (auto-calculated):\n"
                     info_msg += f"  Columns: {columns} (estimate)\n"
-                    info_msg += f"  Slot Size: {slot_size}px\n\n"
-                    info_msg += "⚠ Adjust Columns spinbox if needed\n"
-                    info_msg += "  (auto-calc may differ from your setup)\n"
+                    info_msg += f"  Slot Size: {slot_size}px\n"
                 
                 # Update UI controls
                 self.cols_var.set(self.settings.grid_cols)
                 self.slot_size_var.set(self.settings.slot_size)
                 
-                info_msg += f"\nClose and reopen overlays to apply new settings."
+                info_msg += f"\n💡 Position overlay manually:\n"
+                info_msg += f"  1. Close this overlay (if open)\n"
+                info_msg += f"  2. Click 'Show Inventory'\n"
+                info_msg += f"  3. Drag overlay over game window\n"
+                info_msg += f"  4. Position will auto-save\n\n"
+                info_msg += f"Close and reopen to apply size."
                 
                 self.settings.save()
                 messagebox.showinfo("Config Synced", info_msg)
