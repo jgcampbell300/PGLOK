@@ -24,6 +24,32 @@ import src.config.config as config
 from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme
 
 
+def set_window_icon(window, icon_path: str = "icon.png"):
+    """Set window icon for taskbar/window title bar.
+    
+    Args:
+        window: tk.Tk or tk.Toplevel window
+        icon_path: Path to icon file (png, ico, etc)
+    """
+    try:
+        # Try to find icon in project root
+        icon_file = Path(icon_path)
+        if not icon_file.exists():
+            # Try relative to this module
+            icon_file = Path(__file__).parent.parent.parent / icon_path
+        
+        if icon_file.exists():
+            if str(icon_file).lower().endswith('.ico'):
+                window.iconbitmap(str(icon_file))
+            else:
+                # Use PhotoImage for PNG and other formats
+                photo = tk.PhotoImage(file=str(icon_file))
+                window.iconphoto(False, photo)
+    except Exception as e:
+        # Silently fail - icon is optional
+        pass
+
+
 def find_gorgon_config() -> Optional[Path]:
     """Search for GorgonConfig.txt or GorgonSettings.txt across different OS locations."""
     import sys
@@ -455,6 +481,9 @@ class MapOverlay(tk.Toplevel):
         self.attributes('-topmost', True)
         self.attributes('-alpha', self.settings.map_opacity)
         
+        # Set window icon for taskbar
+        set_window_icon(self)
+        
         # Remove window decorations
         self.overrideredirect(False)
         
@@ -735,6 +764,9 @@ class InventoryOverlay(tk.Toplevel):
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
         self.attributes('-alpha', self.settings.inv_opacity)
+        
+        # Set window icon for taskbar
+        set_window_icon(self)
         
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
