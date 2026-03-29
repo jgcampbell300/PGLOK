@@ -5,7 +5,7 @@
   "inv_opacity": 0.4227848101265823,
   "map_clickthrough": false,
   "inv_clickthrough": false,
-  "grid_cols": 33,
+  "grid_cols": 23,
   "slot_size": 32,
   "slot_gap": 4,
   "inv_offset": 0,
@@ -15,8 +15,8 @@
     1265
   ],
   "inv_position": [
-    3901,
-    1367
+    3972,
+    1276
   ],
   "map_size": [
     451,
@@ -30,11 +30,11 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    5804,
-    1185
+    5806,
+    1245
   ],
   "main_window_size": [
-    767,
+    614,
     900
   ],
   "map_was_open": false,

@@ -1034,6 +1034,11 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Spinbox(grid_frame, from_=20, to=80, textvariable=self.slot_size_var, width=3,
                    style="App.TSpinbox", command=self._update_grid_calc).pack(side='left', padx=2)
         
+        ttk.Label(grid_frame, text="Gap:", style="App.TLabel").pack(side='left', padx=4)
+        self.gap_var = tk.IntVar(value=self.settings.slot_gap)
+        ttk.Spinbox(grid_frame, from_=0, to=20, textvariable=self.gap_var, width=3,
+                   style="App.TSpinbox", command=self._update_grid_calc).pack(side='left', padx=2)
+        
         ttk.Button(grid_frame, text="Apply", command=self._apply_grid_settings, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         # Overlay controls - use tk.LabelFrame with dark theme colors
@@ -1078,9 +1083,6 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_clickthrough_btn = ttk.Button(clickthrough_frame, text="📦 Click-Through: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
         self.inv_clickthrough_btn.pack(side='left', padx=2)
         self._update_inv_clickthrough_btn()
-        
-        # GorgonConfig sync button
-        ttk.Button(overlay_frame, text="🔄 Sync with Game Window", command=self._sync_with_gorgon_config, style="App.Secondary.TButton").pack(fill='x', pady=1)
         
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=4, pady=3,
@@ -1151,12 +1153,14 @@ class SurveyHelperWindow(tk.Toplevel):
         pass
     
     def _apply_grid_settings(self):
-        """Apply new grid column and slot size settings."""
+        """Apply new grid column, slot size, and gap settings."""
         cols = self.cols_var.get()
         slot_size = self.slot_size_var.get()
+        gap = self.gap_var.get()
         
         self.settings.grid_cols = cols
         self.settings.slot_size = slot_size
+        self.settings.slot_gap = gap
         self.settings.save()
         
         if self.inv_overlay:
@@ -1268,83 +1272,6 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update inventory click-through button text."""
         state = "ON" if self.inv_clickthrough_var.get() else "OFF"
         self.inv_clickthrough_btn.config(text=f"📦 Click-Through: {state}")
-    
-    def _sync_with_gorgon_config(self):
-        """Search for and sync overlay windows with GorgonConfig.txt."""
-        config_path = find_gorgon_config()
-        if config_path is None:
-            messagebox.showwarning("Config Not Found", "Could not find GorgonConfig.txt.\n\nSearched common locations for your OS.")
-            return
-        
-        try:
-            config_data = parse_gorgon_config(config_path)
-            inv_dims = get_inventory_window_dims(config_data)
-            grid_settings = get_inventory_grid_settings(config_data)
-            
-            info_msg = f"Found config at:\n{config_path}\n\n"
-            
-            if inv_dims:
-                rel_x, rel_y, width, height = inv_dims
-                info_msg += f"Game Configuration:\n"
-                info_msg += f"  Game Resolution: {config_data.get('PrefsFullScreenWidth', '?')}x{config_data.get('PrefsFullScreenHeight', '?')}\n"
-                info_msg += f"  Inventory Window Size: {width}x{height}px\n"
-                info_msg += f"  Inventory Rel. Pos: ({rel_x}, {rel_y})\n\n"
-                
-                # Try to find game window and calculate absolute position
-                game_pos = find_game_window()
-                if game_pos:
-                    game_x, game_y, game_w, game_h = game_pos
-                    abs_x, abs_y = calculate_overlay_position(game_pos, rel_x, rel_y)
-                    self.settings.inv_position = (abs_x, abs_y)
-                    self.settings.inv_size = (width, height)
-                    info_msg += f"Game Window Detected:\n"
-                    info_msg += f"  Position: ({game_x}, {game_y})\n"
-                    info_msg += f"  Size: {game_w}x{game_h}\n\n"
-                    info_msg += f"✓ Overlay position calculated!\n"
-                    info_msg += f"  Overlay will appear at ({abs_x}, {abs_y})\n\n"
-                else:
-                    # Manual positioning fallback
-                    info_msg += f"⚠ Could not detect game window.\n"
-                    info_msg += f"  (wmctrl not found or game not running)\n\n"
-                    info_msg += f"💡 Manual positioning:\n"
-                    info_msg += f"  1. Click 'Show Inventory'\n"
-                    info_msg += f"  2. Drag overlay to match game\n"
-                    info_msg += f"  3. Position auto-saves\n\n"
-                
-                # Save size
-                self.settings.inv_size = (width, height)
-                
-                # Auto-calculate columns if slot size known, or use from config
-                if grid_settings:
-                    columns, slot_size = grid_settings
-                    self.settings.grid_cols = columns
-                    self.settings.slot_size = slot_size
-                    info_msg += f"Grid Settings (from config):\n"
-                    info_msg += f"  Columns: {columns}\n"
-                    info_msg += f"  Slot Size: {slot_size}px\n"
-                else:
-                    # Auto-calculate columns based on window width
-                    slot_size = self.settings.slot_size
-                    columns = calculate_grid_columns_from_width(width, slot_size=slot_size)
-                    self.settings.grid_cols = columns
-                    info_msg += f"Grid Settings (auto-calculated):\n"
-                    info_msg += f"  Columns: {columns}\n"
-                    info_msg += f"  Slot Size: {slot_size}px\n"
-                
-                # Update UI controls
-                self.cols_var.set(self.settings.grid_cols)
-                self.slot_size_var.set(self.settings.slot_size)
-                
-                info_msg += f"\nClose and reopen overlay to apply."
-                
-                self.settings.save()
-                messagebox.showinfo("Config Synced", info_msg)
-            else:
-                messagebox.showinfo("Config Found", 
-                    info_msg + "Could not extract inventory window dimensions.\n"
-                    "File format may have changed.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error reading config: {e}")
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
