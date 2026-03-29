@@ -691,75 +691,87 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _build_ui(self):
         """Build the control panel UI."""
-        frame = ttk.Frame(self, padding=10, style="App.Panel.TFrame")
-        frame.pack(fill='both', expand=True)
+        frame = tk.Frame(self, bg=UI_COLORS["panel_bg"])
+        frame.pack(fill='both', expand=True, padx=10, pady=10)
         
         # Title
         ttk.Label(frame, text="🔍 Survey Helper", style="App.Header.TLabel").pack(pady=5)
         
-        # ChatLog directory
-        dir_frame = ttk.LabelFrame(frame, text="ChatLogs Folder", padding=5)
+        # ChatLog directory - use tk.LabelFrame with dark theme colors
+        dir_frame = tk.LabelFrame(frame, text="ChatLogs Folder", padx=5, pady=5,
+                                  bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"], 
+                                  font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                  borderwidth=1, relief="solid")
         dir_frame.pack(fill='x', pady=5)
         
         self.dir_var = tk.StringVar(value=str(self.settings.chatlog_dir) if self.settings.chatlog_dir else "Not set")
-        ttk.Label(dir_frame, textvariable=self.dir_var, wraplength=300).pack(fill='x')
-        ttk.Button(dir_frame, text="💬 Set Folder", command=self._set_chatlog_dir).pack(pady=2)
+        ttk.Label(dir_frame, textvariable=self.dir_var, wraplength=300, style="App.TLabel").pack(fill='x')
+        ttk.Button(dir_frame, text="💬 Set Folder", command=self._set_chatlog_dir, style="App.Secondary.TButton").pack(pady=2)
         
-        # Survey count
-        count_frame = ttk.LabelFrame(frame, text="Survey Maps", padding=5)
+        # Survey count - use tk.LabelFrame with dark theme colors
+        count_frame = tk.LabelFrame(frame, text="Survey Maps", padx=5, pady=5,
+                                    bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                    font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                    borderwidth=1, relief="solid")
         count_frame.pack(fill='x', pady=5)
         
         self.count_var = tk.IntVar(value=self.settings.survey_count)
-        ttk.Spinbox(count_frame, from_=0, to=100, textvariable=self.count_var, width=5).pack(side='left', padx=5)
-        ttk.Button(count_frame, text="Set Count", command=self._set_survey_count).pack(side='left', padx=5)
+        ttk.Spinbox(count_frame, from_=0, to=100, textvariable=self.count_var, width=5, style="App.TSpinbox").pack(side='left', padx=5)
+        ttk.Button(count_frame, text="Set Count", command=self._set_survey_count, style="App.Secondary.TButton").pack(side='left', padx=5)
         
-        # Overlay controls
-        overlay_frame = ttk.LabelFrame(frame, text="Overlays", padding=5)
+        # Overlay controls - use tk.LabelFrame with dark theme colors
+        overlay_frame = tk.LabelFrame(frame, text="Overlays", padx=5, pady=5,
+                                      bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                      font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                      borderwidth=1, relief="solid")
         overlay_frame.pack(fill='x', pady=5)
         
-        btn_frame = ttk.Frame(overlay_frame)
+        btn_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         btn_frame.pack(fill='x')
         
-        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map)
+        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map, style="App.Secondary.TButton")
         self.map_button.pack(side='left', padx=2)
-        self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory)
+        self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory, style="App.Secondary.TButton")
         self.inv_button.pack(side='left', padx=2)
         
         # Position setting
-        ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position).pack(fill='x', pady=2)
+        ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position, style="App.Secondary.TButton").pack(fill='x', pady=2)
         
         # Opacity sliders
-        ttk.Label(overlay_frame, text="Map Opacity:").pack(anchor='w')
+        ttk.Label(overlay_frame, text="Map Opacity:", style="App.TLabel").pack(anchor='w')
         self.map_opacity_var = tk.DoubleVar(value=self.settings.map_opacity)
         ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.map_opacity_var, 
                   command=self._update_map_opacity).pack(fill='x')
         
-        ttk.Label(overlay_frame, text="Inventory Opacity:").pack(anchor='w')
+        ttk.Label(overlay_frame, text="Inventory Opacity:", style="App.TLabel").pack(anchor='w')
         self.inv_opacity_var = tk.DoubleVar(value=self.settings.inv_opacity)
         ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.inv_opacity_var,
                   command=self._update_inv_opacity).pack(fill='x')
         
-        # Route optimization
-        route_frame = ttk.LabelFrame(frame, text="Route Optimization", padding=5)
+        # Route optimization - use tk.LabelFrame with dark theme colors
+        route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=5, pady=5,
+                                    bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                    font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                    borderwidth=1, relief="solid")
         route_frame.pack(fill='x', pady=5)
         
-        ttk.Button(route_frame, text="🗺 Optimize Route", command=self._optimize_route).pack(fill='x', pady=2)
+        ttk.Button(route_frame, text="🗺 Optimize Route", command=self._optimize_route, style="App.Secondary.TButton").pack(fill='x', pady=2)
         
         self.route_info_var = tk.StringVar(value="No route active")
-        ttk.Label(route_frame, textvariable=self.route_info_var).pack()
+        ttk.Label(route_frame, textvariable=self.route_info_var, style="App.TLabel").pack()
         
-        nav_frame = ttk.Frame(route_frame)
+        nav_frame = tk.Frame(route_frame, bg=UI_COLORS["panel_bg"])
         nav_frame.pack(fill='x')
-        ttk.Button(nav_frame, text="← Previous", command=self._prev_item).pack(side='left', padx=2)
-        ttk.Button(nav_frame, text="Next →", command=self._next_item).pack(side='left', padx=2)
-        ttk.Button(nav_frame, text="Skip", command=self._skip_item).pack(side='left', padx=2)
+        ttk.Button(nav_frame, text="← Previous", command=self._prev_item, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(nav_frame, text="Next →", command=self._next_item, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(nav_frame, text="Skip", command=self._skip_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         # Session info
         self.session_var = tk.StringVar(value="Items found: 0")
         ttk.Label(frame, textvariable=self.session_var, style="App.Title.TLabel").pack(pady=5)
         
         # Reset
-        ttk.Button(frame, text="🔄 Reset Session", command=self._reset_session).pack(fill='x', pady=5)
+        ttk.Button(frame, text="🔄 Reset Session", command=self._reset_session, style="App.Secondary.TButton").pack(fill='x', pady=5)
         
         # Status
         self.status_var = tk.StringVar(value="Ready")

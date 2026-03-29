@@ -255,6 +255,17 @@ def apply_theme(root):
         background=[("readonly", UI_COLORS["secondary"])],
     )
     style.configure(
+        "App.TSpinbox",
+        fieldbackground=UI_COLORS["entry_bg"],
+        foreground=UI_COLORS["text"],
+        bordercolor=UI_COLORS["entry_border"],
+        lightcolor=UI_COLORS["entry_border"],
+        darkcolor=UI_COLORS["entry_border"],
+        insertcolor=UI_COLORS["text"],
+        arrowcolor=UI_COLORS["accent"],
+        padding=(4, 2),
+    )
+    style.configure(
         "TScrollbar",
         troughcolor=UI_COLORS["card_bg"],
         background=UI_COLORS["secondary"],
