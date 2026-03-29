@@ -88,6 +88,8 @@ class SurveySettings:
         self.origin_y: Optional[float] = None
         self.main_window_position: Optional[Tuple[int, int]] = None  # (x, y)
         self.main_window_size: Optional[Tuple[int, int]] = None  # (width, height)
+        self.map_was_open: bool = False  # whether map was open on last close
+        self.inventory_was_open: bool = False  # whether inventory was open on last close
         
         self.load()
     
@@ -127,6 +129,9 @@ class SurveySettings:
                 if data.get('main_window_size'):
                     self.main_window_size = tuple(data['main_window_size'])
                 
+                self.map_was_open = data.get('map_was_open', False)
+                self.inventory_was_open = data.get('inventory_was_open', False)
+                
             except Exception as e:
                 print(f"Error loading survey settings: {e}")
     
@@ -152,6 +157,8 @@ class SurveySettings:
             'origin_y': self.origin_y,
             'main_window_position': list(self.main_window_position) if self.main_window_position else None,
             'main_window_size': list(self.main_window_size) if self.main_window_size else None,
+            'map_was_open': self.map_was_open,
+            'inventory_was_open': self.inventory_was_open,
         }
         
         try:
@@ -164,10 +171,11 @@ class SurveySettings:
 class MapOverlay(tk.Toplevel):
     """Transparent overlay window for the map with survey dots."""
     
-    def __init__(self, parent, settings: SurveySettings, on_click_callback=None):
+    def __init__(self, parent, settings: SurveySettings, on_click_callback=None, on_close=None):
         super().__init__(parent)
         self.settings = settings
         self.on_click_callback = on_click_callback
+        self.on_close_callback = on_close
         
         self.title("Survey Map")
         self.attributes('-topmost', True)
@@ -411,15 +419,18 @@ class MapOverlay(tk.Toplevel):
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
+        if self.on_close_callback:
+            self.on_close_callback()
         self.destroy()
 
 
 class InventoryOverlay(tk.Toplevel):
     """Transparent overlay window for inventory grid."""
     
-    def __init__(self, parent, settings: SurveySettings):
+    def __init__(self, parent, settings: SurveySettings, on_close=None):
         super().__init__(parent)
         self.settings = settings
+        self.on_close_callback = on_close
         
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
@@ -609,6 +620,8 @@ class InventoryOverlay(tk.Toplevel):
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
         self.settings.save()
+        if self.on_close_callback:
+            self.on_close_callback()
         self.destroy()
 
 
@@ -642,6 +655,12 @@ class SurveyHelperWindow(tk.Toplevel):
         # Overlays
         self.map_overlay: Optional[MapOverlay] = None
         self.inv_overlay: Optional[InventoryOverlay] = None
+        self.map_open = False
+        self.inventory_open = False
+        
+        # Button references for toggle functionality
+        self.map_button: Optional[ttk.Button] = None
+        self.inv_button: Optional[ttk.Button] = None
         
         # Bind Configure event to save window size/position on changes
         self.bind('<Configure>', self._on_main_window_configure)
@@ -650,6 +669,7 @@ class SurveyHelperWindow(tk.Toplevel):
         apply_theme(self)
         
         self._build_ui()
+        self._restore_overlays()
         self._start_chat_monitor()
     
     def _build_ui(self):
@@ -683,8 +703,10 @@ class SurveyHelperWindow(tk.Toplevel):
         btn_frame = ttk.Frame(overlay_frame)
         btn_frame.pack(fill='x')
         
-        ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory).pack(side='left', padx=2)
+        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map)
+        self.map_button.pack(side='left', padx=2)
+        self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory)
+        self.inv_button.pack(side='left', padx=2)
         
         # Position setting
         ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position).pack(fill='x', pady=2)
@@ -752,21 +774,55 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.inv_overlay.mark_slot_filled(i)
     
     def _show_map(self):
-        """Show the map overlay."""
-        if self.map_overlay is None or not self.map_overlay.winfo_exists():
-            self.map_overlay = MapOverlay(self, self.settings, self._on_map_click)
+        """Toggle the map overlay open/closed."""
+        if self.map_open:
+            # Close the map
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay.destroy()
+            self.map_open = False
+            self.map_button.config(text="🗺 Show Map")
         else:
-            self.map_overlay.lift()
+            # Open the map
+            if self.map_overlay is None or not self.map_overlay.winfo_exists():
+                self.map_overlay = MapOverlay(self, self.settings, self._on_map_click, 
+                                             on_close=self._on_map_closed)
+            else:
+                self.map_overlay.lift()
+            self.map_open = True
+            self.map_button.config(text="🗺 Hide Map")
+    
+    def _on_map_closed(self):
+        """Called when map overlay is closed by user."""
+        self.map_open = False
+        if self.map_button:
+            self.map_button.config(text="🗺 Show Map")
     
     def _show_inventory(self):
-        """Show the inventory overlay."""
-        if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
-            self.inv_overlay = InventoryOverlay(self, self.settings)
-            # Fill slots based on survey count
-            for i in range(self.settings.survey_count):
-                self.inv_overlay.mark_slot_filled(i)
+        """Toggle the inventory overlay open/closed."""
+        if self.inventory_open:
+            # Close the inventory
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay.destroy()
+            self.inventory_open = False
+            self.inv_button.config(text="📦 Show Inventory")
         else:
-            self.inv_overlay.lift()
+            # Open the inventory
+            if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
+                self.inv_overlay = InventoryOverlay(self, self.settings,
+                                                   on_close=self._on_inv_closed)
+                # Fill slots based on survey count
+                for i in range(self.settings.survey_count):
+                    self.inv_overlay.mark_slot_filled(i)
+            else:
+                self.inv_overlay.lift()
+            self.inventory_open = True
+            self.inv_button.config(text="📦 Hide Inventory")
+    
+    def _on_inv_closed(self):
+        """Called when inventory overlay is closed by user."""
+        self.inventory_open = False
+        if self.inv_button:
+            self.inv_button.config(text="📦 Show Inventory")
     
     def _set_player_position(self):
         """Enable player position setting mode."""
@@ -1022,6 +1078,9 @@ class SurveyHelperWindow(tk.Toplevel):
         # Save main window geometry before closing
         self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
         self.settings.main_window_size = (self.winfo_width(), self.winfo_height())
+        # Save overlay state
+        self.settings.map_was_open = self.map_open
+        self.settings.inventory_was_open = self.inventory_open
         self.settings.save()  # Save all settings before destroying overlays
         if self.map_overlay:
             self.map_overlay.destroy()
@@ -1035,6 +1094,13 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.winfo_exists():
             self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
             self.settings.main_window_size = (self.winfo_width(), self.winfo_height())
+    
+    def _restore_overlays(self):
+        """Restore map and/or inventory overlays if they were open before."""
+        if self.settings.map_was_open:
+            self._show_map()
+        if self.settings.inventory_was_open:
+            self._show_inventory()
 
 
 def open_survey_helper(parent):

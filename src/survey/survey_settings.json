@@ -10,16 +10,16 @@
   "slot_gap": 4,
   "hotkey": "<num0>",
   "map_position": [
-    5061,
-    1130
+    5069,
+    1228
   ],
   "inv_position": [
-    3892,
-    1327
+    3895,
+    1417
   ],
   "map_size": [
-    447,
-    511
+    451,
+    508
   ],
   "inv_size": [
     449,
@@ -29,8 +29,8 @@
   "origin_x": null,
   "origin_y": null,
   "main_window_position": [
-    6209,
-    1452
+    6212,
+    1542
   ],
   "main_window_size": [
     400,
