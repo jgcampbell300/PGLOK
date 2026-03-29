@@ -778,6 +778,20 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Scale(overlay_frame, from_=0.1, to=1.0, variable=self.inv_opacity_var,
                   command=self._update_inv_opacity, style="App.Horizontal.TScale", orient='horizontal').pack(fill='x', pady=(0, 2))
         
+        # Click-through toggle buttons
+        clickthrough_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
+        clickthrough_frame.pack(fill='x', pady=1)
+        
+        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
+        self.map_clickthrough_btn = ttk.Button(clickthrough_frame, text="🗺 Click-Through: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
+        self.map_clickthrough_btn.pack(side='left', padx=2)
+        self._update_map_clickthrough_btn()
+        
+        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
+        self.inv_clickthrough_btn = ttk.Button(clickthrough_frame, text="📦 Click-Through: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
+        self.inv_clickthrough_btn.pack(side='left', padx=2)
+        self._update_inv_clickthrough_btn()
+        
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=4, pady=3,
                                     bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
@@ -917,6 +931,36 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update inventory overlay opacity."""
         if self.inv_overlay:
             self.inv_overlay.update_opacity(float(value))
+    
+    def _toggle_map_clickthrough(self):
+        """Toggle map click-through mode."""
+        enabled = not self.map_clickthrough_var.get()
+        self.map_clickthrough_var.set(enabled)
+        self.settings.map_clickthrough = enabled
+        self.settings.save()
+        if self.map_overlay:
+            self.map_overlay.set_clickthrough(enabled)
+        self._update_map_clickthrough_btn()
+    
+    def _toggle_inv_clickthrough(self):
+        """Toggle inventory click-through mode."""
+        enabled = not self.inv_clickthrough_var.get()
+        self.inv_clickthrough_var.set(enabled)
+        self.settings.inv_clickthrough = enabled
+        self.settings.save()
+        if self.inv_overlay:
+            self.inv_overlay.set_clickthrough(enabled)
+        self._update_inv_clickthrough_btn()
+    
+    def _update_map_clickthrough_btn(self):
+        """Update map click-through button text."""
+        state = "ON" if self.map_clickthrough_var.get() else "OFF"
+        self.map_clickthrough_btn.config(text=f"🗺 Click-Through: {state}")
+    
+    def _update_inv_clickthrough_btn(self):
+        """Update inventory click-through button text."""
+        state = "ON" if self.inv_clickthrough_var.get() else "OFF"
+        self.inv_clickthrough_btn.config(text=f"📦 Click-Through: {state}")
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
