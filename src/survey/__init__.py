@@ -108,13 +108,33 @@ def parse_gorgon_config(config_path: Path) -> Dict:
     return config_data
 
 
+def get_ui_scale(config_data: Dict) -> float:
+    """Extract UI scale factor from config.
+    
+    Returns: UI scale (default 1.0 if not found)
+    Example: 1.524914 = 152.49% UI scaling
+    """
+    try:
+        for scale_key in ['UI_GUIScale', 'GUIScale', 'ui_scale']:
+            if scale_key in config_data:
+                return float(config_data[scale_key])
+    except (ValueError, KeyError):
+        pass
+    
+    return 1.0
+
+
 def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int, int]]:
     """Extract inventory window position and size from config.
     
     Returns: (x, y, width, height) or None if not found
+    Applies UI scaling factor if found in config
     Handles both legacy key-value format and Unity3D WinPosition format
     """
     try:
+        # Get UI scale factor
+        scale = get_ui_scale(config_data)
+        
         # Try Unity3D format first: WinPosition_InventoryWindow = "M20.86581;L63.52591;617.4161;463.7999|T|T||-1|-1"
         if 'WinPosition_InventoryWindow' in config_data:
             value = config_data['WinPosition_InventoryWindow']
@@ -125,10 +145,10 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
             if len(parts) >= 4:
                 try:
                     # Format: M<x>;L<y>;<width>;<height>
-                    x = int(float(parts[0][1:]))  # Remove 'M' prefix and convert
-                    y = int(float(parts[1][1:]))  # Remove 'L' prefix and convert
-                    width = int(float(parts[2]))
-                    height = int(float(parts[3]))
+                    x = int(float(parts[0][1:]) * scale)  # Remove 'M' prefix, apply scale
+                    y = int(float(parts[1][1:]) * scale)  # Remove 'L' prefix, apply scale
+                    width = int(float(parts[2]) * scale)  # Apply scale
+                    height = int(float(parts[3]) * scale)  # Apply scale
                     return (x, y, width, height)
                 except (ValueError, IndexError):
                     pass
@@ -136,10 +156,10 @@ def get_inventory_window_dims(config_data: Dict) -> Optional[Tuple[int, int, int
         # Fallback to legacy format: inventoryWindowX, inventoryWindowY, etc.
         for x_key in ['inventoryWindowX', 'Inventory_WindowX', 'InventoryWindowX']:
             if x_key in config_data:
-                x = int(config_data[x_key])
-                y = int(config_data.get(x_key.replace('X', 'Y'), 0))
-                width = int(config_data.get(x_key.replace('X', 'Width'), 400))
-                height = int(config_data.get(x_key.replace('X', 'Height'), 300))
+                x = int(float(config_data[x_key]) * scale)
+                y = int(float(config_data.get(x_key.replace('X', 'Y'), 0)) * scale)
+                width = int(float(config_data.get(x_key.replace('X', 'Width'), 400)) * scale)
+                height = int(float(config_data.get(x_key.replace('X', 'Height'), 300)) * scale)
                 return (x, y, width, height)
     except (ValueError, KeyError, IndexError) as e:
         print(f"Error extracting inventory dimensions: {e}")
