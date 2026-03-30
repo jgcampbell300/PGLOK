@@ -1215,7 +1215,6 @@ class SurveyHelperWindow(tk.Toplevel):
         self.offset_var = tk.IntVar(value=self.settings.inv_offset)
         offset_spinbox = ttk.Spinbox(arrange_frame, from_=0, to=100, textvariable=self.offset_var, width=5, style="App.TSpinbox")
         offset_spinbox.pack(side='left', padx=4)
-        ttk.Button(arrange_frame, text="Apply", command=self._set_inv_offset, style="App.Secondary.TButton").pack(side='left', padx=4)
         
         # Grid sizing controls
         grid_frame = tk.Frame(arrange_frame, bg=UI_COLORS["panel_bg"])
@@ -1236,7 +1235,7 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Spinbox(grid_frame, from_=0, to=20, textvariable=self.gap_var, width=3,
                    style="App.TSpinbox", command=self._update_grid_calc).pack(side='left', padx=2)
         
-        ttk.Button(grid_frame, text="Apply", command=self._apply_grid_settings, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(grid_frame, text="Apply All", command=self._apply_grid_settings, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         # Overlay controls - use tk.LabelFrame with dark theme colors
         overlay_frame = tk.LabelFrame(frame, text="Overlays", padx=4, pady=3,
@@ -1349,18 +1348,15 @@ class SurveyHelperWindow(tk.Toplevel):
         pass
     
     def _apply_grid_settings(self):
-        """Apply new grid column, slot size, and gap settings."""
-        cols = self.cols_var.get()
-        slot_size = self.slot_size_var.get()
-        gap = self.gap_var.get()
-        
-        self.settings.grid_cols = cols
-        self.settings.slot_size = slot_size
-        self.settings.slot_gap = gap
+        """Apply all inventory arrangement settings (offset, columns, slot size, gap)."""
+        self.settings.inv_offset = self.offset_var.get()
+        self.settings.grid_cols = self.cols_var.get()
+        self.settings.slot_size = self.slot_size_var.get()
+        self.settings.slot_gap = self.gap_var.get()
         self.settings.save()
         
         if self.inv_overlay and self.inv_overlay.winfo_exists():
-            self.inv_overlay._draw_grid()  # Redraw with new settings
+            self.inv_overlay._draw_grid()
     
     def _show_map(self):
         """Toggle the map overlay open/closed."""
