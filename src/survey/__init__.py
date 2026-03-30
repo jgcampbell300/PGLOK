@@ -1248,14 +1248,6 @@ class SurveyHelperWindow(tk.Toplevel):
         btn_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         btn_frame.pack(fill='x', pady=1)
         
-        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map, style="App.Secondary.TButton")
-        self.map_button.pack(side='left', padx=2)
-        
-        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
-        self.map_clickthrough_btn = ttk.Button(btn_frame, text="🗺 Map Lock: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
-        self.map_clickthrough_btn.pack(side='left', padx=2)
-        self._update_map_clickthrough_btn()
-        
         self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory, style="App.Secondary.TButton")
         self.inv_button.pack(side='left', padx=2)
         
@@ -1263,6 +1255,14 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_clickthrough_btn = ttk.Button(btn_frame, text="📦 Inv Lock: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
         self.inv_clickthrough_btn.pack(side='left', padx=2)
         self._update_inv_clickthrough_btn()
+        
+        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map, style="App.Secondary.TButton")
+        self.map_button.pack(side='left', padx=2)
+        
+        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
+        self.map_clickthrough_btn = ttk.Button(btn_frame, text="🗺 Map Lock: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
+        self.map_clickthrough_btn.pack(side='left', padx=2)
+        self._update_map_clickthrough_btn()
         
         # Opacity controls
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
