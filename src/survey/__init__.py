@@ -360,7 +360,10 @@ class SurveyItem:
     y: float = 0.0
     collected: bool = False
     timestamp: Optional[datetime] = None
-    
+    # Direct meter offsets (east=+, north=+) used when compound direction is parsed
+    dx_m: Optional[float] = None
+    dy_m: Optional[float] = None
+
     def to_dict(self):
         return {
             'name': self.name,
@@ -369,7 +372,9 @@ class SurveyItem:
             'x': self.x,
             'y': self.y,
             'collected': self.collected,
-            'timestamp': self.timestamp.isoformat() if self.timestamp else None
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'dx_m': self.dx_m,
+            'dy_m': self.dy_m,
         }
     
     @classmethod
@@ -387,7 +392,9 @@ class SurveyItem:
             x=data.get('x', 0.0),
             y=data.get('y', 0.0),
             collected=data.get('collected', False),
-            timestamp=ts
+            timestamp=ts,
+            dx_m=data.get('dx_m'),
+            dy_m=data.get('dy_m'),
         )
 
 
@@ -420,6 +427,8 @@ class SurveySettings:
         self.map_was_open: bool = False  # whether map was open on last close
         self.inventory_was_open: bool = False  # whether inventory was open on last close
         self.always_on_top: bool = False
+        self.zone_name: Optional[str] = None
+        self.current_phase: int = 0
         
         self.load()
     
@@ -463,6 +472,8 @@ class SurveySettings:
                 self.map_was_open = data.get('map_was_open', False)
                 self.inventory_was_open = data.get('inventory_was_open', False)
                 self.always_on_top = data.get('always_on_top', False)
+                self.zone_name = data.get('zone_name')
+                self.current_phase = data.get('current_phase', 0)
                 
             except Exception as e:
                 print(f"Error loading survey settings: {e}")
@@ -493,6 +504,8 @@ class SurveySettings:
             'map_was_open': self.map_was_open,
             'inventory_was_open': self.inventory_was_open,
             'always_on_top': self.always_on_top,
+            'zone_name': self.zone_name,
+            'current_phase': self.current_phase,
         }
         
         try:
@@ -764,16 +777,18 @@ class MapOverlay(tk.Toplevel):
     def add_survey_item(self, item: SurveyItem) -> bool:
         """Add a survey item to the map. Returns True if placed automatically."""
         if self.settings.scale_factor is None or self.settings.origin_x is None:
-            # Need calibration first
             return False
         
-        # Calculate position based on distance and direction
-        angle = self._direction_to_angle(item.direction)
-        dx = item.distance * math.cos(angle) * self.settings.scale_factor
-        dy = item.distance * math.sin(angle) * self.settings.scale_factor
-        
-        item.x = self.settings.origin_x + dx
-        item.y = self.settings.origin_y - dy  # Y is inverted in canvas
+        if item.dx_m is not None and item.dy_m is not None:
+            # Use direct meter offsets (east=+x, north=-y in canvas coords)
+            item.x = self.settings.origin_x + item.dx_m * self.settings.scale_factor
+            item.y = self.settings.origin_y - item.dy_m * self.settings.scale_factor
+        else:
+            angle = self._direction_to_angle(item.direction)
+            dx = item.distance * math.cos(angle) * self.settings.scale_factor
+            dy = item.distance * math.sin(angle) * self.settings.scale_factor
+            item.x = self.settings.origin_x + dx
+            item.y = self.settings.origin_y - dy
         
         self.survey_items.append(item)
         self._draw_item(item, len(self.survey_items) - 1)
@@ -896,10 +911,11 @@ class MapOverlay(tk.Toplevel):
 class InventoryOverlay(tk.Toplevel):
     """Transparent overlay window for inventory grid."""
     
-    def __init__(self, parent, settings: SurveySettings, on_close=None):
+    def __init__(self, parent, settings: SurveySettings, on_close=None, next_callback=None):
         super().__init__(parent)
         self.settings = settings
         self.on_close_callback = on_close
+        self.next_callback = next_callback  # Called when Next button on overlay is clicked
         
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
@@ -1114,6 +1130,44 @@ class InventoryOverlay(tk.Toplevel):
             self.filled_slots.remove(index)
             self.canvas.itemconfig(f'slot_{index}', fill='darkgray', outline='gray')
     
+    def highlight_next_slot(self, item_index: int):
+        """Highlight the next-in-route slot with a bright border."""
+        # Reset all survey slot outlines to their default state
+        for idx in range(self.settings.survey_count):
+            if idx in self.filled_slots:
+                self.canvas.itemconfig(f'slot_{idx}', outline=UI_COLORS["text"], width=2)
+            else:
+                self.canvas.itemconfig(f'slot_{idx}', outline='gray', width=1)
+        # Apply highlight to the target slot
+        if 0 <= item_index < self.settings.survey_count:
+            self.canvas.itemconfig(f'slot_{item_index}', outline='#00ff88', width=4)
+        # Show/hide the Next button on the overlay
+        self._draw_next_button(item_index)
+    
+    def _draw_next_button(self, item_index: int):
+        """Draw (or refresh) the Next button at the top of the overlay canvas."""
+        self.canvas.delete('next_btn')
+        if item_index < 0 or item_index >= self.settings.survey_count:
+            return
+        w = self.winfo_width() or 200
+        btn_x1, btn_y1, btn_x2, btn_y2 = 4, 2, w - 4, 22
+        self.canvas.create_rectangle(
+            btn_x1, btn_y1, btn_x2, btn_y2,
+            fill=UI_COLORS["accent"], outline=UI_COLORS["text"], width=1,
+            tags='next_btn'
+        )
+        self.canvas.create_text(
+            (btn_x1 + btn_x2) // 2, (btn_y1 + btn_y2) // 2,
+            text=f"✓ Done  —  Next Survey →",
+            fill=UI_COLORS["bg"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold'),
+            tags='next_btn'
+        )
+        self.canvas.tag_bind('next_btn', '<Button-1>', self._on_next_clicked)
+    
+    def _on_next_clicked(self, event=None):
+        if self.next_callback:
+            self.next_callback()
+    
     def clear_all(self):
         """Clear all filled slots."""
         self.filled_slots.clear()
@@ -1162,6 +1216,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.current_route: List[int] = []
         self.current_route_index = 0
         self.session_start: Optional[datetime] = None
+        self.loot_gained: dict = {}  # item_name → count
         
         # Restore main window geometry or use default
         if self.settings.main_window_position and self.settings.main_window_size:
@@ -1334,6 +1389,68 @@ class SurveyHelperWindow(tk.Toplevel):
         # Status
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(frame, textvariable=self.status_var, style="App.Status.TLabel").pack(pady=1)
+        
+        # Phase indicator
+        phase_outer = tk.LabelFrame(frame, text="Workflow", padx=4, pady=3,
+                                    bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                    font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                    borderwidth=1, relief="solid")
+        phase_outer.pack(fill='x', pady=3)
+        self._phase_labels = []
+        phase_row = tk.Frame(phase_outer, bg=UI_COLORS["panel_bg"])
+        phase_row.pack(fill='x')
+        phases = ["1.Zone", "2.Surveys", "3.Positions", "4.Optimize", "5.Route", "6.Done"]
+        for i, text in enumerate(phases):
+            lbl = tk.Label(phase_row, text=text, bg=UI_COLORS["panel_bg"],
+                           fg=UI_COLORS["muted_text"],
+                           font=(UI_ATTRS["font_family"], max(7, UI_ATTRS["font_size"]-1)))
+            lbl.pack(side='left', padx=2, pady=1)
+            self._phase_labels.append(lbl)
+            if i < len(phases) - 1:
+                tk.Label(phase_row, text="→", bg=UI_COLORS["panel_bg"],
+                         fg=UI_COLORS["muted_text"],
+                         font=(UI_ATTRS["font_family"], max(7, UI_ATTRS["font_size"]-1))).pack(side='left')
+        self._set_phase(self.settings.current_phase)
+        
+        # Zone + Positions found
+        self.zone_var = tk.StringVar(value=f"Zone: {self.settings.zone_name or 'Unknown'}")
+        self.positions_var = tk.StringVar(value="Positions: 0 found")
+        info_row = tk.Frame(frame, bg=UI_COLORS["panel_bg"])
+        info_row.pack(fill='x', pady=1)
+        ttk.Label(info_row, textvariable=self.zone_var, style="App.TLabel").pack(side='left', padx=6)
+        ttk.Label(info_row, textvariable=self.positions_var, style="App.TLabel").pack(side='left', padx=6)
+        
+        # Positions list (scrollable)
+        pos_frame = tk.LabelFrame(frame, text="Detected Positions", padx=4, pady=3,
+                                  bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                  font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                  borderwidth=1, relief="solid")
+        pos_frame.pack(fill='x', pady=3)
+        self.positions_text = tk.Text(pos_frame, height=4, state='disabled',
+                                      bg=UI_COLORS["card_bg"], fg=UI_COLORS["text"],
+                                      font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-1)),
+                                      relief='flat', wrap='none')
+        pos_scroll = ttk.Scrollbar(pos_frame, orient='vertical', command=self.positions_text.yview)
+        self.positions_text.configure(yscrollcommand=pos_scroll.set)
+        pos_scroll.pack(side='right', fill='y')
+        self.positions_text.pack(fill='x')
+        
+        # Loot summary
+        loot_frame = tk.LabelFrame(frame, text="Loot Gained", padx=4, pady=3,
+                                   bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
+                                   font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+                                   borderwidth=1, relief="solid")
+        loot_frame.pack(fill='x', pady=3)
+        self.loot_text = tk.Text(loot_frame, height=4, state='disabled',
+                                 bg=UI_COLORS["card_bg"], fg=UI_COLORS["text"],
+                                 font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-1)),
+                                 relief='flat', wrap='none')
+        loot_scroll = ttk.Scrollbar(loot_frame, orient='vertical', command=self.loot_text.yview)
+        self.loot_text.configure(yscrollcommand=loot_scroll.set)
+        loot_scroll.pack(side='right', fill='y')
+        self.loot_text.pack(fill='x')
+        ttk.Button(loot_frame, text="📋 Copy Loot", command=self._copy_loot,
+                   style="App.Secondary.TButton").pack(pady=2)
     
     def _set_chatlog_dir(self):
         """Set the chatlog directory."""
@@ -1419,7 +1536,8 @@ class SurveyHelperWindow(tk.Toplevel):
             return
         if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
             self.inv_overlay = InventoryOverlay(self, self.settings,
-                                               on_close=self._on_inv_closed)
+                                               on_close=self._on_inv_closed,
+                                               next_callback=self._on_inv_next_clicked)
             for i in range(self.settings.survey_count):
                 self.inv_overlay.mark_slot_filled(i)
         else:
@@ -1524,6 +1642,62 @@ class SurveyHelperWindow(tk.Toplevel):
         self.attributes('-topmost', enabled)
         self.settings.save()
     
+    def _set_phase(self, phase: int):
+        """Highlight the current workflow phase in the phase indicator bar."""
+        self.settings.current_phase = phase
+        colors = {
+            'done': UI_COLORS.get("success", "#44aa44"),
+            'active': UI_COLORS.get("accent", "#5599ff"),
+            'future': UI_COLORS.get("muted_text", "#888888"),
+        }
+        for i, lbl in enumerate(self._phase_labels):
+            if i < phase:
+                lbl.config(fg=colors['done'])
+            elif i == phase:
+                lbl.config(fg=colors['active'], font=(UI_ATTRS["font_family"],
+                           max(7, UI_ATTRS["font_size"]-1), 'bold'))
+            else:
+                lbl.config(fg=colors['future'],
+                           font=(UI_ATTRS["font_family"], max(7, UI_ATTRS["font_size"]-1)))
+    
+    def _update_positions_display(self):
+        """Refresh the detected positions text widget."""
+        total = self.settings.survey_count
+        found = len(self.items)
+        self.positions_var.set(f"Positions: {found}/{total} found")
+        self.positions_text.config(state='normal')
+        self.positions_text.delete('1.0', 'end')
+        for i, item in enumerate(self.items):
+            dist_str = f"{item.distance:.0f}m {item.direction}"
+            collected_str = " ✓" if item.collected else ""
+            self.positions_text.insert('end', f"{i+1}. {item.name}  ({dist_str}){collected_str}\n")
+        self.positions_text.config(state='disabled')
+        # Auto-optimize when all positions found
+        if total > 0 and found >= total and not self.current_route:
+            self.status_var.set(f"All {total} positions found! Click Optimize Route.")
+            self._set_phase(3)
+    
+    def _update_loot_display(self):
+        """Refresh the loot gained text widget."""
+        self.loot_text.config(state='normal')
+        self.loot_text.delete('1.0', 'end')
+        for name, count in sorted(self.loot_gained.items()):
+            self.loot_text.insert('end', f"{name}  x{count}\n")
+        self.loot_text.config(state='disabled')
+    
+    def _copy_loot(self):
+        """Copy loot summary to clipboard."""
+        if not self.loot_gained:
+            return
+        text = "\n".join(f"{name} x{count}" for name, count in sorted(self.loot_gained.items()))
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.status_var.set("Loot copied to clipboard!")
+    
+    def _on_inv_next_clicked(self):
+        """Called when the Next button on the inventory overlay is clicked."""
+        self._skip_item()
+    
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
         # Try to auto-detect chat log directory if not manually set
@@ -1567,71 +1741,161 @@ class SurveyHelperWindow(tk.Toplevel):
         # Schedule next poll
         self.after(1000, self._poll_chat)
     
+    # Map full compass words to (dx_unit, dy_unit) where east=+x, north=+y
+    _COMPASS_VECTORS = {
+        'n': (0.0, 1.0), 'north': (0.0, 1.0),
+        's': (0.0, -1.0), 'south': (0.0, -1.0),
+        'e': (1.0, 0.0), 'east': (1.0, 0.0),
+        'w': (-1.0, 0.0), 'west': (-1.0, 0.0),
+        'ne': (0.7071, 0.7071), 'northeast': (0.7071, 0.7071),
+        'nw': (-0.7071, 0.7071), 'northwest': (-0.7071, 0.7071),
+        'se': (0.7071, -0.7071), 'southeast': (0.7071, -0.7071),
+        'sw': (-0.7071, -0.7071), 'southwest': (-0.7071, -0.7071),
+    }
+    _ABBREV_DIR = {
+        'n': 'N', 's': 'S', 'e': 'E', 'w': 'W',
+        'ne': 'NE', 'nw': 'NW', 'se': 'SE', 'sw': 'SW',
+        'north': 'N', 'south': 'S', 'east': 'E', 'west': 'W',
+        'northeast': 'NE', 'northwest': 'NW', 'southeast': 'SE', 'southwest': 'SW',
+    }
+
     def _parse_chat_line(self, line: str):
-        """Parse chat line for survey and collection messages."""
-        # Survey message pattern: [Status] The X is Ym DIR
-        # Example: [Status] The Ancient Tombstone is 45m NE
-        survey_match = re.search(
-            r'\[Status\]\s*The\s+(\S+(?:\s+\S+)*)\s+is\s+(\d+)m?\s*(N|NE|E|SE|S|SW|W|NW)?',
-            line,
-            re.IGNORECASE
+        """Parse chat line for zone entry, survey creation, positions, and loot."""
+
+        # ── 1. Zone entry ──────────────────────────────────────────────────────
+        zone_match = re.search(r'Entering\s+Area:\s*(.+)', line, re.IGNORECASE)
+        if zone_match:
+            zone = zone_match.group(1).strip().rstrip('*').strip()
+            self.settings.zone_name = zone
+            self.settings.save()
+            self.zone_var.set(f"Zone: {zone}")
+            self.status_var.set(f"📍 Entered: {zone}  —  Don't move until surveying starts!")
+            self._set_phase(1)
+            return
+
+        # ── 2. Item added to inventory (survey creation OR loot) ──────────────────
+        added_match = re.search(r'\[Status\]\s+(.+?)\s+added to inventory', line, re.IGNORECASE)
+        if added_match:
+            item_name = added_match.group(1).strip()
+            if 'survey' in item_name.lower():
+                # Survey map crafted — auto-increment counter
+                new_count = self.count_var.get() + 1
+                self.count_var.set(new_count)
+                self._set_survey_count()
+                self.status_var.set(f"Survey #{new_count} made — {item_name}")
+                self._set_phase(max(self.settings.current_phase, 1))
+            else:
+                # Regular loot item
+                self._record_loot(item_name)
+                self._mark_item_collected(item_name)
+            return
+
+        # ── 3. Survey position ─────────────────────────────────────────────────
+        # Handles both:
+        #   [Status] The Fluorite is 2001m east and 25m north.
+        #   [Status] The Ancient Tombstone is 45m NE
+        # Pattern: capture everything after "The" up to "is", then one or two
+        # distance+direction components joined by optional " and ".
+        _dir_pat = r'(?:north(?:east|west)?|south(?:east|west)?|east|west|n|s|e|w|ne|nw|se|sw)'
+        pos_match = re.search(
+            rf'\[Status\]\s+The\s+(.+?)\s+is\s+'
+            rf'(\d+(?:\.\d+)?)m?\s+({_dir_pat})'
+            rf'(?:\s+and\s+(\d+(?:\.\d+)?)m?\s+({_dir_pat}))?'
+            rf'[\.\s]*$',
+            line, re.IGNORECASE
         )
-        
-        if survey_match:
-            name = survey_match.group(1).strip()
-            distance = float(survey_match.group(2))
-            direction = survey_match.group(3) or 'N'
-            
+        if pos_match:
+            name = pos_match.group(1).strip()
+            dist1 = float(pos_match.group(2))
+            dir1_raw = pos_match.group(3).lower()
+            dist2 = float(pos_match.group(4)) if pos_match.group(4) else None
+            dir2_raw = pos_match.group(5).lower() if pos_match.group(5) else None
+
+            vec1 = self._COMPASS_VECTORS.get(dir1_raw, (1.0, 0.0))
+            dx_m = dist1 * vec1[0]
+            dy_m = dist1 * vec1[1]
+
+            if dist2 is not None and dir2_raw:
+                vec2 = self._COMPASS_VECTORS.get(dir2_raw, (0.0, 0.0))
+                dx_m += dist2 * vec2[0]
+                dy_m += dist2 * vec2[1]
+
+            # Total distance and nearest-8-way direction for display
+            total_dist = math.sqrt(dx_m**2 + dy_m**2)
+            angle_deg = math.degrees(math.atan2(dy_m, dx_m))
+            # Snap to nearest 45° and convert to compass abbreviation
+            snap = round(angle_deg / 45) * 45 % 360
+            _snap_to_dir = {0: 'E', 45: 'NE', 90: 'N', 135: 'NW',
+                            180: 'W', 225: 'SW', 270: 'S', 315: 'SE'}
+            direction = _snap_to_dir.get(snap, 'N')
+
             item = SurveyItem(
                 name=name,
-                distance=distance,
-                direction=direction.upper(),
+                distance=round(total_dist, 1),
+                direction=direction,
+                dx_m=dx_m,
+                dy_m=dy_m,
                 timestamp=datetime.now()
             )
-            
+
             self.items.append(item)
-            
-            # Try to add to map
-            if self.map_overlay:
+
+            if self.map_overlay and self.map_overlay.winfo_exists():
                 auto_placed = self.map_overlay.add_survey_item(item)
                 if not auto_placed:
-                    self.status_var.set(f"Found: {name} - Click map to calibrate")
+                    self.status_var.set(f"Found: {name} — click map to calibrate")
                 else:
-                    self.status_var.set(f"Found: {name} at {distance}m {direction}")
-            
+                    self.status_var.set(f"Found: {name} at {total_dist:.0f}m {direction}")
+            else:
+                self.status_var.set(f"Found: {name} at {total_dist:.0f}m {direction}")
+
             self._update_session_info()
+            self._set_phase(max(self.settings.current_phase, 2))
             return
-        
-        # Collection message pattern: "X collected!" or "You receive X"
-        collection_patterns = [
-            r'([^"]+)\s+collected!',
-            r'You\s+receive\s+(\S+(?:\s+\S+)*)',
-            r'You\s+loot\s+(\S+(?:\s+\S+)*)',
-        ]
-        
-        for pattern in collection_patterns:
-            match = re.search(pattern, line, re.IGNORECASE)
-            if match:
-                item_name = match.group(1).strip()
-                self._mark_item_collected(item_name)
+
+        # ── 4. Loot / item collected ───────────────────────────────────────────
+        # "[Status] Fluorite collected!"
+        collected_match = re.search(r'\[Status\]\s+(.+?)\s+collected!', line, re.IGNORECASE)
+        if collected_match:
+            item_name = collected_match.group(1).strip()
+            self._record_loot(item_name)
+            self._mark_item_collected(item_name)
+            return
+
+        # "You receive X" / "You loot X"
+        for pattern in [r'You\s+receive\s+(.+)', r'You\s+loot\s+(.+)']:
+            m = re.search(pattern, line, re.IGNORECASE)
+            if m:
+                item_name = m.group(1).strip().rstrip('.')
+                self._record_loot(item_name)
                 break
-    
+
+    def _record_loot(self, name: str):
+        """Track an item gained during the session."""
+        self.loot_gained[name] = self.loot_gained.get(name, 0) + 1
+        self._update_loot_display()
+
     def _mark_item_collected(self, name: str):
-        """Mark a survey item as collected."""
-        # Find matching item
+        """Mark a survey item as collected by name."""
         for i, item in enumerate(self.items):
-            if not item.collected and name.lower() in item.name.lower():
+            if not item.collected and (
+                name.lower() in item.name.lower() or item.name.lower() in name.lower()
+            ):
                 item.collected = True
-                
-                if self.map_overlay:
+
+                if self.map_overlay and self.map_overlay.winfo_exists():
                     self.map_overlay.mark_collected(i)
-                
-                # Remove from inventory grid
-                if self.inv_overlay:
+
+                if self.inv_overlay and self.inv_overlay.winfo_exists():
                     self.inv_overlay.mark_slot_empty(i)
-                
+
                 self.status_var.set(f"Collected: {item.name}")
                 self._update_session_info()
+                # Auto-advance route when item matches current next
+                if (self.current_route and
+                        self.current_route_index < len(self.current_route) and
+                        self.current_route[self.current_route_index] == i):
+                    self.after(300, self._next_item)
                 break
     
     def _optimize_route(self):
@@ -1680,13 +1944,21 @@ class SurveyHelperWindow(tk.Toplevel):
         
         self._highlight_next_item()
         self._update_route_info()
+        self._set_phase(4)
         self.status_var.set(f"Route optimized: {len(route)} items")
     
     def _highlight_next_item(self):
-        """Highlight the next item in the route."""
-        if self.map_overlay and self.current_route_index < len(self.current_route):
+        """Highlight the next item in the route on both map and inventory overlays."""
+        if self.current_route_index < len(self.current_route):
             idx = self.current_route[self.current_route_index]
-            self.map_overlay.highlight_next(idx)
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay.highlight_next(idx)
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay.highlight_next_slot(idx)
+        else:
+            # Route complete — clear highlights
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay.highlight_next_slot(-1)
     
     def _next_item(self):
         """Go to next item in route."""
@@ -1717,14 +1989,18 @@ class SurveyHelperWindow(tk.Toplevel):
             idx = self.current_route[self.current_route_index]
             item = self.items[idx]
             self.route_info_var.set(f"Next: {item.name} ({item.distance}m {item.direction})")
+            self._set_phase(5)
         else:
             self.route_info_var.set("Route complete!")
+            if self.current_route:
+                self._set_phase(6)
     
     def _update_session_info(self):
         """Update session statistics."""
         total = len(self.items)
         collected = sum(1 for item in self.items if item.collected)
         self.session_var.set(f"Items: {collected}/{total} collected")
+        self._update_positions_display()
     
     def _reset_session(self):
         """Reset the current session."""
@@ -1732,19 +2008,29 @@ class SurveyHelperWindow(tk.Toplevel):
         self.current_route = []
         self.current_route_index = 0
         self.session_start = None
+        self.loot_gained = {}
         
-        if self.map_overlay:
+        if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = []
             self.map_overlay.clear_items()
         
-        if self.inv_overlay:
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay.clear_all()
             for i in range(self.settings.survey_count):
                 self.inv_overlay.mark_slot_filled(i)
         
+        self.settings.zone_name = None
+        self.settings.current_phase = 0
+        self.settings.save()
+        
+        self.zone_var.set("Zone: Unknown")
+        self.positions_var.set("Positions: 0 found")
         self.session_var.set("Items found: 0")
         self.route_info_var.set("No route active")
         self.status_var.set("Session reset")
+        self._set_phase(0)
+        self._update_positions_display()
+        self._update_loot_display()
     
     def on_close(self):
         """Clean up on window close."""
