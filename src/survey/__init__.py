@@ -894,7 +894,16 @@ class MapOverlay(tk.Toplevel):
         self.settings.save()
     
     def _close_window(self):
-        """Close window, ensuring all settings are saved first."""
+        """Save map position then close."""
+        try:
+            geom = self.wm_geometry()
+            w, h, x, y = parse_geometry(geom)
+            if x is not None:
+                self.settings.map_position = (x, y)
+            if w:
+                self.settings.map_size = (w, h)
+        except Exception:
+            pass
         self.settings.save()
         if self.on_close_callback:
             self.on_close_callback()
@@ -902,10 +911,7 @@ class MapOverlay(tk.Toplevel):
     
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
-        self.settings.save()
-        if self.on_close_callback:
-            self.on_close_callback()
-        self.destroy()
+        self._close_window()
 
 
 class InventoryOverlay(tk.Toplevel):
@@ -1189,7 +1195,16 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def _close_window(self):
-        """Close window, ensuring all settings are saved first."""
+        """Save inventory position then close."""
+        try:
+            geom = self.wm_geometry()
+            w, h, x, y = parse_geometry(geom)
+            if x is not None:
+                self.settings.inv_position = (x, y)
+            if w:
+                self.settings.inv_size = (w, h)
+        except Exception:
+            pass
         self.settings.save()
         if self.on_close_callback:
             self.on_close_callback()
@@ -1197,10 +1212,7 @@ class InventoryOverlay(tk.Toplevel):
     
     def _on_close(self):
         """Handle window close event - save position/size before closing."""
-        self.settings.save()
-        if self.on_close_callback:
-            self.on_close_callback()
-        self.destroy()
+        self._close_window()
 
 
 class SurveyHelperWindow(tk.Toplevel):
@@ -1507,9 +1519,11 @@ class SurveyHelperWindow(tk.Toplevel):
         both_open = self.map_open and self.inventory_open
         if both_open:
             if self.map_overlay and self.map_overlay.winfo_exists():
-                self.map_overlay._close_window()
+                self._save_overlay_position(self.map_overlay, 'map')
+                self.map_overlay.withdraw()
             if self.inv_overlay and self.inv_overlay.winfo_exists():
-                self.inv_overlay._close_window()
+                self._save_overlay_position(self.inv_overlay, 'inv')
+                self.inv_overlay.withdraw()
             self.map_open = False
             self.inventory_open = False
         else:
@@ -1517,21 +1531,41 @@ class SurveyHelperWindow(tk.Toplevel):
             self._show_inventory()
         self._update_overlays_btn()
 
+    def _save_overlay_position(self, overlay, kind: str):
+        """Save the current WM position/size of an overlay before hiding it."""
+        try:
+            geom = overlay.wm_geometry()
+            w, h, x, y = parse_geometry(geom)
+            if kind == 'map':
+                if x is not None:
+                    self.settings.map_position = (x, y)
+                if w:
+                    self.settings.map_size = (w, h)
+            else:
+                if x is not None:
+                    self.settings.inv_position = (x, y)
+                if w:
+                    self.settings.inv_size = (w, h)
+            self.settings.save()
+        except Exception:
+            pass
+
     def _show_map(self):
-        """Open the map overlay (internal use)."""
+        """Open (or restore) the map overlay."""
         if self.map_open:
             return
         if self.map_overlay is None or not self.map_overlay.winfo_exists():
             self.map_overlay = MapOverlay(self, self.settings, self._on_map_click,
                                          on_close=self._on_map_closed)
         else:
+            self.map_overlay.deiconify()
             self.map_overlay.lift()
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
 
     def _show_inventory(self):
-        """Open the inventory overlay (internal use)."""
+        """Open (or restore) the inventory overlay."""
         if self.inventory_open:
             return
         if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
@@ -1541,6 +1575,7 @@ class SurveyHelperWindow(tk.Toplevel):
             for i in range(self.settings.survey_count):
                 self.inv_overlay.mark_slot_filled(i)
         else:
+            self.inv_overlay.deiconify()
             self.inv_overlay.lift()
         self.inventory_open = True
         self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
