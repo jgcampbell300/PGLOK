@@ -775,12 +775,10 @@ class MapOverlay(tk.Toplevel):
         self.settings.save()
     
     def set_clickthrough(self, enabled: bool):
-        """Set click-through mode."""
+        """Set click-through mode (Windows only; no-op on other platforms)."""
         self.settings.map_clickthrough = enabled
-        if enabled:
-            self.attributes('-transparentcolor', 'black')
-        else:
-            self.attributes('-transparentcolor', '')
+        if sys.platform == 'win32':
+            self.attributes('-transparentcolor', 'black' if enabled else '')
         self.settings.save()
     
     def _close_window(self):
@@ -1033,12 +1031,10 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def set_clickthrough(self, enabled: bool):
-        """Set click-through mode."""
+        """Set click-through mode (Windows only; no-op on other platforms)."""
         self.settings.inv_clickthrough = enabled
-        if enabled:
-            self.attributes('-transparentcolor', 'black')
-        else:
-            self.attributes('-transparentcolor', '')
+        if sys.platform == 'win32':
+            self.attributes('-transparentcolor', 'black' if enabled else '')
         self.settings.save()
     
     def _close_window(self):
