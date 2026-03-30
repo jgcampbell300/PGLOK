@@ -1179,7 +1179,10 @@ class SurveyHelperWindow(tk.Toplevel):
         
         self.dir_var = tk.StringVar(value=str(self.settings.chatlog_dir) if self.settings.chatlog_dir else "Not set")
         ttk.Label(dir_frame, textvariable=self.dir_var, wraplength=300, style="App.TLabel").pack(fill='x')
-        ttk.Button(dir_frame, text="💬 Set Folder", command=self._set_chatlog_dir, style="App.Secondary.TButton").pack(pady=1)
+        dir_btn_row = tk.Frame(dir_frame, bg=UI_COLORS["panel_bg"])
+        dir_btn_row.pack(fill='x', pady=1)
+        ttk.Button(dir_btn_row, text="💬 Set Folder", command=self._set_chatlog_dir, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(dir_btn_row, text="🔄 Reset Session", command=self._reset_session, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         # Survey count - use tk.LabelFrame with dark theme colors
         count_frame = tk.LabelFrame(frame, text="Survey Maps", padx=4, pady=3,
@@ -1238,13 +1241,21 @@ class SurveyHelperWindow(tk.Toplevel):
         
         self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map, style="App.Secondary.TButton")
         self.map_button.pack(side='left', padx=2)
+        
+        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
+        self.map_clickthrough_btn = ttk.Button(btn_frame, text="🗺 Map Lock: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
+        self.map_clickthrough_btn.pack(side='left', padx=2)
+        self._update_map_clickthrough_btn()
+        
         self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory, style="App.Secondary.TButton")
         self.inv_button.pack(side='left', padx=2)
         
-        # Position setting
-        ttk.Button(overlay_frame, text="📍 Set My Position", command=self._set_player_position, style="App.Secondary.TButton").pack(fill='x', pady=1)
+        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
+        self.inv_clickthrough_btn = ttk.Button(btn_frame, text="📦 Inv Lock: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
+        self.inv_clickthrough_btn.pack(side='left', padx=2)
+        self._update_inv_clickthrough_btn()
         
-        # Opacity controls - use Spinbox for precise values (in percentage)
+        # Opacity controls
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         opacity_frame.pack(fill='x', pady=1)
         
@@ -1264,20 +1275,6 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_opacity_spinbox.bind('<Return>', lambda e: self._update_inv_opacity())
         self.inv_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_inv_opacity())
         
-        # Click-through toggle buttons
-        clickthrough_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
-        clickthrough_frame.pack(fill='x', pady=1)
-        
-        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
-        self.map_clickthrough_btn = ttk.Button(clickthrough_frame, text="🗺 Click-Through: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
-        self.map_clickthrough_btn.pack(side='left', padx=2)
-        self._update_map_clickthrough_btn()
-        
-        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
-        self.inv_clickthrough_btn = ttk.Button(clickthrough_frame, text="📦 Click-Through: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
-        self.inv_clickthrough_btn.pack(side='left', padx=2)
-        self._update_inv_clickthrough_btn()
-        
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=4, pady=3,
                                     bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
@@ -1285,23 +1282,19 @@ class SurveyHelperWindow(tk.Toplevel):
                                     borderwidth=1, relief="solid")
         route_frame.pack(fill='x', pady=3)
         
-        ttk.Button(route_frame, text="🗺 Optimize Route", command=self._optimize_route, style="App.Secondary.TButton").pack(fill='x', pady=1)
+        route_btn_frame = tk.Frame(route_frame, bg=UI_COLORS["panel_bg"])
+        route_btn_frame.pack(fill='x', pady=1)
+        ttk.Button(route_btn_frame, text="🗺 Optimize Route", command=self._optimize_route, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(route_btn_frame, text="← Previous", command=self._prev_item, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(route_btn_frame, text="Next →", command=self._next_item, style="App.Secondary.TButton").pack(side='left', padx=2)
+        ttk.Button(route_btn_frame, text="Skip", command=self._skip_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         self.route_info_var = tk.StringVar(value="No route active")
         ttk.Label(route_frame, textvariable=self.route_info_var, style="App.TLabel").pack(pady=1)
         
-        nav_frame = tk.Frame(route_frame, bg=UI_COLORS["panel_bg"])
-        nav_frame.pack(fill='x', pady=1)
-        ttk.Button(nav_frame, text="← Previous", command=self._prev_item, style="App.Secondary.TButton").pack(side='left', padx=2)
-        ttk.Button(nav_frame, text="Next →", command=self._next_item, style="App.Secondary.TButton").pack(side='left', padx=2)
-        ttk.Button(nav_frame, text="Skip", command=self._skip_item, style="App.Secondary.TButton").pack(side='left', padx=2)
-        
         # Session info
         self.session_var = tk.StringVar(value="Items found: 0")
         ttk.Label(frame, textvariable=self.session_var, style="App.Title.TLabel").pack(pady=3)
-        
-        # Reset
-        ttk.Button(frame, text="🔄 Reset Session", command=self._reset_session, style="App.Secondary.TButton").pack(fill='x', pady=3)
         
         # Status
         self.status_var = tk.StringVar(value="Ready")
@@ -1486,14 +1479,14 @@ class SurveyHelperWindow(tk.Toplevel):
         self._update_inv_clickthrough_btn()
     
     def _update_map_clickthrough_btn(self):
-        """Update map click-through button text."""
+        """Update map lock button text."""
         state = "ON" if self.map_clickthrough_var.get() else "OFF"
-        self.map_clickthrough_btn.config(text=f"🗺 Click-Through: {state}")
+        self.map_clickthrough_btn.config(text=f"🗺 Map Lock: {state}")
     
     def _update_inv_clickthrough_btn(self):
-        """Update inventory click-through button text."""
+        """Update inventory lock button text."""
         state = "ON" if self.inv_clickthrough_var.get() else "OFF"
-        self.inv_clickthrough_btn.config(text=f"📦 Click-Through: {state}")
+        self.inv_clickthrough_btn.config(text=f"📦 Inv Lock: {state}")
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
