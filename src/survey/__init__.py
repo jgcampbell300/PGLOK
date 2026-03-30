@@ -419,6 +419,7 @@ class SurveySettings:
         self.main_window_size: Optional[Tuple[int, int]] = None  # (width, height)
         self.map_was_open: bool = False  # whether map was open on last close
         self.inventory_was_open: bool = False  # whether inventory was open on last close
+        self.always_on_top: bool = False
         
         self.load()
     
@@ -461,6 +462,7 @@ class SurveySettings:
                 
                 self.map_was_open = data.get('map_was_open', False)
                 self.inventory_was_open = data.get('inventory_was_open', False)
+                self.always_on_top = data.get('always_on_top', False)
                 
             except Exception as e:
                 print(f"Error loading survey settings: {e}")
@@ -490,6 +492,7 @@ class SurveySettings:
             'main_window_size': list(self.main_window_size) if self.main_window_size else None,
             'map_was_open': self.map_was_open,
             'inventory_was_open': self.inventory_was_open,
+            'always_on_top': self.always_on_top,
         }
         
         try:
@@ -1167,8 +1170,14 @@ class SurveyHelperWindow(tk.Toplevel):
         frame = tk.Frame(self, bg=UI_COLORS["panel_bg"])
         frame.pack(fill='both', expand=True, padx=8, pady=8)
         
-        # Title
-        ttk.Label(frame, text="🔍 Survey Helper", style="App.Header.TLabel").pack(pady=3)
+        # Title + always-on-top checkbox on same row
+        title_row = tk.Frame(frame, bg=UI_COLORS["panel_bg"])
+        title_row.pack(fill='x', pady=3)
+        ttk.Label(title_row, text="🔍 Survey Helper", style="App.Header.TLabel").pack(side='left', padx=4)
+        self.always_on_top_var = tk.BooleanVar(value=self.settings.always_on_top)
+        ttk.Checkbutton(title_row, text="Always on Top", variable=self.always_on_top_var,
+                        command=self._toggle_always_on_top, style="App.TCheckbutton").pack(side='left', padx=8)
+        self.attributes('-topmost', self.settings.always_on_top)
         
         # ChatLog directory - use tk.LabelFrame with dark theme colors
         dir_frame = tk.LabelFrame(frame, text="ChatLogs Folder", padx=4, pady=3,
@@ -1487,6 +1496,13 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update inventory lock button text."""
         state = "ON" if self.inv_clickthrough_var.get() else "OFF"
         self.inv_clickthrough_btn.config(text=f"📦 Inv Lock: {state}")
+    
+    def _toggle_always_on_top(self):
+        """Toggle always-on-top for the Survey Helper window."""
+        enabled = self.always_on_top_var.get()
+        self.settings.always_on_top = enabled
+        self.attributes('-topmost', enabled)
+        self.settings.save()
     
     def _start_chat_monitor(self):
         """Start monitoring chat logs for survey messages."""
