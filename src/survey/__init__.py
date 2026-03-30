@@ -1247,21 +1247,14 @@ class SurveyHelperWindow(tk.Toplevel):
         btn_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         btn_frame.pack(fill='x', pady=1)
         
-        self.inv_button = ttk.Button(btn_frame, text="📦 Show Inventory", command=self._show_inventory, style="App.Secondary.TButton")
-        self.inv_button.pack(side='left', padx=2)
-        
-        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
-        self.inv_clickthrough_btn = ttk.Button(btn_frame, text="📦 Inv Lock: OFF", command=self._toggle_inv_clickthrough, style="App.Secondary.TButton")
-        self.inv_clickthrough_btn.pack(side='left', padx=2)
-        self._update_inv_clickthrough_btn()
-        
-        self.map_button = ttk.Button(btn_frame, text="🗺 Show Map", command=self._show_map, style="App.Secondary.TButton")
-        self.map_button.pack(side='left', padx=2)
+        self.overlays_button = ttk.Button(btn_frame, text="🗺📦 Show Overlays", command=self._show_overlays, style="App.Secondary.TButton")
+        self.overlays_button.pack(side='left', padx=2)
         
         self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
-        self.map_clickthrough_btn = ttk.Button(btn_frame, text="🗺 Map Lock: OFF", command=self._toggle_map_clickthrough, style="App.Secondary.TButton")
-        self.map_clickthrough_btn.pack(side='left', padx=2)
-        self._update_map_clickthrough_btn()
+        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
+        self.lock_btn = ttk.Button(btn_frame, text="🔒 Lock Overlays: OFF", command=self._toggle_lock_overlays, style="App.Secondary.TButton")
+        self.lock_btn.pack(side='left', padx=2)
+        self._update_lock_btn()
         
         # Opacity controls
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
@@ -1358,60 +1351,68 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay._draw_grid()
     
-    def _show_map(self):
-        """Toggle the map overlay open/closed."""
-        if self.map_open:
-            # Close the map
+    def _show_overlays(self):
+        """Toggle both map and inventory overlays open/closed."""
+        both_open = self.map_open and self.inventory_open
+        if both_open:
             if self.map_overlay and self.map_overlay.winfo_exists():
                 self.map_overlay._close_window()
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay._close_window()
             self.map_open = False
-            self.map_button.config(text="🗺 Show Map")
+            self.inventory_open = False
         else:
-            # Open the map
-            if self.map_overlay is None or not self.map_overlay.winfo_exists():
-                self.map_overlay = MapOverlay(self, self.settings, self._on_map_click, 
-                                             on_close=self._on_map_closed)
-            else:
-                self.map_overlay.lift()
-            self.map_open = True
-            self.map_button.config(text="🗺 Hide Map")
-            # Ensure spinbox is in sync with overlay opacity (convert decimal to percentage)
-            self.map_opacity_var.set(int(self.settings.map_opacity * 100))
-    
+            self._show_map()
+            self._show_inventory()
+        self._update_overlays_btn()
+
+    def _show_map(self):
+        """Open the map overlay (internal use)."""
+        if self.map_open:
+            return
+        if self.map_overlay is None or not self.map_overlay.winfo_exists():
+            self.map_overlay = MapOverlay(self, self.settings, self._on_map_click,
+                                         on_close=self._on_map_closed)
+        else:
+            self.map_overlay.lift()
+        self.map_open = True
+        self.map_opacity_var.set(int(self.settings.map_opacity * 100))
+        self._update_overlays_btn()
+
+    def _show_inventory(self):
+        """Open the inventory overlay (internal use)."""
+        if self.inventory_open:
+            return
+        if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
+            self.inv_overlay = InventoryOverlay(self, self.settings,
+                                               on_close=self._on_inv_closed)
+            for i in range(self.settings.survey_count):
+                self.inv_overlay.mark_slot_filled(i)
+        else:
+            self.inv_overlay.lift()
+        self.inventory_open = True
+        self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
+        self._update_overlays_btn()
+
     def _on_map_closed(self):
         """Called when map overlay is closed by user."""
         self.map_open = False
-        if self.map_button:
-            self.map_button.config(text="🗺 Show Map")
-    
-    def _show_inventory(self):
-        """Toggle the inventory overlay open/closed."""
-        if self.inventory_open:
-            # Close the inventory
-            if self.inv_overlay and self.inv_overlay.winfo_exists():
-                self.inv_overlay._close_window()
-            self.inventory_open = False
-            self.inv_button.config(text="📦 Show Inventory")
-        else:
-            # Open the inventory
-            if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
-                self.inv_overlay = InventoryOverlay(self, self.settings,
-                                                   on_close=self._on_inv_closed)
-                # Fill slots based on survey count
-                for i in range(self.settings.survey_count):
-                    self.inv_overlay.mark_slot_filled(i)
-            else:
-                self.inv_overlay.lift()
-            self.inventory_open = True
-            self.inv_button.config(text="📦 Hide Inventory")
-            # Ensure spinbox is in sync with overlay opacity (convert decimal to percentage)
-            self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
-    
+        self._update_overlays_btn()
+
     def _on_inv_closed(self):
         """Called when inventory overlay is closed by user."""
         self.inventory_open = False
-        if self.inv_button:
-            self.inv_button.config(text="📦 Show Inventory")
+        self._update_overlays_btn()
+
+    def _update_overlays_btn(self):
+        """Update show overlays button text."""
+        if self.map_open and self.inventory_open:
+            text = "🗺📦 Hide Overlays"
+        elif self.map_open or self.inventory_open:
+            text = "🗺📦 Hide Overlays"
+        else:
+            text = "🗺📦 Show Overlays"
+        self.overlays_button.config(text=text)
     
     def _set_player_position(self):
         """Enable player position setting mode."""
@@ -1463,35 +1464,24 @@ class SurveyHelperWindow(tk.Toplevel):
             # Overlay not open, save directly
             self.settings.save()
     
-    def _toggle_map_clickthrough(self):
-        """Toggle map click-through mode."""
-        enabled = not self.map_clickthrough_var.get()
+    def _toggle_lock_overlays(self):
+        """Toggle click-through lock on both overlays."""
+        enabled = not (self.map_clickthrough_var.get() and self.inv_clickthrough_var.get())
         self.map_clickthrough_var.set(enabled)
+        self.inv_clickthrough_var.set(enabled)
         self.settings.map_clickthrough = enabled
+        self.settings.inv_clickthrough = enabled
         self.settings.save()
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.set_clickthrough(enabled)
-        self._update_map_clickthrough_btn()
-    
-    def _toggle_inv_clickthrough(self):
-        """Toggle inventory click-through mode."""
-        enabled = not self.inv_clickthrough_var.get()
-        self.inv_clickthrough_var.set(enabled)
-        self.settings.inv_clickthrough = enabled
-        self.settings.save()
         if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay.set_clickthrough(enabled)
-        self._update_inv_clickthrough_btn()
-    
-    def _update_map_clickthrough_btn(self):
-        """Update map lock button text."""
-        state = "ON" if self.map_clickthrough_var.get() else "OFF"
-        self.map_clickthrough_btn.config(text=f"🗺 Map Lock: {state}")
-    
-    def _update_inv_clickthrough_btn(self):
-        """Update inventory lock button text."""
-        state = "ON" if self.inv_clickthrough_var.get() else "OFF"
-        self.inv_clickthrough_btn.config(text=f"📦 Inv Lock: {state}")
+        self._update_lock_btn()
+
+    def _update_lock_btn(self):
+        """Update lock button text."""
+        locked = self.map_clickthrough_var.get() and self.inv_clickthrough_var.get()
+        self.lock_btn.config(text=f"🔒 Lock Overlays: {'ON' if locked else 'OFF'}")
     
     def _toggle_always_on_top(self):
         """Toggle always-on-top for the Survey Helper window."""
