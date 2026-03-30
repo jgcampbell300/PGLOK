@@ -1229,6 +1229,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.current_route_index = 0
         self.session_start: Optional[datetime] = None
         self.loot_gained: dict = {}  # item_name → count
+        self.reset_time: Optional[datetime] = None  # ignore chat lines before this
         
         # Restore main window geometry or use default
         if self.settings.main_window_position and self.settings.main_window_size:
@@ -1815,6 +1816,17 @@ class SurveyHelperWindow(tk.Toplevel):
     def _parse_chat_line(self, line: str):
         """Parse chat line for zone entry, survey creation, positions, and loot."""
 
+        # Skip lines older than the last session reset
+        if self.reset_time is not None:
+            ts_match = re.match(r'(\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', line)
+            if ts_match:
+                try:
+                    line_time = datetime.strptime(ts_match.group(1), '%y-%m-%d %H:%M:%S')
+                    if line_time < self.reset_time:
+                        return
+                except ValueError:
+                    pass
+
         # ── 1. Zone entry ──────────────────────────────────────────────────────
         zone_match = re.search(r'Entering\s+Area:\s*(.+)', line, re.IGNORECASE)
         if zone_match:
@@ -2057,6 +2069,7 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _reset_session(self):
         """Reset the current session."""
+        self.reset_time = datetime.now()  # ignore all chat lines before now
         self.items = []
         self.current_route = []
         self.current_route_index = 0
