@@ -502,28 +502,37 @@ class SurveySettings:
 def _set_clickthrough_x11(tk_win, enabled: bool):
     """Enable or disable X11 input pass-through using the SHAPE extension.
 
-    Must be applied to every Tkinter widget in the window because each widget
-    is a separate X11 window — the Canvas child captures clicks independently
-    of the Toplevel parent.
+    Clicks land on the WM frame (which reparents our window), so we must
+    walk UP the X11 tree to find the direct child of root and apply SHAPE
+    to it and ALL descendants — including Tk's internal wrapper windows,
+    the Toplevel, and every child widget.
     """
     try:
         from Xlib import display, X
         from Xlib.ext.shape import SO, SK
         d = display.Display()
+        root_id = d.screen().root.id
 
-        def apply_to_widget(widget):
-            try:
-                xwin = d.create_resource_object('window', widget.winfo_id())
-                if enabled:
-                    xwin.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
-                else:
-                    xwin.shape_combine(SO.Set, SK.Input, 0, 0, xwin, SK.Bounding)
-            except Exception:
-                pass
-            for child in widget.winfo_children():
-                apply_to_widget(child)
+        # Walk up from the Tk window to find the outermost X11 window
+        # (direct child of root = WM frame or, with overrideredirect, Tk's frame)
+        xid = tk_win.winfo_id()
+        current = d.create_resource_object('window', xid)
+        while True:
+            parent = current.query_tree().parent
+            if parent.id == root_id:
+                break
+            current = parent
+        outermost = current
 
-        apply_to_widget(tk_win)
+        def apply_recursive(win):
+            if enabled:
+                win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
+            else:
+                win.shape_combine(SO.Set, SK.Input, 0, 0, win, SK.Bounding)
+            for child in win.query_tree().children:
+                apply_recursive(child)
+
+        apply_recursive(outermost)
         d.flush()
         d.close()
     except Exception as e:
