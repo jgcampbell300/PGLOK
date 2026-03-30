@@ -1176,7 +1176,7 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Label(title_row, text="🔍 Survey Helper", style="App.Header.TLabel").pack(side='left', padx=4)
         self.always_on_top_var = tk.BooleanVar(value=self.settings.always_on_top)
         ttk.Checkbutton(title_row, text="Always on Top", variable=self.always_on_top_var,
-                        command=self._toggle_always_on_top, style="App.TCheckbutton").pack(side='left', padx=8)
+                        command=self._toggle_always_on_top, style="App.TCheckbutton").pack(side='right', padx=8)
         self.attributes('-topmost', self.settings.always_on_top)
         
         # ChatLog directory - use tk.LabelFrame with dark theme colors
