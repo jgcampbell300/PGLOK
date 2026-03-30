@@ -1550,6 +1550,22 @@ class SurveyHelperWindow(tk.Toplevel):
         except Exception:
             pass
 
+    def _restore_overlay_geometry(self, overlay, kind: str):
+        """Restore saved geometry after deiconify (WM may have shifted position)."""
+        try:
+            if kind == 'map':
+                pos = self.settings.map_position
+                size = self.settings.map_size
+            else:
+                pos = self.settings.inv_position
+                size = self.settings.inv_size
+            if pos and size:
+                overlay.geometry(f"{size[0]}x{size[1]}+{pos[0]}+{pos[1]}")
+            elif pos:
+                overlay.geometry(f"+{pos[0]}+{pos[1]}")
+        except Exception:
+            pass
+
     def _show_map(self):
         """Open (or restore) the map overlay."""
         if self.map_open:
@@ -1560,6 +1576,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.map_overlay.deiconify()
             self.map_overlay.lift()
+            self.map_overlay.after(50, lambda: self._restore_overlay_geometry(self.map_overlay, 'map'))
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
@@ -1577,6 +1594,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.inv_overlay.deiconify()
             self.inv_overlay.lift()
+            self.inv_overlay.after(50, lambda: self._restore_overlay_geometry(self.inv_overlay, 'inv'))
         self.inventory_open = True
         self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
         self._update_overlays_btn()
