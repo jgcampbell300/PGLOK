@@ -1194,13 +1194,19 @@ class SurveyHelperWindow(tk.Toplevel):
         
         ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
         self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
-        ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
-                   style="App.TSpinbox", command=self._update_map_opacity).pack(side='left', padx=2)
+        self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
+                   style="App.TSpinbox", command=self._update_map_opacity)
+        self.map_opacity_spinbox.pack(side='left', padx=2)
+        self.map_opacity_spinbox.bind('<Return>', lambda e: self._update_map_opacity())
+        self.map_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_map_opacity())
         
         ttk.Label(opacity_frame, text="Inv Opacity %:", style="App.TLabel").pack(side='left', padx=4)
         self.inv_opacity_var = tk.IntVar(value=int(self.settings.inv_opacity * 100))
-        ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.inv_opacity_var, width=5,
-                   style="App.TSpinbox", command=self._update_inv_opacity).pack(side='left', padx=2)
+        self.inv_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.inv_opacity_var, width=5,
+                   style="App.TSpinbox", command=self._update_inv_opacity)
+        self.inv_opacity_spinbox.pack(side='left', padx=2)
+        self.inv_opacity_spinbox.bind('<Return>', lambda e: self._update_inv_opacity())
+        self.inv_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_inv_opacity())
         
         # Click-through toggle buttons
         clickthrough_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
@@ -1371,7 +1377,12 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _update_map_opacity(self):
         """Update map overlay opacity (from percentage spinbox)."""
-        percentage = self.map_opacity_var.get()
+        try:
+            percentage = self.map_opacity_var.get()
+        except tk.TclError:
+            return
+        percentage = max(10, min(100, percentage))
+        self.map_opacity_var.set(percentage)
         decimal_value = percentage / 100.0
         self.settings.map_opacity = decimal_value
         if self.map_overlay and self.map_overlay.winfo_exists():
@@ -1383,7 +1394,12 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _update_inv_opacity(self):
         """Update inventory overlay opacity (from percentage spinbox)."""
-        percentage = self.inv_opacity_var.get()
+        try:
+            percentage = self.inv_opacity_var.get()
+        except tk.TclError:
+            return
+        percentage = max(10, min(100, percentage))
+        self.inv_opacity_var.set(percentage)
         decimal_value = percentage / 100.0
         self.settings.inv_opacity = decimal_value
         if self.inv_overlay and self.inv_overlay.winfo_exists():
