@@ -510,10 +510,8 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
             # Empty input shape → all clicks pass through
             win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
         else:
-            # Restore full bounding box as input area
-            geom = win.get_geometry()
-            win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0,
-                                 [{'x': 0, 'y': 0, 'width': geom.width, 'height': geom.height}])
+            # Reset input shape to match the bounding shape (full window)
+            win.shape_combine(SO.Set, SK.Input, 0, 0, win, SK.Bounding)
         d.flush()
         d.close()
     except Exception as e:
@@ -579,10 +577,7 @@ class MapOverlay(tk.Toplevel):
         else:
             self.geometry("400x400")
         
-        # Restore clickthrough if previously enabled
-        if self.settings.map_clickthrough:
-            self.set_clickthrough(True)
-        
+        # Restore clickthrough if previously enabled - deferred to after window maps
         # Enable Configure tracking and apply opacity after window settles
         self.after(500, self._enable_configure_tracking_and_opacity)
     
@@ -612,6 +607,8 @@ class MapOverlay(tk.Toplevel):
         """Enable Configure tracking and apply opacity after window settles."""
         self._skip_configure = False
         self.attributes('-alpha', self.settings.map_opacity)
+        if self.settings.map_clickthrough:
+            self.set_clickthrough(True)
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
@@ -870,10 +867,6 @@ class InventoryOverlay(tk.Toplevel):
         else:
             self._calculate_size()
         
-        # Restore clickthrough if previously enabled
-        if self.settings.inv_clickthrough:
-            self.set_clickthrough(True)
-        
         self._draw_grid()
         
         # Enable Configure tracking and apply opacity after window settles
@@ -1022,6 +1015,8 @@ class InventoryOverlay(tk.Toplevel):
         """Enable Configure tracking and apply opacity after window settles."""
         self._skip_configure = False
         self.attributes('-alpha', self.settings.inv_opacity)
+        if self.settings.inv_clickthrough:
+            self.set_clickthrough(True)
     
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
@@ -1436,7 +1431,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.map_clickthrough_var.set(enabled)
         self.settings.map_clickthrough = enabled
         self.settings.save()
-        if self.map_overlay:
+        if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.set_clickthrough(enabled)
         self._update_map_clickthrough_btn()
     
@@ -1446,7 +1441,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_clickthrough_var.set(enabled)
         self.settings.inv_clickthrough = enabled
         self.settings.save()
-        if self.inv_overlay:
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay.set_clickthrough(enabled)
         self._update_inv_clickthrough_btn()
     
