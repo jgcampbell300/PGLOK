@@ -528,7 +528,8 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
             if enabled:
                 win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
             else:
-                win.shape_combine(SO.Set, SK.Input, 0, 0, win, SK.Bounding)
+                # X.NONE pixmap resets the shape entirely (full rectangle)
+                win.shape_mask(SO.Set, SK.Input, 0, 0, X.NONE)
             for child in win.query_tree().children:
                 apply_recursive(child)
 
