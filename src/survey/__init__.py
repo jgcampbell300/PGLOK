@@ -500,18 +500,30 @@ class SurveySettings:
 
 
 def _set_clickthrough_x11(tk_win, enabled: bool):
-    """Enable or disable X11 input pass-through using the SHAPE extension."""
+    """Enable or disable X11 input pass-through using the SHAPE extension.
+
+    Must be applied to every Tkinter widget in the window because each widget
+    is a separate X11 window — the Canvas child captures clicks independently
+    of the Toplevel parent.
+    """
     try:
         from Xlib import display, X
         from Xlib.ext.shape import SO, SK
         d = display.Display()
-        win = d.create_resource_object('window', tk_win.winfo_id())
-        if enabled:
-            # Empty input shape → all clicks pass through
-            win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
-        else:
-            # Reset input shape to match the bounding shape (full window)
-            win.shape_combine(SO.Set, SK.Input, 0, 0, win, SK.Bounding)
+
+        def apply_to_widget(widget):
+            try:
+                xwin = d.create_resource_object('window', widget.winfo_id())
+                if enabled:
+                    xwin.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
+                else:
+                    xwin.shape_combine(SO.Set, SK.Input, 0, 0, xwin, SK.Bounding)
+            except Exception:
+                pass
+            for child in widget.winfo_children():
+                apply_to_widget(child)
+
+        apply_to_widget(tk_win)
         d.flush()
         d.close()
     except Exception as e:
