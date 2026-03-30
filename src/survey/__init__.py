@@ -500,21 +500,28 @@ class SurveySettings:
 
 
 def _set_clickthrough_x11(tk_win, enabled: bool):
-    """Enable or disable X11 input pass-through using the SHAPE extension.
+    """Enable or disable X11 input pass-through.
 
-    Clicks land on the WM frame (which reparents our window), so we must
-    walk UP the X11 tree to find the direct child of root and apply SHAPE
-    to it and ALL descendants — including Tk's internal wrapper windows,
-    the Toplevel, and every child widget.
+    Uses overrideredirect to bypass the WM frame (which interferes with SHAPE)
+    combined with SHAPE to make Tk's own wrapper + child windows transparent
+    to input.  When disabled, WM management is restored so the window has
+    normal decorations and can be moved/resized.
     """
     try:
+        if enabled:
+            # Bypass WM so there is no WM frame to worry about
+            geom = tk_win.geometry()
+            tk_win.overrideredirect(True)
+            tk_win.geometry(geom)  # WM may have shifted window; restore
+            tk_win.attributes('-topmost', True)
+            tk_win.update()
+
         from Xlib import display, X
         from Xlib.ext.shape import SO, SK
         d = display.Display()
         root_id = d.screen().root.id
 
-        # Walk up from the Tk window to find the outermost X11 window
-        # (direct child of root = WM frame or, with overrideredirect, Tk's frame)
+        # Walk up to the outermost X11 window (Tk internal wrapper)
         xid = tk_win.winfo_id()
         current = d.create_resource_object('window', xid)
         while True:
@@ -525,17 +532,28 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
         outermost = current
 
         def apply_recursive(win):
-            if enabled:
-                win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
-            else:
-                # X.NONE pixmap resets the shape entirely (full rectangle)
-                win.shape_mask(SO.Set, SK.Input, 0, 0, X.NONE)
+            try:
+                if enabled:
+                    win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
+                else:
+                    win.shape_mask(SO.Set, SK.Input, 0, 0, X.NONE)
+            except Exception:
+                pass
             for child in win.query_tree().children:
                 apply_recursive(child)
 
         apply_recursive(outermost)
         d.flush()
         d.close()
+
+        if not enabled:
+            # Restore WM management — WM creates a fresh frame with full input
+            geom = tk_win.geometry()
+            tk_win.overrideredirect(False)
+            tk_win.geometry(geom)
+            tk_win.attributes('-topmost', True)
+            tk_win.lift()
+
     except Exception as e:
         print(f"Click-through not available: {e}")
 
