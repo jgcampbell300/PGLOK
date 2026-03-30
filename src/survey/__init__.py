@@ -499,6 +499,27 @@ class SurveySettings:
             print(f"Error saving survey settings: {e}")
 
 
+def _set_clickthrough_x11(tk_win, enabled: bool):
+    """Enable or disable X11 input pass-through using the SHAPE extension."""
+    try:
+        from Xlib import display, X
+        from Xlib.ext.shape import SO, SK
+        d = display.Display()
+        win = d.create_resource_object('window', tk_win.winfo_id())
+        if enabled:
+            # Empty input shape → all clicks pass through
+            win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
+        else:
+            # Restore full bounding box as input area
+            geom = win.get_geometry()
+            win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0,
+                                 [{'x': 0, 'y': 0, 'width': geom.width, 'height': geom.height}])
+        d.flush()
+        d.close()
+    except Exception as e:
+        print(f"Click-through not available: {e}")
+
+
 class MapOverlay(tk.Toplevel):
     """Transparent overlay window for the map with survey dots."""
     
@@ -775,10 +796,12 @@ class MapOverlay(tk.Toplevel):
         self.settings.save()
     
     def set_clickthrough(self, enabled: bool):
-        """Set click-through mode (Windows only; no-op on other platforms)."""
+        """Set click-through mode."""
         self.settings.map_clickthrough = enabled
         if sys.platform == 'win32':
             self.attributes('-transparentcolor', 'black' if enabled else '')
+        else:
+            _set_clickthrough_x11(self, enabled)
         self.settings.save()
     
     def _close_window(self):
@@ -1031,10 +1054,12 @@ class InventoryOverlay(tk.Toplevel):
         self.settings.save()
     
     def set_clickthrough(self, enabled: bool):
-        """Set click-through mode (Windows only; no-op on other platforms)."""
+        """Set click-through mode."""
         self.settings.inv_clickthrough = enabled
         if sys.platform == 'win32':
             self.attributes('-transparentcolor', 'black' if enabled else '')
+        else:
+            _set_clickthrough_x11(self, enabled)
         self.settings.save()
     
     def _close_window(self):
