@@ -509,17 +509,18 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
     below. Uses overrideredirect(True) when enabling to remove the WM frame
     (which would otherwise block SHAPE from working). On disable, restores
     WM management and waits for reparenting to settle before resetting SHAPE.
+    Both paths defer the actual SHAPE call by 100 ms so the WM has time to
+    finish re/de-parenting before we walk the X11 tree.
     """
     try:
-        from Xlib import display, X
-        from Xlib.ext.shape import SO, SK
-
         if enabled:
             geom = tk_win.geometry()
             tk_win.overrideredirect(True)
             tk_win.geometry(geom)
             tk_win.attributes('-topmost', True)
             tk_win.update_idletasks()
+            # Give WM time to de-reparent before applying SHAPE
+            tk_win.after(100, lambda: _apply_shape_x11(tk_win))
         else:
             geom = tk_win.geometry()
             tk_win.overrideredirect(False)
@@ -529,8 +530,16 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
             tk_win.update_idletasks()
             # Give WM time to reparent before resetting SHAPE
             tk_win.after(100, lambda: _reset_shape_x11(tk_win))
-            return
 
+    except Exception as e:
+        print(f"Click-through not available: {e}")
+
+
+def _apply_shape_x11(tk_win):
+    """Apply empty SHAPE Input region to all X11 children (enables click-through)."""
+    try:
+        from Xlib import display, X
+        from Xlib.ext.shape import SO, SK
         d = display.Display()
         root_id = d.screen().root.id
         xid = tk_win.winfo_id()
@@ -552,9 +561,8 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
         apply_recursive(current)
         d.flush()
         d.close()
-
     except Exception as e:
-        print(f"Click-through not available: {e}")
+        print(f"Click-through apply failed: {e}")
 
 
 def _reset_shape_x11(tk_win):
