@@ -1110,7 +1110,9 @@ class PGLOKApp:
     def _clear_chat_output(self):
         self.chat_lines_seen = 0
         for widget in self.chat_tab_text.values():
+            widget.configure(state="normal")
             widget.delete("1.0", tk.END)
+            widget.configure(state="disabled")
         current_file = self.chat_monitor.current_file.name if self.chat_monitor and self.chat_monitor.current_file else "None"
         self._update_chat_info(current_file)
 
@@ -1332,9 +1334,14 @@ class PGLOKApp:
             highlightbackground=UI_COLORS["entry_border"],
             highlightcolor=UI_COLORS["accent"],
             yscrollcommand=scroll.set,
+            state="disabled",
         )
         text.pack(side="left", fill="both", expand=True)
         scroll.configure(command=text.yview)
+        # Allow text selection and copy but block keyboard editing
+        text.bind("<Key>", lambda e: "break" if e.state == 0 and len(e.char) == 1 else None)
+        text.bind("<Control-c>", lambda e: None)  # let default copy through
+        text.bind("<Control-a>", lambda e: (text.tag_add("sel", "1.0", "end"), "break"))
         self.chat_notebook.add(tab_frame, text=name)
         self.chat_tab_text[name] = text
         return text
@@ -1343,9 +1350,11 @@ class PGLOKApp:
         text = self._ensure_chat_tab(tab_name)
         if text is None:
             return
+        text.configure(state="normal")
         text.insert(tk.END, line + "\n")
         text.see(tk.END)
         self._trim_chat_widget(text)
+        text.configure(state="disabled")
 
     def _trim_chat_widget(self, widget, max_lines=6000, keep_lines=4000):
         total_lines = int(widget.index("end-1c").split(".")[0])
