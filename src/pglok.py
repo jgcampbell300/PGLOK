@@ -3958,6 +3958,9 @@ class PGLOKApp:
 
 
 def main():
+    from src import crash_reporter
+    crash_reporter.install()
+
     root = tk.Tk()
     app = PGLOKApp(root)
     root.app = app
