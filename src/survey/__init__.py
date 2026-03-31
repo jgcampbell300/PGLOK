@@ -701,10 +701,15 @@ class MapOverlay(tk.Toplevel):
         else:
             self.geometry("400x400")
         
-        # Apply opacity immediately, then re-apply after window settles (for clickthrough)
-        self.after(1, lambda: self.attributes('-alpha', self.settings.map_opacity))
+        # Apply opacity once window is actually mapped on X11 (after(1) fires too early)
+        self.bind('<Map>', self._on_first_map)
         self.after(500, self._enable_configure_tracking_and_opacity)
     
+    def _on_first_map(self, event=None):
+        """Apply opacity as soon as the window is mapped by the compositor."""
+        self.unbind('<Map>')
+        self.attributes('-alpha', self.settings.map_opacity)
+
     def _bind_drag(self, widget):
         """Recursively bind left-click drag to widget and its children."""
         widget.bind('<Button-1>', self._start_drag)
@@ -1109,10 +1114,15 @@ class InventoryOverlay(tk.Toplevel):
         
         self._draw_grid()
         
-        # Apply opacity immediately, then re-apply after window settles (for clickthrough)
-        self.after(1, lambda: self.attributes('-alpha', self.settings.inv_opacity))
+        # Apply opacity once window is actually mapped on X11
+        self.bind('<Map>', self._on_first_map)
         self.after(500, self._enable_configure_tracking_and_opacity)
     
+    def _on_first_map(self, event=None):
+        """Apply opacity as soon as the window is mapped by the compositor."""
+        self.unbind('<Map>')
+        self.attributes('-alpha', self.settings.inv_opacity)
+
     def _bind_drag(self, widget):
         """Recursively bind left-click drag to widget and its children."""
         widget.bind('<Button-1>', self._start_drag)
