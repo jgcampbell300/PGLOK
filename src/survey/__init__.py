@@ -714,7 +714,7 @@ class MapOverlay(tk.Toplevel):
 
     def _create_resize_handle(self):
         """Draw a visible resize corner on the canvas and handle resize via canvas events."""
-        self._resize_zone = 20  # px from bottom-right corner
+        self._resize_zone = 30  # px from bottom-right corner of canvas
         self._resize_start = None
         self._draw_resize_corner()
         # Bind canvas left-click: resize zone takes priority over item clicks
@@ -725,8 +725,8 @@ class MapOverlay(tk.Toplevel):
     def _draw_resize_corner(self):
         """Draw a small grip indicator in the bottom-right of the canvas."""
         self.canvas.delete('resize_corner')
-        w = self.winfo_width() or 400
-        h = self.winfo_height() or 400
+        w = self.canvas.winfo_width() or 400
+        h = self.canvas.winfo_height() or 400
         sz = self._resize_zone
         color = UI_COLORS.get("muted_text", "#888888")
         # Draw 3 diagonal lines as a grip
@@ -737,12 +737,12 @@ class MapOverlay(tk.Toplevel):
         self.canvas.tag_raise('resize_corner')
 
     def _on_canvas_press(self, event):
-        w = self.winfo_width()
-        h = self.winfo_height()
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
         sz = self._resize_zone
-        if event.x >= w - sz and event.y >= h - sz:
+        if event.x >= cw - sz and event.y >= ch - sz:
             self._resize_start = {'x': event.x_root, 'y': event.y_root,
-                                  'w': w, 'h': h}
+                                  'w': self.winfo_width(), 'h': self.winfo_height()}
         else:
             self._resize_start = None
             self._on_click(event)
@@ -1059,7 +1059,7 @@ class InventoryOverlay(tk.Toplevel):
 
     def _create_resize_handle(self):
         """Draw a visible resize corner on the canvas and handle resize via canvas events."""
-        self._resize_zone = 20
+        self._resize_zone = 30
         self._resize_start = None
         self._draw_resize_corner()
         self.canvas.bind('<Button-1>', self._on_canvas_press)
@@ -1069,8 +1069,8 @@ class InventoryOverlay(tk.Toplevel):
     def _draw_resize_corner(self):
         """Draw a small grip indicator in the bottom-right of the canvas."""
         self.canvas.delete('resize_corner')
-        w = self.winfo_width() or 200
-        h = self.winfo_height() or 100
+        w = self.canvas.winfo_width() or 200
+        h = self.canvas.winfo_height() or 100
         color = UI_COLORS.get("muted_text", "#888888")
         for i in range(3):
             offset = 4 + i * 5
@@ -1079,10 +1079,11 @@ class InventoryOverlay(tk.Toplevel):
         self.canvas.tag_raise('resize_corner')
 
     def _on_canvas_press(self, event):
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if event.x >= w - self._resize_zone and event.y >= h - self._resize_zone:
-            self._resize_start = {'x': event.x_root, 'y': event.y_root, 'w': w, 'h': h}
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if event.x >= cw - self._resize_zone and event.y >= ch - self._resize_zone:
+            self._resize_start = {'x': event.x_root, 'y': event.y_root,
+                                  'w': self.winfo_width(), 'h': self.winfo_height()}
         else:
             self._resize_start = None
 
