@@ -701,8 +701,8 @@ class MapOverlay(tk.Toplevel):
         else:
             self.geometry("400x400")
         
-        # Restore clickthrough if previously enabled - deferred to after window maps
-        # Enable Configure tracking and apply opacity after window settles
+        # Apply opacity immediately, then re-apply after window settles (for clickthrough)
+        self.attributes('-alpha', self.settings.map_opacity)
         self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _bind_drag(self, widget):
@@ -1047,7 +1047,8 @@ class InventoryOverlay(tk.Toplevel):
         
         self._draw_grid()
         
-        # Enable Configure tracking and apply opacity after window settles
+        # Apply opacity immediately, then re-apply after window settles (for clickthrough)
+        self.attributes('-alpha', self.settings.inv_opacity)
         self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _bind_drag(self, widget):
