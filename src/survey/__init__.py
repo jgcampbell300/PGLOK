@@ -1472,6 +1472,8 @@ class SurveyHelperWindow(tk.Toplevel):
         self.lock_btn = ttk.Button(btn_frame, text="🔒 Lock Overlays: OFF", command=self._toggle_lock_overlays, style="App.Secondary.TButton")
         self.lock_btn.pack(side='left', padx=2)
         self._update_lock_btn()
+
+        ttk.Button(btn_frame, text="💾 Save Layout", command=self._save_overlay_layout, style="App.Secondary.TButton").pack(side='left', padx=2)
         
         # Opacity controls
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
@@ -1801,6 +1803,25 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update lock button text."""
         locked = self.map_clickthrough_var.get() and self.inv_clickthrough_var.get()
         self.lock_btn.config(text=f"🔒 Lock Overlays: {'ON' if locked else 'OFF'}")
+
+    def _save_overlay_layout(self):
+        """Read current overlay geometry and save to settings."""
+        for overlay, prefix in [
+            (self.map_overlay, 'map'),
+            (self.inv_overlay, 'inv'),
+        ]:
+            if overlay and overlay.winfo_exists():
+                try:
+                    geom = overlay.wm_geometry()
+                    w, h, x, y = parse_geometry(geom)
+                    if x is not None:
+                        setattr(self.settings, f'{prefix}_position', (x, y))
+                    if w:
+                        setattr(self.settings, f'{prefix}_size', (w, h))
+                except Exception:
+                    pass
+        self.settings.save()
+        self.status_var.set("Overlay layout saved")
     
     def _toggle_always_on_top(self):
         """Toggle always-on-top for the Survey Helper window."""
