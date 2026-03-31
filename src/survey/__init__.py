@@ -2187,15 +2187,18 @@ class SurveyHelperWindow(tk.Toplevel):
         self.current_route_index = 0
         self.session_start = None
         self.loot_gained = {}
+
+        # Reset survey count to 0
+        self.settings.survey_count = 0
+        self.count_var.set(0)
+        self.settings.save()
         
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = []
             self.map_overlay.clear_items()
         
         if self.inv_overlay and self.inv_overlay.winfo_exists():
-            self.inv_overlay.clear_all()
-            for i in range(self.settings.survey_count):
-                self.inv_overlay.mark_slot_filled(i)
+            self.inv_overlay.set_survey_count(0)
         
         self.settings.zone_name = None
         self.settings.current_phase = 0
