@@ -1830,6 +1830,9 @@ class SurveyHelperWindow(tk.Toplevel):
         self._build_ui()
         self._restore_overlays()
         self._start_chat_monitor()
+
+        # Auto-detect player marker once on startup if we don't know origin yet
+        self.after(2000, self._auto_initial_player_detect)
     
     def _build_ui(self):
         """Build the control panel UI."""
@@ -2215,6 +2218,16 @@ class SurveyHelperWindow(tk.Toplevel):
         self.status_var.set("Detecting player marker from the visible map...")
         self._detect_player_once()
 
+    def _auto_initial_player_detect(self):
+        """Run a one-off player detection if we don't yet know origin.
+
+        Used on startup and after Reset Session so the map center tracks
+        the current character position without manual clicks.
+        """
+        if self.settings.origin_x is not None and self.settings.origin_y is not None:
+            return
+        self._detect_player_from_map()
+
     def _capture_map_bbox(self) -> Optional[Tuple[int, int, int, int]]:
         """Return the screen bbox of the map overlay canvas."""
         if not (self.map_overlay and self.map_overlay.winfo_exists()):
@@ -2405,6 +2418,22 @@ class SurveyHelperWindow(tk.Toplevel):
         self._ring_detection_target = item_index
         item_name = self.items[item_index].name
         self.status_var.set(f"Ring watch armed for survey #{item_index + 1}: {item_name}")
+
+    def _auto_arm_ring_for_new_item(self, item_index: int):
+        """Automatically start ring watch + arm the newest survey item.
+
+        Used when a fresh survey position is parsed from chat so the
+        player does not need to toggle ring watching manually.
+        """
+        if cv2 is None or np is None or ImageGrab is None:
+            return
+        if item_index < 0 or item_index >= len(self.items):
+            return
+        if not self._ring_detection_active:
+            self._start_ring_watch()
+            if not self._ring_detection_active:
+                return
+        self._ring_detection_target = item_index
 
     @staticmethod
     def _detect_red_ring(frame_rgb) -> Optional[Tuple[float, float, float]]:
@@ -3192,6 +3221,10 @@ class SurveyHelperWindow(tk.Toplevel):
         self._set_phase(0)
         self._update_positions_display()
         self._update_loot_display()
+
+        # After a reset, automatically re-detect the player marker so the
+        # new session starts from the current character position.
+        self.after(1000, self._auto_initial_player_detect)
     
     def on_close(self):
         """Clean up on window close."""
