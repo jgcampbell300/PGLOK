@@ -1950,16 +1950,19 @@ class SurveyHelperWindow(tk.Toplevel):
     def _parse_chat_line(self, line: str):
         """Parse chat line for zone entry, survey creation, positions, and loot."""
 
+        # Parse line timestamp (used for reset filter and age checks)
+        line_time = None
+        ts_match = re.match(r'(\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', line)
+        if ts_match:
+            try:
+                line_time = datetime.strptime(ts_match.group(1), '%y-%m-%d %H:%M:%S')
+            except ValueError:
+                pass
+
         # Skip lines older than the last session reset
-        if self.reset_time is not None:
-            ts_match = re.match(r'(\d{2}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})', line)
-            if ts_match:
-                try:
-                    line_time = datetime.strptime(ts_match.group(1), '%y-%m-%d %H:%M:%S')
-                    if line_time < self.reset_time:
-                        return
-                except ValueError:
-                    pass
+        if self.reset_time is not None and line_time is not None:
+            if line_time < self.reset_time:
+                return
 
         # ── 1. Zone entry ──────────────────────────────────────────────────────
         zone_match = re.search(r'Entering\s+Area:\s*(.+)', line, re.IGNORECASE)
@@ -1990,6 +1993,11 @@ class SurveyHelperWindow(tk.Toplevel):
             return
 
         # ── 3. Survey position ─────────────────────────────────────────────────
+        # Skip position lines older than 15 minutes
+        if line_time is not None:
+            age = (datetime.now() - line_time).total_seconds()
+            if age > 900:  # 15 minutes
+                return
         # Handles both:
         #   [Status] The Fluorite is 2001m east and 25m north.
         #   [Status] The Ancient Tombstone is 45m NE
