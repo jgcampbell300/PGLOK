@@ -515,88 +515,124 @@ class SurveySettings:
             print(f"Error saving survey settings: {e}")
 
 
-def _set_clickthrough_x11(tk_win, enabled: bool):
-    """Enable or disable X11 input pass-through via SHAPE extension.
+def _get_all_xids(tk_win):
+    """Return all X11 window IDs for this Tk widget tree including the Tk wrapper."""
+    import ctypes
 
-    The overlay windows are permanently overrideredirect(True), so there is no
-    WM frame to worry about.  Just apply or remove the empty ShapeInput region
-    directly, deferred slightly so the window is fully mapped first.
-    """
+    xids = []
+
+    def collect(widget):
+        try:
+            xids.append(widget.winfo_id())
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            collect(child)
+
+    tk_win.update_idletasks()
+    collect(tk_win)
+
+    # Also include the Tk wrapper window (parent of the Toplevel XID)
     try:
-        tk_win.update_idletasks()
+        libX11 = ctypes.cdll.LoadLibrary('libX11.so.6')
+        libX11.XOpenDisplay.restype = ctypes.c_void_p
+        disp = libX11.XOpenDisplay(None)
+        if disp:
+            libX11.XQueryTree.restype = ctypes.c_int
+            libX11.XQueryTree.argtypes = [
+                ctypes.c_void_p, ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_ulong),  # root_return
+                ctypes.POINTER(ctypes.c_ulong),  # parent_return
+                ctypes.POINTER(ctypes.c_void_p), # children_return
+                ctypes.POINTER(ctypes.c_uint),   # nchildren_return
+            ]
+            root_ret = ctypes.c_ulong(0)
+            parent_ret = ctypes.c_ulong(0)
+            children_ret = ctypes.c_void_p(0)
+            nchildren_ret = ctypes.c_uint(0)
+            top_xid = tk_win.winfo_id()
+            libX11.XQueryTree(disp, top_xid,
+                              ctypes.byref(root_ret), ctypes.byref(parent_ret),
+                              ctypes.byref(children_ret), ctypes.byref(nchildren_ret))
+            root_xid = root_ret.value
+            wrapper_xid = parent_ret.value
+            if children_ret.value:
+                libX11.XFree(children_ret)
+            if wrapper_xid and wrapper_xid != root_xid and wrapper_xid not in xids:
+                xids.append(wrapper_xid)
+            libX11.XCloseDisplay(disp)
+    except Exception:
+        pass
+
+    return xids
+
+
+def _set_clickthrough_x11(tk_win, enabled: bool):
+    """Enable or disable X11 input pass-through via SHAPE/ctypes."""
+    try:
+        xids = _get_all_xids(tk_win)
         if enabled:
-            tk_win.after(50, lambda: _apply_shape_x11(tk_win))
+            tk_win.after(100, lambda: _apply_shape_ctypes(xids))
         else:
-            tk_win.after(50, lambda: _reset_shape_x11(tk_win))
+            tk_win.after(100, lambda: _reset_shape_ctypes(xids))
     except Exception as e:
         print(f"Click-through not available: {e}")
 
 
-def _apply_shape_x11(tk_win):
-    """Apply empty SHAPE Input region to all X11 children (enables click-through).
-
-    With permanently overrideredirect windows we apply directly from winfo_id()
-    downward — no WM frame to walk past.
-    """
+def _apply_shape_ctypes(xids):
+    """Apply empty ShapeInput region to windows (enables click-through) via ctypes."""
     try:
-        from Xlib import display, X
-        from Xlib.ext.shape import SO, SK
-        d = display.Display()
-        xid = tk_win.winfo_id()
-        root_id = d.screen().root.id
+        import ctypes
+        libX11 = ctypes.cdll.LoadLibrary('libX11.so.6')
+        libXext = ctypes.cdll.LoadLibrary('libXext.so.6')
 
-        def apply_recursive(win):
-            if win.id == root_id:
-                return
-            try:
-                win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
-            except Exception:
-                pass
-            try:
-                for child in win.query_tree().children:
-                    apply_recursive(child)
-            except Exception:
-                pass
+        libX11.XOpenDisplay.restype = ctypes.c_void_p
+        disp = libX11.XOpenDisplay(None)
+        if not disp:
+            print("Click-through: could not open display")
+            return
 
-        # Apply to the Tk-internal wrapper (parent of winfo_id) and everything below
-        toplevel_win = d.create_resource_object('window', xid)
-        parent = toplevel_win.query_tree().parent
-        start = parent if parent.id != root_id else toplevel_win
-        apply_recursive(start)
-        d.flush()
-        d.close()
+        # XShapeCombineRectangles(display, dest, dest_kind=ShapeInput(2),
+        #                         x_off, y_off, rects, n_rects, op=ShapeSet(0), ordering=0)
+        libXext.XShapeCombineRectangles.restype = None
+        libXext.XShapeCombineRectangles.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ]
+        for xid in xids:
+            libXext.XShapeCombineRectangles(disp, xid, 2, 0, 0, None, 0, 0, 0)
+
+        libX11.XSync(disp, 0)
+        libX11.XCloseDisplay(disp)
     except Exception as e:
         print(f"Click-through apply failed: {e}")
 
 
-def _reset_shape_x11(tk_win):
-    """Reset SHAPE Input to full region (disables click-through)."""
+def _reset_shape_ctypes(xids):
+    """Remove ShapeInput restriction from windows (disables click-through) via ctypes."""
     try:
-        from Xlib import display, X
-        from Xlib.ext.shape import SO, SK
-        d = display.Display()
-        xid = tk_win.winfo_id()
-        root_id = d.screen().root.id
+        import ctypes
+        libX11 = ctypes.cdll.LoadLibrary('libX11.so.6')
+        libXext = ctypes.cdll.LoadLibrary('libXext.so.6')
 
-        def apply_recursive(win):
-            if win.id == root_id:
-                return
-            try:
-                win.shape_mask(SO.Set, SK.Input, 0, 0, X.NONE)
-            except Exception:
-                pass
-            try:
-                for child in win.query_tree().children:
-                    apply_recursive(child)
-            except Exception:
-                pass
+        libX11.XOpenDisplay.restype = ctypes.c_void_p
+        disp = libX11.XOpenDisplay(None)
+        if not disp:
+            return
 
-        toplevel_win = d.create_resource_object('window', xid)
-        parent = toplevel_win.query_tree().parent
-        start = parent if parent.id != root_id else toplevel_win
-        apply_recursive(start)
-        d.flush()
-        d.close()
+        # XShapeCombineMask(display, dest, dest_kind=ShapeInput(2),
+        #                   x_off, y_off, src=None(resets to full), op=ShapeSet(0))
+        libXext.XShapeCombineMask.restype = None
+        libXext.XShapeCombineMask.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_ulong, ctypes.c_int,
+        ]
+        for xid in xids:
+            libXext.XShapeCombineMask(disp, xid, 2, 0, 0, 0, 0)  # src=None resets region
+
+        libX11.XSync(disp, 0)
+        libX11.XCloseDisplay(disp)
     except Exception as e:
         print(f"Click-through reset failed: {e}")
 
