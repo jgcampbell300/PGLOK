@@ -661,6 +661,23 @@ class MapOverlay(tk.Toplevel):
                   relief='flat', bd=0, font=(UI_ATTRS["font_family"], 7),
                   command=self._close_window).pack(side='right', padx=2)
 
+        # Route nav bar (hidden until route is active)
+        self._nav_bar = tk.Frame(self, bg=UI_COLORS["card_bg"], height=24)
+        # Not packed initially — shown by show_nav_bar()
+        _nbtn = dict(bg=UI_COLORS["secondary"], fg=UI_COLORS["text"],
+                     relief='flat', bd=1, font=(UI_ATTRS["font_family"], 7),
+                     activebackground=UI_COLORS["accent"])
+        self._nav_prev_btn = tk.Button(self._nav_bar, text="◀ Prev", **_nbtn)
+        self._nav_prev_btn.pack(side='left', padx=2, pady=1)
+        self._nav_next_btn = tk.Button(self._nav_bar, text="Next ▶", **_nbtn)
+        self._nav_next_btn.pack(side='left', padx=2, pady=1)
+        self._nav_skip_btn = tk.Button(self._nav_bar, text="Skip", **_nbtn)
+        self._nav_skip_btn.pack(side='left', padx=2, pady=1)
+        self._nav_label = tk.Label(self._nav_bar, text="", bg=UI_COLORS["card_bg"],
+                                   fg=UI_COLORS["text"], font=(UI_ATTRS["font_family"], 7))
+        self._nav_label.pack(side='left', padx=4)
+        self._nav_bar_visible = False
+
         # Canvas for drawing
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
@@ -1025,6 +1042,27 @@ class MapOverlay(tk.Toplevel):
     def clear_route(self):
         """Remove route visualization."""
         self.canvas.delete('route_viz')
+        self.hide_nav_bar()
+
+    def show_nav_bar(self, prev_cmd, next_cmd, skip_cmd, label: str = ""):
+        """Show route navigation bar below title bar."""
+        self._nav_prev_btn.config(command=prev_cmd)
+        self._nav_next_btn.config(command=next_cmd)
+        self._nav_skip_btn.config(command=skip_cmd)
+        self._nav_label.config(text=label)
+        if not self._nav_bar_visible:
+            self._nav_bar.pack(fill='x', side='top', before=self.canvas)
+            self._nav_bar_visible = True
+
+    def hide_nav_bar(self):
+        """Hide route navigation bar."""
+        if self._nav_bar_visible:
+            self._nav_bar.pack_forget()
+            self._nav_bar_visible = False
+
+    def update_nav_label(self, label: str):
+        """Update the nav bar info label."""
+        self._nav_label.config(text=label)
 
     def update_opacity(self, value: float):
         """Update window opacity."""
@@ -1949,25 +1987,39 @@ class SurveyHelperWindow(tk.Toplevel):
     def _recalculate_item_positions(self):
         """Recalculate canvas x/y for all items and refresh map + route.
 
-        If scale_factor is unknown, auto-fits items to the canvas so they
-        are always visible. The user can calibrate later to get accurate positions.
+        When origin_x is unset, auto-centers at the map canvas center.
+        When scale_factor is unset, auto-fits items so all are visible.
         """
+        # Auto-center origin at canvas center if not explicitly set
         if self.settings.origin_x is None:
-            return
+            # Use saved map size, or winfo if available, else default
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                cw = self.map_overlay.canvas.winfo_width()
+                ch = self.map_overlay.canvas.winfo_height()
+            else:
+                cw, ch = 0, 0
+            if cw <= 1:
+                cw = self.settings.map_size[0] if self.settings.map_size else 400
+                ch = max((self.settings.map_size[1] or 400) - 18, 100) if self.settings.map_size else 382
+            self.settings.origin_x = cw // 2
+            self.settings.origin_y = ch // 2
 
         ox, oy = self.settings.origin_x, self.settings.origin_y
 
         # Auto-compute a scale that fits all items if none is saved
         sf = self.settings.scale_factor
         if sf is None and self.items:
-            canvas_w = 400
-            canvas_h = 400
             if self.map_overlay and self.map_overlay.winfo_exists():
-                canvas_w = max(self.map_overlay.canvas.winfo_width(), 100)
-                canvas_h = max(self.map_overlay.canvas.winfo_height(), 100)
+                cw = self.map_overlay.canvas.winfo_width()
+                ch = self.map_overlay.canvas.winfo_height()
+            else:
+                cw, ch = 0, 0
+            if cw <= 1:
+                cw = self.settings.map_size[0] if self.settings.map_size else 400
+                ch = max((self.settings.map_size[1] or 400) - 18, 100) if self.settings.map_size else 382
             max_dist = max((item.distance for item in self.items if item.distance > 0), default=1)
-            # Fit items within 80% of the shorter canvas dimension from origin
-            sf = (min(canvas_w, canvas_h) * 0.4) / max_dist
+            # Fit furthest item within 40% of the shorter canvas dimension from origin
+            sf = (min(cw, ch) * 0.4) / max_dist
 
         if sf is None or sf <= 0:
             return
@@ -1989,7 +2041,10 @@ class SurveyHelperWindow(tk.Toplevel):
         # Sync to MapOverlay's list and redraw
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = self.items
+            self.map_overlay.settings.origin_x = ox
+            self.map_overlay.settings.origin_y = oy
             self.map_overlay.clear_items()
+            self.map_overlay.draw_player_position()
             for i, item in enumerate(self.items):
                 self.map_overlay._draw_item(item, i)
             # Redraw route pins if a route is active
@@ -2422,6 +2477,9 @@ class SurveyHelperWindow(tk.Toplevel):
         # Draw route on overlays
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.draw_route(self.current_route, 0, self.items)
+            self.map_overlay.show_nav_bar(
+                self._prev_item, self._next_item, self._skip_item
+            )
         if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay.show_route_order(self.current_route)
 
@@ -2435,6 +2493,11 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.current_route_index < len(self.current_route):
             if self.map_overlay and self.map_overlay.winfo_exists():
                 self.map_overlay.draw_route(self.current_route, self.current_route_index, self.items)
+                # Update nav label with current stop info
+                idx = self.current_route[self.current_route_index]
+                item = self.items[idx]
+                label = f"Stop {self.current_route_index + 1}/{len(self.current_route)}: {item.name[:20]}"
+                self.map_overlay.update_nav_label(label)
             if self.inv_overlay and self.inv_overlay.winfo_exists():
                 idx = self.current_route[self.current_route_index]
                 self.inv_overlay.highlight_next_slot(idx)
@@ -2442,6 +2505,7 @@ class SurveyHelperWindow(tk.Toplevel):
             # Route complete — clear current-stop highlighting
             if self.map_overlay and self.map_overlay.winfo_exists():
                 self.map_overlay.draw_route(self.current_route, -1, self.items)
+                self.map_overlay.update_nav_label("Route complete!")
             if self.inv_overlay and self.inv_overlay.winfo_exists():
                 self.inv_overlay.highlight_next_slot(-1)
     
