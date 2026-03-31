@@ -17,6 +17,32 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import threading
 import time
+def _import_vision_stack():
+    """Import OpenCV/numpy/ImageGrab, falling back to build_env site-packages."""
+    try:
+        import cv2 as _cv2
+        import numpy as _np
+        from PIL import ImageGrab as _ImageGrab
+        return _cv2, _np, _ImageGrab
+    except ImportError:
+        project_root = Path(__file__).resolve().parents[2]
+        build_env_lib = project_root / "build_env" / "lib"
+        if build_env_lib.is_dir():
+            for python_dir in sorted(build_env_lib.glob("python*/site-packages")):
+                site_packages = str(python_dir)
+                if site_packages not in sys.path:
+                    sys.path.insert(0, site_packages)
+            try:
+                import cv2 as _cv2
+                import numpy as _np
+                from PIL import ImageGrab as _ImageGrab
+                return _cv2, _np, _ImageGrab
+            except ImportError:
+                pass
+    return None, None, None
+
+
+cv2, np, ImageGrab = _import_vision_stack()
 
 from src.chat.monitor import ChatLogMonitor
 from src.locate_PG import initialize_pg_base
@@ -422,6 +448,8 @@ class SurveySettings:
         self.scale_factor: Optional[float] = None  # pixels per meter
         self.origin_x: Optional[float] = None  # player position on map
         self.origin_y: Optional[float] = None
+        self.current_player_x: Optional[float] = None
+        self.current_player_y: Optional[float] = None
         self.main_window_position: Optional[Tuple[int, int]] = None  # (x, y)
         self.main_window_size: Optional[Tuple[int, int]] = None  # (width, height)
         self.map_was_open: bool = False  # whether map was open on last close
@@ -463,6 +491,8 @@ class SurveySettings:
                 self.scale_factor = data.get('scale_factor')
                 self.origin_x = data.get('origin_x')
                 self.origin_y = data.get('origin_y')
+                self.current_player_x = data.get('current_player_x')
+                self.current_player_y = data.get('current_player_y')
                 
                 if data.get('main_window_position'):
                     self.main_window_position = tuple(data['main_window_position'])
@@ -499,6 +529,8 @@ class SurveySettings:
             'scale_factor': self.scale_factor,
             'origin_x': self.origin_x,
             'origin_y': self.origin_y,
+            'current_player_x': self.current_player_x,
+            'current_player_y': self.current_player_y,
             'main_window_position': list(self.main_window_position) if self.main_window_position else None,
             'main_window_size': list(self.main_window_size) if self.main_window_size else None,
             'map_was_open': self.map_was_open,
@@ -639,6 +671,13 @@ def _reset_shape_ctypes(xids):
 
 class MapOverlay(tk.Toplevel):
     """Transparent overlay window for the map with survey dots."""
+    _BG_STIPPLES = [
+        (0.20, 'gray12'),
+        (0.40, 'gray25'),
+        (0.60, 'gray50'),
+        (0.80, 'gray75'),
+    ]
+    _TRANSPARENT_COLOR = '#ff00ff'
     
     def __init__(self, parent, settings: SurveySettings, on_click_callback=None, on_close=None):
         super().__init__(parent)
@@ -678,9 +717,12 @@ class MapOverlay(tk.Toplevel):
         self._nav_label.pack(side='left', padx=4)
         self._nav_bar_visible = False
 
-        # Canvas for drawing — black background so at low alpha it's nearly invisible,
-        # leaving pins/lines as the only visible content.
-        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
+        self._supports_isolated_background = False
+        self.configure(bg=self._TRANSPARENT_COLOR)
+
+        # Canvas for drawing — background opacity is handled separately when the
+        # platform supports transparent-color windows.
+        self.canvas = tk.Canvas(self, bg=self._TRANSPARENT_COLOR, highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         
         # Items to display
@@ -691,6 +733,8 @@ class MapOverlay(tk.Toplevel):
         # Dragging
         self._drag_data = {'x': 0, 'y': 0}
         self._is_setting_position = False
+        self._item_drag = None
+        self._player_drag = None
         
         # Skip Configure events during initialization
         self._skip_configure = True
@@ -722,11 +766,26 @@ class MapOverlay(tk.Toplevel):
         # Apply opacity once window is actually mapped on X11 (after(1) fires too early)
         self.bind('<Map>', self._on_first_map)
         self.after(500, self._enable_configure_tracking_and_opacity)
+
+    def _try_enable_isolated_background(self) -> bool:
+        """Enable transparent-color mode if the platform supports it."""
+        try:
+            self.wm_attributes('-transparentcolor', self._TRANSPARENT_COLOR)
+            self._supports_isolated_background = True
+        except tk.TclError:
+            self._supports_isolated_background = False
+            self.configure(bg='black')
+            self.canvas.config(bg='black')
+        return self._supports_isolated_background
     
     def _on_first_map(self, event=None):
         """Apply opacity as soon as the window is mapped by the compositor."""
         self.unbind('<Map>')
-        self.attributes('-alpha', self.settings.map_opacity)
+        if self._try_enable_isolated_background():
+            self.attributes('-alpha', 1.0)
+            self._apply_background_opacity()
+        else:
+            self.attributes('-alpha', self.settings.map_opacity)
 
     def _bind_drag(self, widget):
         """Recursively bind left-click drag to widget and its children."""
@@ -768,7 +827,17 @@ class MapOverlay(tk.Toplevel):
                                   'w': self.winfo_width(), 'h': self.winfo_height()}
         else:
             self._resize_start = None
-            self._on_click(event)
+            if self._is_over_player_dot(event.x, event.y) and not self._is_setting_position:
+                self._player_drag = {'x': event.x, 'y': event.y}
+                self._item_drag = None
+            else:
+                self._player_drag = None
+                item_index = self._find_item_index_at(event.x, event.y)
+                if item_index is not None and not self._is_setting_position:
+                    self._item_drag = {'index': item_index, 'x': event.x, 'y': event.y}
+                else:
+                    self._item_drag = None
+                    self._on_click(event)
 
     def _on_canvas_motion(self, event):
         if self._resize_start:
@@ -778,9 +847,77 @@ class MapOverlay(tk.Toplevel):
             new_h = max(100, self._resize_start['h'] + dy)
             self.geometry(f"{new_w}x{new_h}")
             self._draw_resize_corner()
+        elif self._player_drag:
+            dx = event.x - self._player_drag['x']
+            dy = event.y - self._player_drag['y']
+            if dx or dy:
+                self.canvas.move('player', dx, dy)
+                self._player_drag['x'] = event.x
+                self._player_drag['y'] = event.y
+                x, y = self._player_center_from_canvas()
+                if x is not None and y is not None and self.on_click_callback:
+                    self.on_click_callback(x, y, 'player_preview_moved')
+        elif self._item_drag:
+            dx = event.x - self._item_drag['x']
+            dy = event.y - self._item_drag['y']
+            if dx or dy:
+                item_index = self._item_drag['index']
+                self.canvas.move(f'item_{item_index}', dx, dy)
+                item = self.survey_items[item_index]
+                item.x += dx
+                item.y += dy
+                self._item_drag['x'] = event.x
+                self._item_drag['y'] = event.y
+                if self.on_click_callback:
+                    self.on_click_callback(item.x, item.y, 'item_preview_moved', item_index)
 
     def _on_canvas_release(self, event):
         self._resize_start = None
+        if self._player_drag:
+            self._player_drag = None
+            x, y = self._player_center_from_canvas()
+            if x is not None and y is not None and self.on_click_callback:
+                self.on_click_callback(x, y, 'player_dragged')
+        if self._item_drag:
+            item_index = self._item_drag['index']
+            item = self.survey_items[item_index]
+            self._item_drag = None
+            if self.on_click_callback:
+                self.on_click_callback(item.x, item.y, 'item_dragged', item_index)
+
+    def _is_over_player_dot(self, x: float, y: float) -> bool:
+        """Return True when the pointer is over the drawn player marker."""
+        for canvas_item in self.canvas.find_overlapping(x - 8, y - 8, x + 8, y + 8):
+            if 'player' in self.canvas.gettags(canvas_item):
+                return True
+        return False
+
+    def _player_center_from_canvas(self) -> Tuple[Optional[float], Optional[float]]:
+        """Return the current player marker center from the canvas."""
+        coords = self.canvas.coords('player')
+        if len(coords) == 4:
+            return ((coords[0] + coords[2]) / 2.0, (coords[1] + coords[3]) / 2.0)
+        return (None, None)
+
+    def _find_item_index_at(self, x: float, y: float) -> Optional[int]:
+        """Find a survey item index near the given canvas position."""
+        items = self.canvas.find_overlapping(x - 12, y - 12, x + 12, y + 12)
+        for canvas_item in items:
+            item_index = self._extract_item_index(self.canvas.gettags(canvas_item))
+            if item_index is not None:
+                return item_index
+        return None
+
+    @staticmethod
+    def _extract_item_index(tags) -> Optional[int]:
+        """Extract an item index from a canvas tag tuple."""
+        for tag in tags:
+            if tag.startswith('item_') and tag.count('_') == 1:
+                try:
+                    return int(tag.split('_')[1])
+                except ValueError:
+                    return None
+        return None
 
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
@@ -789,9 +926,41 @@ class MapOverlay(tk.Toplevel):
     def _enable_configure_tracking_and_opacity(self):
         """Enable Configure tracking and apply opacity after window settles."""
         self._skip_configure = False
-        self.attributes('-alpha', self.settings.map_opacity)
+        if self._supports_isolated_background:
+            self.attributes('-alpha', 1.0)
+            self._apply_background_opacity()
+        else:
+            self.attributes('-alpha', self.settings.map_opacity)
         if self.settings.map_clickthrough:
             self.set_clickthrough(True)
+
+    def _background_stipple_for_opacity(self, value: float) -> str:
+        """Choose a stipple density for the dimming layer."""
+        for threshold, stipple in self._BG_STIPPLES:
+            if value <= threshold:
+                return stipple
+        return ''
+
+    def _apply_background_opacity(self):
+        """Apply the user opacity setting to the map background layer only."""
+        if not self._supports_isolated_background:
+            return
+        self.canvas.delete('map_bg')
+        width = max(self.canvas.winfo_width(), 1)
+        height = max(self.canvas.winfo_height(), 1)
+        stipple = self._background_stipple_for_opacity(self.settings.map_opacity)
+        if self.settings.map_opacity > 0:
+            self.canvas.create_rectangle(
+                0, 0, width, height,
+                fill='black',
+                outline='',
+                stipple=stipple,
+                tags='map_bg'
+            )
+            self.canvas.tag_lower('map_bg')
+        # Keep all markers fully opaque above the dimming layer.
+        for tag in ('survey_item', 'route_viz', 'player', 'resize_corner'):
+            self.canvas.tag_raise(tag)
     
     def _on_resize(self, event):
         """Handle Configure events - save position/size when window changes."""
@@ -811,6 +980,7 @@ class MapOverlay(tk.Toplevel):
                 self.settings.map_position = (x, y)
                 self.settings.map_size = (w, h)
                 self.settings.save()
+            self._apply_background_opacity()
             self._draw_resize_corner()
     
     def _on_click(self, event):
@@ -818,19 +988,17 @@ class MapOverlay(tk.Toplevel):
             # Setting player position
             self.settings.origin_x = event.x
             self.settings.origin_y = event.y
+            self.settings.current_player_x = event.x
+            self.settings.current_player_y = event.y
             self._is_setting_position = False
             self._draw_player_dot()
             if self.on_click_callback:
                 self.on_click_callback(event.x, event.y, 'set_origin')
         else:
             # Check if clicked on an item
-            items = self.canvas.find_overlapping(event.x-10, event.y-10, event.x+10, event.y+10)
-            for item in items:
-                tags = self.canvas.gettags(item)
-                if tags and tags[0].startswith('item_'):
-                    idx = int(tags[0].split('_')[1])
-                    if self.on_click_callback:
-                        self.on_click_callback(event.x, event.y, 'item_clicked', idx)
+            item_index = self._find_item_index_at(event.x, event.y)
+            if item_index is not None and self.on_click_callback:
+                self.on_click_callback(event.x, event.y, 'item_clicked', item_index)
     
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
@@ -860,8 +1028,9 @@ class MapOverlay(tk.Toplevel):
         if self.player_dot:
             self.canvas.delete(self.player_dot)
         
-        if self.settings.origin_x and self.settings.origin_y:
-            x, y = self.settings.origin_x, self.settings.origin_y
+        x = self.settings.current_player_x if self.settings.current_player_x is not None else self.settings.origin_x
+        y = self.settings.current_player_y if self.settings.current_player_y is not None else self.settings.origin_y
+        if x is not None and y is not None:
             self.player_dot = self.canvas.create_oval(
                 x-5, y-5, x+5, y+5,
                 fill=UI_COLORS["accent"], outline=UI_COLORS["text"], width=2,
@@ -899,12 +1068,13 @@ class MapOverlay(tk.Toplevel):
     def _draw_item(self, item: SurveyItem, index: int):
         """Draw a survey item on the map."""
         color = UI_COLORS["primary"] if not item.collected else UI_COLORS["muted_text"]
+        dot_radius = 12
         
         # Dot
         self.canvas.create_oval(
-            item.x-8, item.y-8, item.x+8, item.y+8,
+            item.x-dot_radius, item.y-dot_radius, item.x+dot_radius, item.y+dot_radius,
             fill=color, outline=UI_COLORS["text"], width=2,
-            tags=(f'item_{index}', f'item_dot_{index}')
+            tags=('survey_item', f'item_{index}', f'item_dot_{index}')
         )
         
         # Label
@@ -912,7 +1082,7 @@ class MapOverlay(tk.Toplevel):
             item.x, item.y-15,
             text=f"{index+1}. {item.name[:15]}",
             fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-2), 'bold'),
-            tags=(f'item_{index}', f'item_label_{index}')
+            tags=('survey_item', f'item_{index}', f'item_label_{index}')
         )
         
         # Distance line
@@ -921,7 +1091,7 @@ class MapOverlay(tk.Toplevel):
                 self.settings.origin_x, self.settings.origin_y,
                 item.x, item.y,
                 fill=UI_COLORS["accent"], dash=(3, 3), width=1,
-                tags=(f'item_{index}', f'item_line_{index}')
+                tags=('survey_item', f'item_{index}', f'item_line_{index}')
             )
     
     def calibrate_from_click(self, item_index: int, click_x: float, click_y: float):
@@ -952,7 +1122,7 @@ class MapOverlay(tk.Toplevel):
     
     def clear_items(self):
         """Clear all survey items from the map."""
-        self.canvas.delete('item_')
+        self.canvas.delete('survey_item')
     
     def mark_collected(self, index: int):
         """Mark an item as collected."""
@@ -981,12 +1151,12 @@ class MapOverlay(tk.Toplevel):
 
         source = items if items is not None else self.survey_items
 
-        # Build ordered (x, y, item_idx, item) list — skip items without canvas coords
+        # Build ordered (x, y, item_idx, item) list strictly from authoritative
+        # survey coordinates. Do not read canvas object positions here.
         stops = []
         for item_idx in route:
             if item_idx < len(source):
                 item = source[item_idx]
-                # item.x / item.y are 0.0 default when not placed — skip those
                 if item.x != 0.0 or item.y != 0.0:
                     stops.append((item.x, item.y, item_idx, item))
 
@@ -1019,36 +1189,57 @@ class MapOverlay(tk.Toplevel):
                 pin_fill = '#555555'
                 pin_outline = '#888888'
                 text_color = '#cccccc'
-                radius = 10
+                head_radius = 10
             elif is_current:
                 pin_fill = '#00ff88'
                 pin_outline = 'white'
                 text_color = '#000000'
-                radius = 16
+                head_radius = 14
             else:
                 pin_fill = '#ffcc00'
                 pin_outline = 'white'
                 text_color = '#000000'
-                radius = 13
+                head_radius = 12
 
-            # Black shadow ring for contrast against any background
+            tip_y = y
+            head_center_y = tip_y - head_radius - 6
+            shadow_offset = 2
+
+            # Black shadow for contrast and a visible anchored tip.
+            self.canvas.create_polygon(
+                x, tip_y + shadow_offset,
+                x - 7, head_center_y + 6 + shadow_offset,
+                x + 7, head_center_y + 6 + shadow_offset,
+                fill='black', outline='',
+                tags='route_viz'
+            )
             self.canvas.create_oval(
-                x - radius - 2, y - radius - 2, x + radius + 2, y + radius + 2,
+                x - head_radius - shadow_offset, head_center_y - head_radius - shadow_offset,
+                x + head_radius + shadow_offset, head_center_y + head_radius + shadow_offset,
                 fill='black', outline='', width=0,
                 tags='route_viz'
             )
-            # Colored pin
+
+            # Pin body anchored so the tip sits exactly on the survey point.
+            self.canvas.create_polygon(
+                x, tip_y,
+                x - 6, head_center_y + 5,
+                x + 6, head_center_y + 5,
+                fill=pin_fill, outline=pin_outline, width=2,
+                tags='route_viz'
+            )
             self.canvas.create_oval(
-                x - radius, y - radius, x + radius, y + radius,
+                x - head_radius, head_center_y - head_radius,
+                x + head_radius, head_center_y + head_radius,
                 fill=pin_fill, outline=pin_outline, width=2,
                 tags='route_viz'
             )
             # Number label
             self.canvas.create_text(
-                x, y,
-                text=str(item_idx + 1),
+                x, head_center_y,
+                text=str(route_pos + 1),
                 fill=text_color,
-                font=(UI_ATTRS["font_family"], max(8, radius - 2), 'bold'),
+                font=(UI_ATTRS["font_family"], max(8, head_radius - 2), 'bold'),
                 tags='route_viz'
             )
 
@@ -1081,8 +1272,12 @@ class MapOverlay(tk.Toplevel):
 
     def update_opacity(self, value: float):
         """Update window opacity."""
-        self.attributes('-alpha', value)
         self.settings.map_opacity = value
+        if self._supports_isolated_background:
+            self.attributes('-alpha', 1.0)
+            self._apply_background_opacity()
+        else:
+            self.attributes('-alpha', value)
         self.settings.save()
     
     def set_clickthrough(self, enabled: bool):
@@ -1118,11 +1313,12 @@ class MapOverlay(tk.Toplevel):
 class InventoryOverlay(tk.Toplevel):
     """Transparent overlay window for inventory grid."""
     
-    def __init__(self, parent, settings: SurveySettings, on_close=None, next_callback=None):
+    def __init__(self, parent, settings: SurveySettings, on_close=None, next_callback=None, activate_callback=None):
         super().__init__(parent)
         self.settings = settings
         self.on_close_callback = on_close
         self.next_callback = next_callback  # Called when Next button on overlay is clicked
+        self.activate_callback = activate_callback
         
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
@@ -1155,6 +1351,7 @@ class InventoryOverlay(tk.Toplevel):
         
         # Resize handle
         self._create_resize_handle()
+        self.canvas.bind('<Double-Button-1>', self._on_canvas_double_click)
         
         # Close handler to save position/size
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1237,6 +1434,24 @@ class InventoryOverlay(tk.Toplevel):
     def _on_canvas_release(self, event):
         self._resize_start = None
 
+    def _on_canvas_double_click(self, event):
+        if event.x >= self.canvas.winfo_width() - self._resize_zone and event.y >= self.canvas.winfo_height() - self._resize_zone:
+            return
+        slot_index = self._find_slot_index_at(event.x, event.y)
+        if slot_index is not None and self.activate_callback:
+            self.activate_callback(slot_index)
+
+    def _find_slot_index_at(self, x: float, y: float) -> Optional[int]:
+        """Return the slot index near the given canvas position."""
+        for canvas_item in self.canvas.find_overlapping(x - 4, y - 4, x + 4, y + 4):
+            for tag in self.canvas.gettags(canvas_item):
+                if tag.startswith('slot_'):
+                    try:
+                        return int(tag.split('_')[1])
+                    except ValueError:
+                        return None
+        return None
+
     def _calculate_size(self):
         """Calculate window size based on grid settings."""
         cols = self.settings.grid_cols
@@ -1314,7 +1529,8 @@ class InventoryOverlay(tk.Toplevel):
                 self.canvas.create_text(
                     (x1 + x2) // 2, (y1 + y2) // 2,
                     text=str(item_idx + 1),
-                    fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold')
+                    fill=UI_COLORS["text"],
+                    font=(UI_ATTRS["font_family"], max(8, int(UI_ATTRS["font_size"] * 1.5)), 'bold')
                 )
                 
                 self.slots.append(rect)
@@ -1352,13 +1568,15 @@ class InventoryOverlay(tk.Toplevel):
         margin = 10
 
         for item_idx, route_pos in order_map.items():
+            if item_idx < 0 or item_idx >= self.settings.survey_count:
+                continue
             i = item_idx + offset
             col = i % cols
             row = i // cols
             x1 = margin + col * (slot + gap)
             y1 = margin + row * (slot + gap)
             # Small circle badge in top-right corner of slot
-            r = max(7, slot // 5)
+            r = max(10, int((max(7, slot // 5)) * 1.5))
             bx = x1 + slot - r - 1
             by = y1 + r + 1
             self.canvas.create_oval(
@@ -1370,7 +1588,7 @@ class InventoryOverlay(tk.Toplevel):
                 bx, by,
                 text=str(route_pos),
                 fill='#000000',
-                font=(UI_ATTRS["font_family"], max(6, r - 1), 'bold'),
+                font=(UI_ATTRS["font_family"], max(9, int(max(6, r - 1) * 1.5)), 'bold'),
                 tags='route_badge'
             )
 
@@ -1428,12 +1646,13 @@ class InventoryOverlay(tk.Toplevel):
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
         self.settings.survey_count = count
+        self.filled_slots = set(range(count))
         self._draw_grid()
         self.settings.save()
     
     def mark_slot_filled(self, index: int):
         """Mark a slot as having a survey map."""
-        if 0 <= index < len(self.slots):
+        if index >= 0:
             self.filled_slots.add(index)
             self.canvas.itemconfig(f'slot_{index}', fill='green', outline='white')
     
@@ -1570,6 +1789,11 @@ class SurveyHelperWindow(tk.Toplevel):
         self.session_start: Optional[datetime] = None
         self.loot_gained: dict = {}  # item_name → count
         self.reset_time: Optional[datetime] = None  # ignore chat lines before this
+        self._ring_detection_active = False
+        self._ring_watch_stop = threading.Event()
+        self._ring_detection_target: Optional[int] = None
+        self.ring_watch_btn: Optional[ttk.Button] = None
+        self.player_track_btn: Optional[ttk.Button] = None
         
         # Restore main window geometry or use default
         if self.settings.main_window_position and self.settings.main_window_size:
@@ -1699,6 +1923,8 @@ class SurveyHelperWindow(tk.Toplevel):
         self._update_lock_btn()
 
         ttk.Button(btn_frame, text="💾 Save Layout", command=self._save_overlay_layout, style="App.Secondary.TButton").pack(side='left', padx=2)
+        self.player_track_btn = ttk.Button(btn_frame, text="📍 Detect Player", command=self._detect_player_from_map, style="App.Secondary.TButton")
+        self.player_track_btn.pack(side='left', padx=2)
         
         # Opacity controls
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
@@ -1730,6 +1956,8 @@ class SurveyHelperWindow(tk.Toplevel):
         route_btn_frame = tk.Frame(route_frame, bg=UI_COLORS["panel_bg"])
         route_btn_frame.pack(fill='x', pady=1)
         ttk.Button(route_btn_frame, text="🗺 Optimize Route", command=self._optimize_route, style="App.Secondary.TButton").pack(side='left', padx=2)
+        self.ring_watch_btn = ttk.Button(route_btn_frame, text="🔴 Watch Ring: OFF", command=self._toggle_ring_watch, style="App.Secondary.TButton")
+        self.ring_watch_btn.pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="← Previous", command=self._prev_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="Next →", command=self._next_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="Skip", command=self._skip_item, style="App.Secondary.TButton").pack(side='left', padx=2)
@@ -1820,17 +2048,13 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _set_survey_count(self):
         """Set the number of survey maps."""
-        count = self.count_var.get()
+        count = max(0, self.count_var.get())
+        self.count_var.set(count)
         self.settings.survey_count = count
         self.settings.save()
         
         if self.inv_overlay:
             self.inv_overlay.set_survey_count(count)
-        
-        # Mark all slots as filled initially
-        for i in range(count):
-            if self.inv_overlay:
-                self.inv_overlay.mark_slot_filled(i)
     
     def _set_inv_offset(self):
         """Set the inventory blank space offset."""
@@ -1919,7 +2143,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.map_overlay.deiconify()
             self.map_overlay.lift()
-            self.map_overlay.after(1, lambda: self.map_overlay.attributes('-alpha', self.settings.map_opacity))
+            self.map_overlay.after(1, lambda: self.map_overlay.update_opacity(self.settings.map_opacity))
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
@@ -1931,7 +2155,8 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
             self.inv_overlay = InventoryOverlay(self, self.settings,
                                                on_close=self._on_inv_closed,
-                                               next_callback=self._on_inv_next_clicked)
+                                               next_callback=self._on_inv_next_clicked,
+                                               activate_callback=self._start_ring_detection_for_item)
             for i in range(self.settings.survey_count):
                 self.inv_overlay.mark_slot_filled(i)
         else:
@@ -1968,6 +2193,333 @@ class SurveyHelperWindow(tk.Toplevel):
         self.map_overlay.set_setting_position_mode(True)
         self.status_var.set("Click on map to set your position")
 
+    @staticmethod
+    def _median(values: List[float]) -> float:
+        """Return the median of a non-empty numeric list."""
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+    def _detect_player_from_map(self):
+        """Capture the visible map once and detect the player marker."""
+        if cv2 is None or np is None or ImageGrab is None:
+            self.status_var.set("OpenCV/Pillow capture is not available")
+            return
+        self._show_map()
+        if not (self.map_overlay and self.map_overlay.winfo_exists()):
+            self.status_var.set("Open the map overlay first")
+            return
+
+        self.status_var.set("Detecting player marker from the visible map...")
+        self._detect_player_once()
+
+    def _capture_map_bbox(self) -> Optional[Tuple[int, int, int, int]]:
+        """Return the screen bbox of the map overlay canvas."""
+        if not (self.map_overlay and self.map_overlay.winfo_exists()):
+            return None
+        self.map_overlay.update_idletasks()
+        canvas = self.map_overlay.canvas
+        left = canvas.winfo_rootx()
+        top = canvas.winfo_rooty()
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return None
+        return (left, top, left + width, top + height)
+
+    @staticmethod
+    def _detect_player_marker(frame_rgb, previous_center: Optional[Tuple[float, float]] = None,
+                              previous_frame_gray=None) -> Optional[Tuple[float, float]]:
+        """Detect the beige triangular player marker in a map screenshot."""
+        if cv2 is None or np is None:
+            return None
+
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        frame_h, frame_w = frame_rgb.shape[:2]
+        frame_center = (frame_w / 2.0, frame_h / 2.0)
+        target = previous_center if previous_center is not None else frame_center
+        ref_contour = np.array([[[13, 11]], [[12, 5]], [[3, 8]]], dtype=np.int32)
+        best_center = None
+        best_score = float('-inf')
+        best_shape_match = float('inf')
+
+        # The in-game player icon is a small beige triangle. Detect that contour
+        # directly instead of looking for a generic moving colored blob.
+        mask_ranges = [
+            (np.array([0, 0, 78]), np.array([40, 110, 175])),
+            (np.array([0, 0, 70]), np.array([48, 130, 190])),
+        ]
+
+        for lower, upper in mask_ranges:
+            candidate_mask = cv2.inRange(hsv, lower, upper)
+            candidate_mask = cv2.morphologyEx(
+                candidate_mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)
+            )
+            contours, _ = cv2.findContours(candidate_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < 18 or area > 110:
+                    continue
+                perimeter = cv2.arcLength(contour, True)
+                if perimeter <= 0:
+                    continue
+                approx = cv2.approxPolyDP(contour, 0.06 * perimeter, True)
+                if not 3 <= len(approx) <= 6:
+                    continue
+
+                moments = cv2.moments(contour)
+                if moments["m00"] == 0:
+                    continue
+                center = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+                x, y, w, h = cv2.boundingRect(contour)
+                hull = cv2.convexHull(contour)
+                hull_area = cv2.contourArea(hull) or 1.0
+                solidity = area / hull_area
+                aspect_ratio = max(w, h, 1) / max(1, min(w, h))
+                shape_match = cv2.matchShapes(ref_contour, approx, cv2.CONTOURS_MATCH_I1, 0.0)
+                sat_mean = float(hsv[y:y + h, x:x + w, 1].mean())
+                val_mean = float(hsv[y:y + h, x:x + w, 2].mean())
+                distance = math.hypot(center[0] - target[0], center[1] - target[1])
+                edge_margin = min(center[0], center[1], frame_w - center[0], frame_h - center[1])
+
+                score = 240.0
+                score -= shape_match * 320.0
+                score -= abs(area - 39.0) * 1.1
+                score -= abs(aspect_ratio - 1.55) * 18.0
+                score -= abs(solidity - 0.88) * 28.0
+                score -= abs(sat_mean - 54.0) * 0.35
+                score -= abs(val_mean - 100.0) * 0.22
+                score -= distance * (0.15 if previous_center is None else 0.35)
+                score += min(edge_margin, 90.0) * 0.08
+                if len(approx) == 3:
+                    score += 28.0
+
+                if score > best_score:
+                    best_score = score
+                    best_shape_match = shape_match
+                    best_center = center
+
+        if best_center is None:
+            return None
+        if best_shape_match > 0.4 or best_score < 120:
+            return None
+
+        return best_center
+
+    def _apply_detected_player_marker(self, x: float, y: float):
+        """Update the visible player marker from detected map coordinates."""
+        self.settings.current_player_x = x
+        self.settings.current_player_y = y
+        if self.settings.origin_x is None or self.settings.origin_y is None:
+            self.settings.origin_x = x
+            self.settings.origin_y = y
+        self.settings.save()
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            self.map_overlay._draw_player_dot()
+
+    def _detect_player_once(self):
+        """Capture the map once and seed the player marker immediately."""
+        bbox = self._capture_map_bbox()
+        if bbox is None:
+            self.status_var.set("Map overlay is not ready for player detection")
+            return
+        try:
+            frame = ImageGrab.grab(bbox=bbox, all_screens=True)
+        except TypeError:
+            frame = ImageGrab.grab(bbox=bbox)
+        except Exception as exc:
+            self.status_var.set(f"Player detection failed: {exc}")
+            return
+        center = self._detect_player_marker(np.array(frame))
+        if center is None:
+            self.status_var.set("Could not find the player marker on the map")
+            return
+        self._apply_detected_player_marker(*center)
+        self.status_var.set("Player marker detected from the visible map")
+
+    def _start_ring_detection_for_current(self):
+        """Arm ring watching for the current route item or first survey."""
+        if self.current_route and self.current_route_index < len(self.current_route):
+            self._start_ring_detection_for_item(self.current_route[self.current_route_index])
+        elif self.items:
+            self._start_ring_detection_for_item(0)
+        else:
+            self.status_var.set("No survey items available for ring detection")
+
+    def _update_ring_watch_btn(self):
+        """Refresh the persistent ring-watch button label."""
+        if self.ring_watch_btn is not None:
+            state = "ON" if self._ring_detection_active else "OFF"
+            self.ring_watch_btn.config(text=f"🔴 Watch Ring: {state}")
+
+    def _toggle_ring_watch(self):
+        """Toggle persistent ring watching on or off."""
+        if self._ring_detection_active:
+            self._stop_ring_watch("Ring watch stopped")
+        else:
+            self._start_ring_watch()
+
+    def _start_ring_watch(self):
+        """Start the persistent ring watcher and arm the current survey if possible."""
+        if cv2 is None or np is None or ImageGrab is None:
+            self.status_var.set("OpenCV/Pillow capture is not available")
+            return
+        self._show_map()
+        bbox = self._capture_map_bbox()
+        if bbox is None:
+            self.status_var.set("Map overlay is not ready for capture")
+            return
+
+        self._ring_watch_stop.clear()
+        self._ring_detection_active = True
+        self._update_ring_watch_btn()
+        self.status_var.set("Ring watch running. Double-click a survey slot to arm it.")
+        threading.Thread(target=self._ring_watch_worker, args=(bbox,), daemon=True).start()
+        if self.current_route or self.items:
+            self._start_ring_detection_for_current()
+
+    def _stop_ring_watch(self, status_message: Optional[str] = None):
+        """Stop the persistent ring watcher."""
+        self._ring_watch_stop.set()
+        self._ring_detection_active = False
+        self._ring_detection_target = None
+        self._update_ring_watch_btn()
+        if status_message:
+            self.status_var.set(status_message)
+
+    def _start_ring_detection_for_item(self, item_index: int):
+        """Arm a survey item for the next detected in-game red ring."""
+        if cv2 is None or np is None or ImageGrab is None:
+            self.status_var.set("OpenCV/Pillow capture is not available")
+            return
+        if item_index < 0 or item_index >= len(self.items):
+            self.status_var.set("Invalid survey item for ring detection")
+            return
+        if not self._ring_detection_active:
+            self._start_ring_watch()
+            if not self._ring_detection_active:
+                return
+        self._ring_detection_target = item_index
+        item_name = self.items[item_index].name
+        self.status_var.set(f"Ring watch armed for survey #{item_index + 1}: {item_name}")
+
+    @staticmethod
+    def _detect_red_ring(frame_rgb) -> Optional[Tuple[float, float, float]]:
+        """Detect a red ring center/radius in an RGB frame."""
+        if cv2 is None or np is None:
+            return None
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        mask1 = cv2.inRange(hsv, np.array([0, 120, 80]), np.array([10, 255, 255]))
+        mask2 = cv2.inRange(hsv, np.array([170, 120, 80]), np.array([180, 255, 255]))
+        mask = cv2.bitwise_or(mask1, mask2)
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.GaussianBlur(mask, (9, 9), 0)
+        circles = cv2.HoughCircles(
+            mask,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=40,
+            param1=60,
+            param2=18,
+            minRadius=12,
+            maxRadius=max(25, min(frame_rgb.shape[0], frame_rgb.shape[1]) // 2),
+        )
+        if circles is not None and len(circles[0]) > 0:
+            x, y, r = max(circles[0], key=lambda c: c[2])
+            return (float(x), float(y), float(r))
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best = None
+        best_radius = 0.0
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 150:
+                continue
+            (x, y), radius = cv2.minEnclosingCircle(contour)
+            if radius < 12 or radius <= best_radius:
+                continue
+            best = (float(x), float(y), float(radius))
+            best_radius = float(radius)
+        return best
+
+    def _ring_watch_worker(self, bbox: Tuple[int, int, int, int]):
+        """Continuously watch for red rings and apply them to the armed survey."""
+        detections: List[Tuple[float, float, float]] = []
+        last_seen_time = 0.0
+        while not self._ring_watch_stop.is_set():
+            try:
+                frame = ImageGrab.grab(bbox=bbox, all_screens=True)
+            except TypeError:
+                frame = ImageGrab.grab(bbox=bbox)
+            except Exception as exc:
+                self.after(0, lambda err=str(exc): self._stop_ring_watch(f"Ring watch failed: {err}"))
+                return
+
+            detection = self._detect_red_ring(np.array(frame))
+            if detection is not None and self._ring_detection_target is not None:
+                detections.append(detection)
+                last_seen_time = time.time()
+            elif detections and self._ring_detection_target is not None and time.time() - last_seen_time > 0.35:
+                target_index = self._ring_detection_target
+                center_x = self._median([d[0] for d in detections])
+                center_y = self._median([d[1] for d in detections])
+                radius = self._median([d[2] for d in detections])
+                detections = []
+                self.after(
+                    0,
+                    lambda item_idx=target_index, det=(center_x, center_y, radius): self._finish_ring_detection(item_idx, det, None)
+                )
+            time.sleep(0.08)
+
+    def _finish_ring_detection(self, item_index: int,
+                               detection: Optional[Tuple[float, float, float]],
+                               error: Optional[str]):
+        """Apply the detected ring center to the selected survey item."""
+        if error:
+            self._ring_detection_target = None
+            self.status_var.set(f"Ring watch error: {error}")
+            return
+        if detection is None or item_index < 0 or item_index >= len(self.items):
+            self._ring_detection_target = None
+            self.status_var.set("Ring watch did not produce a usable target")
+            return
+        if self.settings.origin_x is None or self.settings.origin_y is None or not self.settings.scale_factor:
+            self._ring_detection_target = None
+            self.status_var.set("Set player position and scale before applying ring detection")
+            return
+
+        center_x, center_y, _radius = detection
+        item = self.items[item_index]
+        item.x = center_x
+        item.y = center_y
+        item.dx_m = (center_x - self.settings.origin_x) / self.settings.scale_factor
+        item.dy_m = (self.settings.origin_y - center_y) / self.settings.scale_factor
+        item.distance = round(math.sqrt(item.dx_m ** 2 + item.dy_m ** 2), 1)
+        item.direction = self._vector_to_direction(item.dx_m, item.dy_m)
+
+        self._recalculate_item_positions()
+        self._ring_detection_target = None
+        if self._ring_detection_active:
+            self.status_var.set(f"Survey #{item_index + 1} aligned. Ring watch is waiting for the next survey.")
+        else:
+            self.status_var.set(f"Survey #{item_index + 1} aligned to detected red ring")
+
+    @staticmethod
+    def _vector_to_direction(dx_m: float, dy_m: float) -> str:
+        """Convert a meter vector into a nearest-8-way direction."""
+        angle_deg = math.degrees(math.atan2(dy_m, dx_m))
+        snap = round(angle_deg / 45) * 45 % 360
+        snap_to_dir = {
+            0: 'E', 45: 'NE', 90: 'N', 135: 'NW',
+            180: 'W', 225: 'SW', 270: 'S', 315: 'SE'
+        }
+        return snap_to_dir.get(snap, 'N')
+
     def _on_player_position_reset(self, event_msg: str = ""):
         """Called whenever a zone entry or recall resets the player's known position.
 
@@ -1976,6 +2528,9 @@ class SurveyHelperWindow(tk.Toplevel):
         """
         self.settings.origin_x = None
         self.settings.origin_y = None
+        self.settings.scale_factor = None
+        self.settings.current_player_x = None
+        self.settings.current_player_y = None
         self.settings.save()
 
         prompt = f"{event_msg}  —  Click map to set spawn position"
@@ -1992,46 +2547,70 @@ class SurveyHelperWindow(tk.Toplevel):
             self.status_var.set(f"Player position set: ({x:.0f}, {y:.0f})")
             # Recalculate canvas coordinates for all items that have metric offsets
             self._recalculate_item_positions()
+        elif action == 'player_preview_moved':
+            self.status_var.set(f"Adjusting player marker: ({x:.0f}, {y:.0f})")
+        elif action == 'player_dragged':
+            self.settings.current_player_x = x
+            self.settings.current_player_y = y
+            if self.settings.origin_x is None or self.settings.origin_y is None:
+                self.settings.origin_x = x
+                self.settings.origin_y = y
+            self.settings.save()
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay._draw_player_dot()
+            self.status_var.set(f"Player marker moved to ({x:.0f}, {y:.0f})")
         elif action == 'item_clicked' and item_index is not None:
             # Calibrate from this item
             if self.settings.scale_factor is None:
                 self.map_overlay.calibrate_from_click(item_index, x, y)
                 self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
                 self._recalculate_item_positions()
+        elif action == 'item_preview_moved' and item_index is not None:
+            self.status_var.set(f"Adjusting pin #{item_index + 1}...")
+        elif action == 'item_dragged' and item_index is not None:
+            if self.settings.origin_x is None or self.settings.origin_y is None:
+                self.status_var.set("Set your position first, then drag a pin to calibrate")
+                self._recalculate_item_positions()
+                return
+            item = self.items[item_index]
+            pixel_dist = math.sqrt((x - self.settings.origin_x) ** 2 +
+                                   (y - self.settings.origin_y) ** 2)
+            metric_dist = math.sqrt(item.dx_m ** 2 + item.dy_m ** 2) if (
+                item.dx_m is not None and item.dy_m is not None
+            ) else item.distance
+            if metric_dist and metric_dist > 0:
+                self.settings.scale_factor = pixel_dist / metric_dist
+                self.settings.save()
+                self.status_var.set(f"Pin #{item_index + 1} calibrated: {self.settings.scale_factor:.2f} px/m")
+                self._recalculate_item_positions()
 
     def _recalculate_item_positions(self):
         """Recalculate canvas x/y for all items and refresh map + route.
 
-        When origin_x is unset, auto-centers at the map canvas center.
-        When scale_factor is unset, auto-fits items so all are visible.
+        - If a real player origin is set, items are positioned around it.
+        - If not, a temporary center origin is used **only for drawing pins**;
+          the saved player marker is NOT changed.
         """
-        # Auto-center origin at canvas center if not explicitly set
-        if self.settings.origin_x is None:
-            # Use saved map size, or winfo if available, else default
-            if self.map_overlay and self.map_overlay.winfo_exists():
-                cw = self.map_overlay.canvas.winfo_width()
-                ch = self.map_overlay.canvas.winfo_height()
-            else:
-                cw, ch = 0, 0
-            if cw <= 1:
-                cw = self.settings.map_size[0] if self.settings.map_size else 400
-                ch = max((self.settings.map_size[1] or 400) - 18, 100) if self.settings.map_size else 382
-            self.settings.origin_x = cw // 2
-            self.settings.origin_y = ch // 2
+        # Determine canvas size (from live overlay or saved size)
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            cw = self.map_overlay.canvas.winfo_width()
+            ch = self.map_overlay.canvas.winfo_height()
+        else:
+            cw, ch = 0, 0
+        if cw <= 1:
+            cw = self.settings.map_size[0] if self.settings.map_size else 400
+            ch = max((self.settings.map_size[1] or 400) - 18, 100) if self.settings.map_size else 382
 
-        ox, oy = self.settings.origin_x, self.settings.origin_y
+        has_real_origin = self.settings.origin_x is not None and self.settings.origin_y is not None
+        if has_real_origin:
+            ox, oy = self.settings.origin_x, self.settings.origin_y
+        else:
+            # Temporary render origin at canvas center (do NOT write back to settings)
+            ox, oy = cw // 2, ch // 2
 
         # Auto-compute a scale that fits all items if none is saved
         sf = self.settings.scale_factor
         if sf is None and self.items:
-            if self.map_overlay and self.map_overlay.winfo_exists():
-                cw = self.map_overlay.canvas.winfo_width()
-                ch = self.map_overlay.canvas.winfo_height()
-            else:
-                cw, ch = 0, 0
-            if cw <= 1:
-                cw = self.settings.map_size[0] if self.settings.map_size else 400
-                ch = max((self.settings.map_size[1] or 400) - 18, 100) if self.settings.map_size else 382
             max_dist = max((item.distance for item in self.items if item.distance > 0), default=1)
             # Fit furthest item within 40% of the shorter canvas dimension from origin
             sf = (min(cw, ch) * 0.4) / max_dist
@@ -2056,10 +2635,12 @@ class SurveyHelperWindow(tk.Toplevel):
         # Sync to MapOverlay's list and redraw
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = self.items
-            self.map_overlay.settings.origin_x = ox
-            self.map_overlay.settings.origin_y = oy
             self.map_overlay.clear_items()
-            self.map_overlay._draw_player_dot()
+            # Only draw player marker if we have a real origin
+            if has_real_origin:
+                self.map_overlay.settings.origin_x = self.settings.origin_x
+                self.map_overlay.settings.origin_y = self.settings.origin_y
+                self.map_overlay._draw_player_dot()
             for i, item in enumerate(self.items):
                 self.map_overlay._draw_item(item, i)
             # Redraw route pins if a route is active
@@ -2421,9 +3002,6 @@ class SurveyHelperWindow(tk.Toplevel):
                 if self.map_overlay and self.map_overlay.winfo_exists():
                     self.map_overlay.mark_collected(i)
 
-                if self.inv_overlay and self.inv_overlay.winfo_exists():
-                    self.inv_overlay.mark_slot_empty(i)
-
                 self.status_var.set(f"Collected: {item.name}")
                 self._update_session_info()
                 # Auto-advance route when item matches current next
@@ -2438,16 +3016,24 @@ class SurveyHelperWindow(tk.Toplevel):
         if not self.items:
             self.status_var.set("No items to optimize")
             return
+
+        # Route selection must use the latest calibrated canvas positions.
+        self._recalculate_item_positions()
         
         # Get uncollected items
-        uncollected = [(i, item) for i, item in enumerate(self.items) if not item.collected]
+        uncollected = [
+            (i, item) for i, item in enumerate(self.items)
+            if not item.collected and item.x is not None and item.y is not None
+        ]
         
         if not uncollected:
-            self.status_var.set("All items collected!")
+            self.status_var.set("No uncollected survey positions available for routing")
             return
         
         # Use player position as start if known; otherwise start from centroid of items
-        if self.settings.origin_x is not None:
+        if self.settings.current_player_x is not None and self.settings.current_player_y is not None:
+            start_x, start_y = self.settings.current_player_x, self.settings.current_player_y
+        elif self.settings.origin_x is not None:
             start_x, start_y = self.settings.origin_x, self.settings.origin_y
         else:
             start_x = sum(item.x for _, item in uncollected) / len(uncollected)
@@ -2464,7 +3050,7 @@ class SurveyHelperWindow(tk.Toplevel):
             nearest_dist = float('inf')
             
             for idx, (item_idx, item) in enumerate(remaining):
-                dist = math.sqrt((item.x - current_x)**2 + (item.y - current_y)**2)
+                dist = math.hypot(item.x - current_x, item.y - current_y)
                 if dist < nearest_dist:
                     nearest_dist = dist
                     nearest_idx = idx
@@ -2483,9 +3069,6 @@ class SurveyHelperWindow(tk.Toplevel):
         # Ensure map is open so pins are visible
         if not self.map_open:
             self._show_map()
-
-        # Ensure all items have canvas coordinates before drawing
-        self._recalculate_item_positions()
 
         # Draw route on overlays
         if self.map_overlay and self.map_overlay.winfo_exists():
@@ -2564,6 +3147,7 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _reset_session(self):
         """Reset the current session."""
+        self._stop_ring_watch()
         self.reset_time = datetime.now()  # ignore all chat lines before now
         self.items = []
         self.current_route = []
@@ -2573,6 +3157,11 @@ class SurveyHelperWindow(tk.Toplevel):
 
         # Reset survey count to 0
         self.settings.survey_count = 0
+        self.settings.origin_x = None
+        self.settings.origin_y = None
+        self.settings.scale_factor = None
+        self.settings.current_player_x = None
+        self.settings.current_player_y = None
         self.count_var.set(0)
         self.settings.save()
         
@@ -2600,6 +3189,7 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def on_close(self):
         """Clean up on window close."""
+        self._stop_ring_watch()
         self._monitoring = False
         # Save main window geometry before closing
         self.settings.main_window_position = (self.winfo_x(), self.winfo_y())
