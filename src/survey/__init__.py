@@ -1969,7 +1969,7 @@ class SurveyHelperWindow(tk.Toplevel):
         # Flash map overlay into position-setting mode if it is open
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.set_setting_position_mode(True)
-            self.map_overlay.draw_player_position()  # clears old dot
+            self.map_overlay._draw_player_dot()  # clears old dot
 
     def _on_map_click(self, x: float, y: float, action: str, item_index: Optional[int] = None):
         """Handle map click events."""
@@ -2044,7 +2044,7 @@ class SurveyHelperWindow(tk.Toplevel):
             self.map_overlay.settings.origin_x = ox
             self.map_overlay.settings.origin_y = oy
             self.map_overlay.clear_items()
-            self.map_overlay.draw_player_position()
+            self.map_overlay._draw_player_dot()
             for i, item in enumerate(self.items):
                 self.map_overlay._draw_item(item, i)
             # Redraw route pins if a route is active
