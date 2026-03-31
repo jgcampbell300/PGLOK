@@ -533,29 +533,36 @@ def _set_clickthrough_x11(tk_win, enabled: bool):
 
 
 def _apply_shape_x11(tk_win):
-    """Apply empty SHAPE Input region to all X11 children (enables click-through)."""
+    """Apply empty SHAPE Input region to all X11 children (enables click-through).
+
+    With permanently overrideredirect windows we apply directly from winfo_id()
+    downward — no WM frame to walk past.
+    """
     try:
         from Xlib import display, X
         from Xlib.ext.shape import SO, SK
         d = display.Display()
-        root_id = d.screen().root.id
         xid = tk_win.winfo_id()
-        current = d.create_resource_object('window', xid)
-        while True:
-            parent = current.query_tree().parent
-            if parent.id == root_id:
-                break
-            current = parent
+        root_id = d.screen().root.id
 
         def apply_recursive(win):
+            if win.id == root_id:
+                return
             try:
                 win.shape_rectangles(SO.Set, SK.Input, X.Unsorted, 0, 0, [])
             except Exception:
                 pass
-            for child in win.query_tree().children:
-                apply_recursive(child)
+            try:
+                for child in win.query_tree().children:
+                    apply_recursive(child)
+            except Exception:
+                pass
 
-        apply_recursive(current)
+        # Apply to the Tk-internal wrapper (parent of winfo_id) and everything below
+        toplevel_win = d.create_resource_object('window', xid)
+        parent = toplevel_win.query_tree().parent
+        start = parent if parent.id != root_id else toplevel_win
+        apply_recursive(start)
         d.flush()
         d.close()
     except Exception as e:
@@ -563,29 +570,31 @@ def _apply_shape_x11(tk_win):
 
 
 def _reset_shape_x11(tk_win):
-    """Reset SHAPE Input to full region after WM has reparented the window."""
+    """Reset SHAPE Input to full region (disables click-through)."""
     try:
         from Xlib import display, X
         from Xlib.ext.shape import SO, SK
         d = display.Display()
-        root_id = d.screen().root.id
         xid = tk_win.winfo_id()
-        current = d.create_resource_object('window', xid)
-        while True:
-            parent = current.query_tree().parent
-            if parent.id == root_id:
-                break
-            current = parent
+        root_id = d.screen().root.id
 
         def apply_recursive(win):
+            if win.id == root_id:
+                return
             try:
                 win.shape_mask(SO.Set, SK.Input, 0, 0, X.NONE)
             except Exception:
                 pass
-            for child in win.query_tree().children:
-                apply_recursive(child)
+            try:
+                for child in win.query_tree().children:
+                    apply_recursive(child)
+            except Exception:
+                pass
 
-        apply_recursive(current)
+        toplevel_win = d.create_resource_object('window', xid)
+        parent = toplevel_win.query_tree().parent
+        start = parent if parent.id != root_id else toplevel_win
+        apply_recursive(start)
         d.flush()
         d.close()
     except Exception as e:
