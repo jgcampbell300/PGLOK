@@ -947,26 +947,38 @@ class MapOverlay(tk.Toplevel):
         """Highlight the next item to collect (legacy — route pins handle this now)."""
         pass  # Route visualization via draw_route() handles highlighting
 
-    def draw_route(self, route: List[int], current_index: int = 0):
-        """Draw numbered pins and connecting arrows for the optimized route."""
+    def draw_route(self, route: List[int], current_index: int = 0,
+                   items: Optional[List['SurveyItem']] = None):
+        """Draw numbered pins and connecting arrows for the optimized route.
+
+        Args:
+            route: ordered list of item indices (indices into `items`)
+            current_index: position in route that is the current stop
+            items: the authoritative SurveyItem list from SurveyHelperWindow;
+                   falls back to self.survey_items if not provided (legacy)
+        """
         self.canvas.delete('route_viz')
         if not route:
             return
 
-        # Build ordered (x, y, item_idx) list for valid items
+        source = items if items is not None else self.survey_items
+
+        # Build ordered (x, y, item_idx, item) list — skip items without canvas coords
         stops = []
         for item_idx in route:
-            if item_idx < len(self.survey_items):
-                item = self.survey_items[item_idx]
-                stops.append((item.x, item.y, item_idx))
+            if item_idx < len(source):
+                item = source[item_idx]
+                # item.x / item.y are 0.0 default when not placed — skip those
+                if item.x != 0.0 or item.y != 0.0:
+                    stops.append((item.x, item.y, item_idx, item))
 
         if not stops:
             return
 
         # Draw connecting arrows between stops in route order
         for i in range(len(stops) - 1):
-            x1, y1, _ = stops[i]
-            x2, y2, _ = stops[i + 1]
+            x1, y1 = stops[i][0], stops[i][1]
+            x2, y2 = stops[i + 1][0], stops[i + 1][1]
             self.canvas.create_line(
                 x1, y1, x2, y2,
                 fill='#ffcc00', width=2, dash=(8, 4),
@@ -975,11 +987,10 @@ class MapOverlay(tk.Toplevel):
             )
 
         # Draw numbered pins (on top of arrows)
-        for route_pos, (x, y, item_idx) in enumerate(stops):
+        for route_pos, (x, y, item_idx, item) in enumerate(stops):
             is_current = (route_pos == current_index)
-            is_collected = self.survey_items[item_idx].collected
 
-            if is_collected:
+            if item.collected:
                 pin_fill = '#555555'
                 pin_outline = '#888888'
                 text_color = '#aaaaaa'
@@ -2349,7 +2360,7 @@ class SurveyHelperWindow(tk.Toplevel):
 
         # Draw route on overlays
         if self.map_overlay and self.map_overlay.winfo_exists():
-            self.map_overlay.draw_route(self.current_route, 0)
+            self.map_overlay.draw_route(self.current_route, 0, self.items)
         if self.inv_overlay and self.inv_overlay.winfo_exists():
             self.inv_overlay.show_route_order(self.current_route)
 
@@ -2362,14 +2373,14 @@ class SurveyHelperWindow(tk.Toplevel):
         """Update route visualization to highlight the current stop."""
         if self.current_route_index < len(self.current_route):
             if self.map_overlay and self.map_overlay.winfo_exists():
-                self.map_overlay.draw_route(self.current_route, self.current_route_index)
+                self.map_overlay.draw_route(self.current_route, self.current_route_index, self.items)
             if self.inv_overlay and self.inv_overlay.winfo_exists():
                 idx = self.current_route[self.current_route_index]
                 self.inv_overlay.highlight_next_slot(idx)
         else:
             # Route complete — clear current-stop highlighting
             if self.map_overlay and self.map_overlay.winfo_exists():
-                self.map_overlay.draw_route(self.current_route, -1)
+                self.map_overlay.draw_route(self.current_route, -1, self.items)
             if self.inv_overlay and self.inv_overlay.winfo_exists():
                 self.inv_overlay.highlight_next_slot(-1)
     
