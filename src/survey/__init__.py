@@ -518,32 +518,16 @@ class SurveySettings:
 def _set_clickthrough_x11(tk_win, enabled: bool):
     """Enable or disable X11 input pass-through via SHAPE extension.
 
-    Sets an empty ShapeInput region so mouse events fall through to windows
-    below. Uses overrideredirect(True) when enabling to remove the WM frame
-    (which would otherwise block SHAPE from working). On disable, restores
-    WM management and waits for reparenting to settle before resetting SHAPE.
-    Both paths defer the actual SHAPE call by 100 ms so the WM has time to
-    finish re/de-parenting before we walk the X11 tree.
+    The overlay windows are permanently overrideredirect(True), so there is no
+    WM frame to worry about.  Just apply or remove the empty ShapeInput region
+    directly, deferred slightly so the window is fully mapped first.
     """
     try:
+        tk_win.update_idletasks()
         if enabled:
-            geom = tk_win.geometry()
-            tk_win.overrideredirect(True)
-            tk_win.geometry(geom)
-            tk_win.attributes('-topmost', True)
-            tk_win.update_idletasks()
-            # Give WM time to de-reparent before applying SHAPE
-            tk_win.after(100, lambda: _apply_shape_x11(tk_win))
+            tk_win.after(50, lambda: _apply_shape_x11(tk_win))
         else:
-            geom = tk_win.geometry()
-            tk_win.overrideredirect(False)
-            tk_win.geometry(geom)
-            tk_win.attributes('-topmost', True)
-            tk_win.lift()
-            tk_win.update_idletasks()
-            # Give WM time to reparent before resetting SHAPE
-            tk_win.after(100, lambda: _reset_shape_x11(tk_win))
-
+            tk_win.after(50, lambda: _reset_shape_x11(tk_win))
     except Exception as e:
         print(f"Click-through not available: {e}")
 
@@ -619,13 +603,9 @@ class MapOverlay(tk.Toplevel):
         
         self.title("Survey Map")
         self.attributes('-topmost', True)
-        # Don't set opacity yet - will be set after window settles
-        
-        # Set window icon for taskbar
-        set_window_icon(self)
-        
-        # Remove window decorations
-        self.overrideredirect(False)
+        # Overlays bypass WM entirely — custom drag/resize handles all positioning.
+        # This prevents the WM from shifting the window on withdraw/deiconify.
+        self.overrideredirect(True)
         
         # Canvas for drawing
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
@@ -925,10 +905,8 @@ class InventoryOverlay(tk.Toplevel):
         
         self.title("Survey Inventory")
         self.attributes('-topmost', True)
-        # Don't set opacity yet - will be set after window settles
-        
-        # Set window icon for taskbar
-        set_window_icon(self)
+        # Overlays bypass WM entirely — custom drag/resize handles all positioning.
+        self.overrideredirect(True)
         
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
@@ -1577,7 +1555,6 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.map_overlay.deiconify()
             self.map_overlay.lift()
-            self.map_overlay.after(50, lambda: self._restore_overlay_geometry(self.map_overlay, 'map'))
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
@@ -1595,7 +1572,6 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.inv_overlay.deiconify()
             self.inv_overlay.lift()
-            self.inv_overlay.after(50, lambda: self._restore_overlay_geometry(self.inv_overlay, 'inv'))
         self.inventory_open = True
         self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
         self._update_overlays_btn()
