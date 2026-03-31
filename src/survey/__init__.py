@@ -939,16 +939,77 @@ class MapOverlay(tk.Toplevel):
             self.canvas.itemconfig(f'item_dot_{index}', fill='gray')
     
     def highlight_next(self, index: int):
-        """Highlight the next item to collect."""
-        # Reset all highlights
-        for i in range(len(self.survey_items)):
-            if not self.survey_items[i].collected:
-                self.canvas.itemconfig(f'item_dot_{i}', outline='white', width=2)
-        
-        # Highlight next
-        if 0 <= index < len(self.survey_items):
-            self.canvas.itemconfig(f'item_dot_{index}', outline='red', width=4)
-    
+        """Highlight the next item to collect (legacy — route pins handle this now)."""
+        pass  # Route visualization via draw_route() handles highlighting
+
+    def draw_route(self, route: List[int], current_index: int = 0):
+        """Draw numbered pins and connecting arrows for the optimized route."""
+        self.canvas.delete('route_viz')
+        if not route:
+            return
+
+        # Build ordered (x, y, item_idx) list for valid items
+        stops = []
+        for item_idx in route:
+            if item_idx < len(self.survey_items):
+                item = self.survey_items[item_idx]
+                stops.append((item.x, item.y, item_idx))
+
+        if not stops:
+            return
+
+        # Draw connecting arrows between stops in route order
+        for i in range(len(stops) - 1):
+            x1, y1, _ = stops[i]
+            x2, y2, _ = stops[i + 1]
+            self.canvas.create_line(
+                x1, y1, x2, y2,
+                fill='#ffcc00', width=2, dash=(8, 4),
+                arrow=tk.LAST, arrowshape=(10, 12, 4),
+                tags='route_viz'
+            )
+
+        # Draw numbered pins (on top of arrows)
+        for route_pos, (x, y, item_idx) in enumerate(stops):
+            is_current = (route_pos == current_index)
+            is_collected = self.survey_items[item_idx].collected
+
+            if is_collected:
+                pin_fill = '#555555'
+                pin_outline = '#888888'
+                text_color = '#aaaaaa'
+                radius = 10
+            elif is_current:
+                pin_fill = '#00ff88'
+                pin_outline = 'white'
+                text_color = '#000000'
+                radius = 14
+            else:
+                pin_fill = '#ffcc00'
+                pin_outline = 'white'
+                text_color = '#000000'
+                radius = 11
+
+            self.canvas.create_oval(
+                x - radius, y - radius, x + radius, y + radius,
+                fill=pin_fill, outline=pin_outline, width=2,
+                tags='route_viz'
+            )
+            # Show inventory slot number (item_idx + 1)
+            self.canvas.create_text(
+                x, y,
+                text=str(item_idx + 1),
+                fill=text_color,
+                font=(UI_ATTRS["font_family"], max(7, radius - 3), 'bold'),
+                tags='route_viz'
+            )
+
+        self.canvas.tag_raise('route_viz')
+
+    def clear_route(self):
+        """Remove route visualization."""
+        self.canvas.delete('route_viz')
+
     def update_opacity(self, value: float):
         """Update window opacity."""
         self.attributes('-alpha', value)
@@ -1032,6 +1093,7 @@ class InventoryOverlay(tk.Toplevel):
         # Slots
         self.slots: List[int] = []  # Canvas item IDs
         self.filled_slots: set = set()
+        self._route_order: List[int] = []  # route passed to show_route_order
         
         # Restore position/size
         if self.settings.inv_position and self.settings.inv_size:
@@ -1185,7 +1247,63 @@ class InventoryOverlay(tk.Toplevel):
         # Redraw resize corner on top of everything
         if hasattr(self, '_resize_zone'):
             self._draw_resize_corner()
-    
+        # Re-apply route order badges if a route is active
+        if hasattr(self, '_route_order') and self._route_order:
+            self._apply_route_badges(self._route_order)
+
+    def show_route_order(self, route: List[int]):
+        """Overlay route-sequence badges on inventory slots."""
+        self._route_order = route
+        self._apply_route_badges(route)
+
+    def clear_route_order(self):
+        """Remove route-sequence badges."""
+        self._route_order = []
+        self.canvas.delete('route_badge')
+        if hasattr(self, '_resize_zone'):
+            self._draw_resize_corner()
+
+    def _apply_route_badges(self, route: List[int]):
+        """Draw small numbered badges showing route visit order on each slot."""
+        self.canvas.delete('route_badge')
+        if not route:
+            return
+        # Map item_idx -> 1-based route position
+        order_map = {item_idx: pos + 1 for pos, item_idx in enumerate(route)}
+
+        cols = self.settings.grid_cols
+        offset = self.settings.inv_offset
+        slot = self.settings.slot_size
+        gap = self.settings.slot_gap
+        margin = 10
+
+        for item_idx, route_pos in order_map.items():
+            i = item_idx + offset
+            col = i % cols
+            row = i // cols
+            x1 = margin + col * (slot + gap)
+            y1 = margin + row * (slot + gap)
+            # Small circle badge in top-right corner of slot
+            r = max(7, slot // 5)
+            bx = x1 + slot - r - 1
+            by = y1 + r + 1
+            self.canvas.create_oval(
+                bx - r, by - r, bx + r, by + r,
+                fill='#ffcc00', outline='#333333', width=1,
+                tags='route_badge'
+            )
+            self.canvas.create_text(
+                bx, by,
+                text=str(route_pos),
+                fill='#000000',
+                font=(UI_ATTRS["font_family"], max(6, r - 1), 'bold'),
+                tags='route_badge'
+            )
+
+        self.canvas.tag_raise('route_badge')
+        if hasattr(self, '_resize_zone'):
+            self._draw_resize_corner()
+
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
         self._drag_data['y'] = event.y_root - self.winfo_y()
@@ -2186,22 +2304,30 @@ class SurveyHelperWindow(tk.Toplevel):
         
         if self.session_start is None:
             self.session_start = datetime.now()
-        
+
+        # Draw route on overlays
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            self.map_overlay.draw_route(self.current_route, 0)
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
+            self.inv_overlay.show_route_order(self.current_route)
+
         self._highlight_next_item()
         self._update_route_info()
         self._set_phase(4)
         self.status_var.set(f"Route optimized: {len(route)} items")
     
     def _highlight_next_item(self):
-        """Highlight the next item in the route on both map and inventory overlays."""
+        """Update route visualization to highlight the current stop."""
         if self.current_route_index < len(self.current_route):
-            idx = self.current_route[self.current_route_index]
             if self.map_overlay and self.map_overlay.winfo_exists():
-                self.map_overlay.highlight_next(idx)
+                self.map_overlay.draw_route(self.current_route, self.current_route_index)
             if self.inv_overlay and self.inv_overlay.winfo_exists():
+                idx = self.current_route[self.current_route_index]
                 self.inv_overlay.highlight_next_slot(idx)
         else:
-            # Route complete — clear highlights
+            # Route complete — clear current-stop highlighting
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay.draw_route(self.current_route, -1)
             if self.inv_overlay and self.inv_overlay.winfo_exists():
                 self.inv_overlay.highlight_next_slot(-1)
     
@@ -2224,8 +2350,6 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.current_route_index < len(self.current_route):
             idx = self.current_route[self.current_route_index]
             self.items[idx].collected = True
-            if self.map_overlay:
-                self.map_overlay.mark_collected(idx)
             self._next_item()
     
     def _update_route_info(self):
@@ -2264,8 +2388,10 @@ class SurveyHelperWindow(tk.Toplevel):
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = []
             self.map_overlay.clear_items()
+            self.map_overlay.clear_route()
         
         if self.inv_overlay and self.inv_overlay.winfo_exists():
+            self.inv_overlay.clear_route_order()
             self.inv_overlay.set_survey_count(0)
         
         self.settings.zone_name = None
