@@ -2296,10 +2296,6 @@ class SurveyHelperWindow(tk.Toplevel):
             self.status_var.set("No items to optimize")
             return
         
-        if self.settings.origin_x is None:
-            self.status_var.set("Set player position first")
-            return
-        
         # Get uncollected items
         uncollected = [(i, item) for i, item in enumerate(self.items) if not item.collected]
         
@@ -2307,9 +2303,16 @@ class SurveyHelperWindow(tk.Toplevel):
             self.status_var.set("All items collected!")
             return
         
+        # Use player position as start if known; otherwise start from centroid of items
+        if self.settings.origin_x is not None:
+            start_x, start_y = self.settings.origin_x, self.settings.origin_y
+        else:
+            start_x = sum(item.x for _, item in uncollected) / len(uncollected)
+            start_y = sum(item.y for _, item in uncollected) / len(uncollected)
+        
         # Nearest neighbor algorithm
         route = []
-        current_x, current_y = self.settings.origin_x, self.settings.origin_y
+        current_x, current_y = start_x, start_y
         remaining = uncollected.copy()
         
         while remaining:
