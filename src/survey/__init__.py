@@ -1478,14 +1478,6 @@ class SurveyHelperWindow(tk.Toplevel):
         opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         opacity_frame.pack(fill='x', pady=1)
         
-        ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
-        self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
-        self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
-                   style="App.TSpinbox", command=self._update_map_opacity)
-        self.map_opacity_spinbox.pack(side='left', padx=2)
-        self.map_opacity_spinbox.bind('<Return>', lambda e: self._update_map_opacity())
-        self.map_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_map_opacity())
-        
         ttk.Label(opacity_frame, text="Inv Opacity %:", style="App.TLabel").pack(side='left', padx=4)
         self.inv_opacity_var = tk.IntVar(value=int(self.settings.inv_opacity * 100))
         self.inv_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.inv_opacity_var, width=5,
@@ -1493,6 +1485,14 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_opacity_spinbox.pack(side='left', padx=2)
         self.inv_opacity_spinbox.bind('<Return>', lambda e: self._update_inv_opacity())
         self.inv_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_inv_opacity())
+        
+        ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
+        self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
+        self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
+                   style="App.TSpinbox", command=self._update_map_opacity)
+        self.map_opacity_spinbox.pack(side='left', padx=2)
+        self.map_opacity_spinbox.bind('<Return>', lambda e: self._update_map_opacity())
+        self.map_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_map_opacity())
         
         # Route optimization - use tk.LabelFrame with dark theme colors
         route_frame = tk.LabelFrame(frame, text="Route Optimization", padx=4, pady=3,
