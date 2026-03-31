@@ -2560,10 +2560,13 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.map_overlay._draw_player_dot()
             self.status_var.set(f"Player marker moved to ({x:.0f}, {y:.0f})")
         elif action == 'item_clicked' and item_index is not None:
-            # Calibrate from this item
-            if self.settings.scale_factor is None:
+            # Always recalibrate from this item; players may change maps or DPI
+            if self.map_overlay and self.map_overlay.winfo_exists():
                 self.map_overlay.calibrate_from_click(item_index, x, y)
-                self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
+                if self.settings.scale_factor:
+                    self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
+                else:
+                    self.status_var.set("Scale calibrated from clicked item")
                 self._recalculate_item_positions()
         elif action == 'item_preview_moved' and item_index is not None:
             self.status_var.set(f"Adjusting pin #{item_index + 1}...")
@@ -2614,6 +2617,9 @@ class SurveyHelperWindow(tk.Toplevel):
             max_dist = max((item.distance for item in self.items if item.distance > 0), default=1)
             # Fit furthest item within 40% of the shorter canvas dimension from origin
             sf = (min(cw, ch) * 0.4) / max_dist
+            # Remember this auto scale so subsequent calls are stable
+            self.settings.scale_factor = sf
+            self.settings.save()
 
         if sf is None or sf <= 0:
             return
