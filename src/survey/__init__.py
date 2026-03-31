@@ -651,7 +651,16 @@ class MapOverlay(tk.Toplevel):
         # Overlays bypass WM entirely — custom drag/resize handles all positioning.
         # This prevents the WM from shifting the window on withdraw/deiconify.
         self.overrideredirect(True)
-        
+
+        # Title bar for dragging
+        self._title_bar = tk.Frame(self, bg=UI_COLORS["secondary"], height=18, cursor='fleur')
+        self._title_bar.pack(fill='x', side='top')
+        tk.Label(self._title_bar, text="⊹ Map", bg=UI_COLORS["secondary"],
+                 fg=UI_COLORS["muted_text"], font=(UI_ATTRS["font_family"], 7)).pack(side='left', padx=4)
+        tk.Button(self._title_bar, text="✕", bg=UI_COLORS["secondary"], fg=UI_COLORS["muted_text"],
+                  relief='flat', bd=0, font=(UI_ATTRS["font_family"], 7),
+                  command=self._close_window).pack(side='right', padx=2)
+
         # Canvas for drawing
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
@@ -668,7 +677,8 @@ class MapOverlay(tk.Toplevel):
         # Skip Configure events during initialization
         self._skip_configure = True
         
-        # Bind events
+        # Bind drag to title bar (left-click) and canvas (right-click fallback)
+        self._bind_drag(self._title_bar)
         self.canvas.bind('<Button-1>', self._on_click)
         self.canvas.bind('<Button-3>', self._start_drag)
         self.canvas.bind('<B3-Motion>', self._on_drag)
@@ -696,6 +706,13 @@ class MapOverlay(tk.Toplevel):
         # Enable Configure tracking and apply opacity after window settles
         self.after(500, self._enable_configure_tracking_and_opacity)
     
+    def _bind_drag(self, widget):
+        """Recursively bind left-click drag to widget and its children."""
+        widget.bind('<Button-1>', self._start_drag)
+        widget.bind('<B1-Motion>', self._on_drag)
+        for child in widget.winfo_children():
+            self._bind_drag(child)
+
     def _create_resize_handle(self):
         """Create a resize handle in the bottom-right corner."""
         self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
@@ -952,7 +969,16 @@ class InventoryOverlay(tk.Toplevel):
         self.attributes('-topmost', True)
         # Overlays bypass WM entirely — custom drag/resize handles all positioning.
         self.overrideredirect(True)
-        
+
+        # Title bar for dragging
+        self._title_bar = tk.Frame(self, bg=UI_COLORS["secondary"], height=18, cursor='fleur')
+        self._title_bar.pack(fill='x', side='top')
+        tk.Label(self._title_bar, text="⊹ Inventory", bg=UI_COLORS["secondary"],
+                 fg=UI_COLORS["muted_text"], font=(UI_ATTRS["font_family"], 7)).pack(side='left', padx=4)
+        tk.Button(self._title_bar, text="✕", bg=UI_COLORS["secondary"], fg=UI_COLORS["muted_text"],
+                  relief='flat', bd=0, font=(UI_ATTRS["font_family"], 7),
+                  command=self._close_window).pack(side='right', padx=2)
+
         self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         
@@ -962,7 +988,8 @@ class InventoryOverlay(tk.Toplevel):
         # Skip Configure events during initialization
         self._skip_configure = True
         
-        # Bind events
+        # Bind drag to title bar (left-click) and canvas (right-click fallback)
+        self._bind_drag(self._title_bar)
         self.canvas.bind('<Button-3>', self._start_drag)
         self.canvas.bind('<B3-Motion>', self._on_drag)
         self.bind('<Configure>', self._on_resize)
@@ -994,6 +1021,13 @@ class InventoryOverlay(tk.Toplevel):
         # Enable Configure tracking and apply opacity after window settles
         self.after(500, self._enable_configure_tracking_and_opacity)
     
+    def _bind_drag(self, widget):
+        """Recursively bind left-click drag to widget and its children."""
+        widget.bind('<Button-1>', self._start_drag)
+        widget.bind('<B1-Motion>', self._on_drag)
+        for child in widget.winfo_children():
+            self._bind_drag(child)
+
     def _create_resize_handle(self):
         self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
         self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
