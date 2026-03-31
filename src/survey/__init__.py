@@ -702,7 +702,7 @@ class MapOverlay(tk.Toplevel):
             self.geometry("400x400")
         
         # Apply opacity immediately, then re-apply after window settles (for clickthrough)
-        self.attributes('-alpha', self.settings.map_opacity)
+        self.after(1, lambda: self.attributes('-alpha', self.settings.map_opacity))
         self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _bind_drag(self, widget):
@@ -1048,7 +1048,7 @@ class InventoryOverlay(tk.Toplevel):
         self._draw_grid()
         
         # Apply opacity immediately, then re-apply after window settles (for clickthrough)
-        self.attributes('-alpha', self.settings.inv_opacity)
+        self.after(1, lambda: self.attributes('-alpha', self.settings.inv_opacity))
         self.after(500, self._enable_configure_tracking_and_opacity)
     
     def _bind_drag(self, widget):
@@ -1694,6 +1694,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.map_overlay.deiconify()
             self.map_overlay.lift()
+            self.map_overlay.after(1, lambda: self.map_overlay.attributes('-alpha', self.settings.map_opacity))
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
@@ -1711,6 +1712,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.inv_overlay.deiconify()
             self.inv_overlay.lift()
+            self.inv_overlay.after(1, lambda: self.inv_overlay.attributes('-alpha', self.settings.inv_opacity))
         self.inventory_open = True
         self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
         self._update_overlays_btn()
