@@ -406,7 +406,7 @@ class SurveySettings:
     def __init__(self):
         self.chatlog_dir: Optional[Path] = None
         self.survey_count: int = 0
-        self.map_opacity: float = 0.7
+        self.map_opacity: float = 0.25
         self.inv_opacity: float = 0.7
         self.map_clickthrough: bool = False
         self.inv_clickthrough: bool = False
@@ -678,8 +678,9 @@ class MapOverlay(tk.Toplevel):
         self._nav_label.pack(side='left', padx=4)
         self._nav_bar_visible = False
 
-        # Canvas for drawing
-        self.canvas = tk.Canvas(self, bg=UI_COLORS["card_bg"], highlightthickness=0)
+        # Canvas for drawing — black background so at low alpha it's nearly invisible,
+        # leaving pins/lines as the only visible content.
+        self.canvas = tk.Canvas(self, bg='black', highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         
         # Items to display
@@ -996,10 +997,17 @@ class MapOverlay(tk.Toplevel):
         for i in range(len(stops) - 1):
             x1, y1 = stops[i][0], stops[i][1]
             x2, y2 = stops[i + 1][0], stops[i + 1][1]
+            # Shadow line (black, wider)
+            self.canvas.create_line(
+                x1, y1, x2, y2,
+                fill='black', width=5, dash=(8, 4),
+                tags='route_viz'
+            )
+            # Visible colored line on top
             self.canvas.create_line(
                 x1, y1, x2, y2,
                 fill='#ffcc00', width=2, dash=(8, 4),
-                arrow=tk.LAST, arrowshape=(10, 12, 4),
+                arrow=tk.LAST, arrowshape=(12, 14, 5),
                 tags='route_viz'
             )
 
@@ -1010,30 +1018,37 @@ class MapOverlay(tk.Toplevel):
             if item.collected:
                 pin_fill = '#555555'
                 pin_outline = '#888888'
-                text_color = '#aaaaaa'
+                text_color = '#cccccc'
                 radius = 10
             elif is_current:
                 pin_fill = '#00ff88'
                 pin_outline = 'white'
                 text_color = '#000000'
-                radius = 14
+                radius = 16
             else:
                 pin_fill = '#ffcc00'
                 pin_outline = 'white'
                 text_color = '#000000'
-                radius = 11
+                radius = 13
 
+            # Black shadow ring for contrast against any background
+            self.canvas.create_oval(
+                x - radius - 2, y - radius - 2, x + radius + 2, y + radius + 2,
+                fill='black', outline='', width=0,
+                tags='route_viz'
+            )
+            # Colored pin
             self.canvas.create_oval(
                 x - radius, y - radius, x + radius, y + radius,
                 fill=pin_fill, outline=pin_outline, width=2,
                 tags='route_viz'
             )
-            # Show inventory slot number (item_idx + 1)
+            # Number label
             self.canvas.create_text(
                 x, y,
                 text=str(item_idx + 1),
                 fill=text_color,
-                font=(UI_ATTRS["font_family"], max(7, radius - 3), 'bold'),
+                font=(UI_ATTRS["font_family"], max(8, radius - 2), 'bold'),
                 tags='route_viz'
             )
 
@@ -1699,7 +1714,7 @@ class SurveyHelperWindow(tk.Toplevel):
         
         ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
         self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
-        self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.map_opacity_var, width=5,
+        self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=5, to=100, textvariable=self.map_opacity_var, width=5,
                    style="App.TSpinbox", command=self._update_map_opacity)
         self.map_opacity_spinbox.pack(side='left', padx=2)
         self.map_opacity_spinbox.bind('<Return>', lambda e: self._update_map_opacity())
@@ -2058,15 +2073,13 @@ class SurveyHelperWindow(tk.Toplevel):
             percentage = self.map_opacity_var.get()
         except tk.TclError:
             return
-        percentage = max(10, min(100, percentage))
+        percentage = max(5, min(100, percentage))
         self.map_opacity_var.set(percentage)
         decimal_value = percentage / 100.0
         self.settings.map_opacity = decimal_value
         if self.map_overlay and self.map_overlay.winfo_exists():
-            # update_opacity() will call save() for us
             self.map_overlay.update_opacity(decimal_value)
         else:
-            # Overlay not open, save directly
             self.settings.save()
     
     def _update_inv_opacity(self):
