@@ -1893,7 +1893,25 @@ class SurveyHelperWindow(tk.Toplevel):
         self._show_map()
         self.map_overlay.set_setting_position_mode(True)
         self.status_var.set("Click on map to set your position")
-    
+
+    def _on_player_position_reset(self, event_msg: str = ""):
+        """Called whenever a zone entry or recall resets the player's known position.
+
+        Clears the stored origin so that the user must re-click their spawn point
+        on the map, and shows a prompt in the status bar.
+        """
+        self.settings.origin_x = None
+        self.settings.origin_y = None
+        self.settings.save()
+
+        prompt = f"{event_msg}  —  Click map to set spawn position"
+        self.status_var.set(prompt.strip(" —"))
+
+        # Flash map overlay into position-setting mode if it is open
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            self.map_overlay.set_setting_position_mode(True)
+            self.map_overlay.draw_player_position()  # clears old dot
+
     def _on_map_click(self, x: float, y: float, action: str, item_index: Optional[int] = None):
         """Handle map click events."""
         if action == 'set_origin':
@@ -2124,9 +2142,20 @@ class SurveyHelperWindow(tk.Toplevel):
             self.settings.zone_name = zone
             self.settings.save()
             self.zone_var.set(f"Zone: {zone}")
-            self.status_var.set(f"📍 Entered: {zone}  —  Don't move until surveying starts!")
+            self._on_player_position_reset(f"📍 Entered: {zone}")
             self._set_phase(1)
             return
+
+        # ── 1b. Recall / teleport — position is now known ──────────────────────
+        # Project Gorgon logs one of these when a recall fires:
+        #   [Status] You recall to X   |   You are recalled   |   Recall successful
+        #   [General] You recall ...
+        recall_match = re.search(
+            r'(?:you\s+(?:are\s+)?recall(?:ed)?|recall\s+successful)',
+            line, re.IGNORECASE
+        )
+        if recall_match:
+            self._on_player_position_reset("🔁 Recalled — position reset")
 
         # ── 2. Item added to inventory (survey creation OR loot) ──────────────────
         added_match = re.search(r'\[Status\]\s+(.+?)\s+added to inventory', line, re.IGNORECASE)
