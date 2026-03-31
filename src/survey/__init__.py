@@ -1332,11 +1332,44 @@ class InventoryOverlay(tk.Toplevel):
 
 class SurveyHelperWindow(tk.Toplevel):
     """Main control panel for the Survey Helper."""
-    
+
+    # Items that can be gained from surveying (gems, metal slabs, glass, parchment)
+    # Built dynamically from items.json at class load time.
+    _SURVEY_LOOT_ITEMS: set = set()
+
+    @classmethod
+    def _build_survey_loot_set(cls):
+        """Populate _SURVEY_LOOT_ITEMS from items.json."""
+        if cls._SURVEY_LOOT_ITEMS:
+            return  # already built
+        try:
+            import os
+            items_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'items.json')
+            with open(items_path, 'r', encoding='utf-8') as f:
+                import json as _json
+                items_data = _json.load(f)
+            _EXCLUDE = {'Survey', 'Arrangement', 'Display', 'Bouquet', 'Orb', 'Pearl',
+                        'Ring', 'Staff', 'Robe', 'Hood', 'Coat', 'Sword', 'Bow', 'Shield',
+                        'Crossbow', 'Dagger', 'Medallion', 'Talisman', 'Work Order',
+                        'Beaker', 'Jar', 'Collar', 'Necklace', 'Bracelet', 'Glove', 'Wand'}
+            for v in items_data.values():
+                name = v.get('Name', '')
+                if not name or any(x in name for x in _EXCLUDE):
+                    continue
+                kws = v.get('Keywords', [])
+                if (any(kw.startswith('Gem=') for kw in kws) or
+                        any(kw.startswith('MetalSlab') for kw in kws) or
+                        'GlassChunk' in kws or
+                        'Parchment' in kws):
+                    cls._SURVEY_LOOT_ITEMS.add(name)
+        except Exception as e:
+            print(f"Could not build survey loot set: {e}")
+
     def __init__(self, parent):
         super().__init__(parent)
         
         self.title("Survey Helper")
+        self._build_survey_loot_set()
         
         self.settings = SurveySettings()
         self.items: List[SurveyItem] = []
@@ -2080,7 +2113,10 @@ class SurveyHelperWindow(tk.Toplevel):
                 break
 
     def _record_loot(self, name: str):
-        """Track an item gained during the session."""
+        """Track a survey loot item gained during the session."""
+        # Only record items known to drop from surveying
+        if self._SURVEY_LOOT_ITEMS and name not in self._SURVEY_LOOT_ITEMS:
+            return
         self.loot_gained[name] = self.loot_gained.get(name, 0) + 1
         self._update_loot_display()
 
