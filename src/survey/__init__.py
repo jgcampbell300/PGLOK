@@ -1428,7 +1428,7 @@ class SurveyHelperWindow(tk.Toplevel):
                                       borderwidth=1, relief="solid")
         arrange_frame.pack(fill='x', pady=3)
         
-        ttk.Label(arrange_frame, text="Blank Spaces Before 1st Item:", style="App.TLabel").pack(anchor='w')
+        ttk.Label(arrange_frame, text="Blank Spaces Before 1st Survey:", style="App.TLabel").pack(anchor='w')
         self.offset_var = tk.IntVar(value=self.settings.inv_offset)
         offset_spinbox = ttk.Spinbox(arrange_frame, from_=0, to=100, textvariable=self.offset_var, width=5, style="App.TSpinbox")
         offset_spinbox.pack(side='left', padx=4)
