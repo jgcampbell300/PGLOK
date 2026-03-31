@@ -1937,12 +1937,66 @@ class SurveyHelperWindow(tk.Toplevel):
         """Handle map click events."""
         if action == 'set_origin':
             self.status_var.set(f"Player position set: ({x:.0f}, {y:.0f})")
+            # Recalculate canvas coordinates for all items that have metric offsets
+            self._recalculate_item_positions()
         elif action == 'item_clicked' and item_index is not None:
             # Calibrate from this item
             if self.settings.scale_factor is None:
                 self.map_overlay.calibrate_from_click(item_index, x, y)
                 self.status_var.set(f"Scale calibrated: {self.settings.scale_factor:.2f} px/m")
-    
+                self._recalculate_item_positions()
+
+    def _recalculate_item_positions(self):
+        """Recalculate canvas x/y for all items and refresh map + route.
+
+        If scale_factor is unknown, auto-fits items to the canvas so they
+        are always visible. The user can calibrate later to get accurate positions.
+        """
+        if self.settings.origin_x is None:
+            return
+
+        ox, oy = self.settings.origin_x, self.settings.origin_y
+
+        # Auto-compute a scale that fits all items if none is saved
+        sf = self.settings.scale_factor
+        if sf is None and self.items:
+            canvas_w = 400
+            canvas_h = 400
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                canvas_w = max(self.map_overlay.canvas.winfo_width(), 100)
+                canvas_h = max(self.map_overlay.canvas.winfo_height(), 100)
+            max_dist = max((item.distance for item in self.items if item.distance > 0), default=1)
+            # Fit items within 80% of the shorter canvas dimension from origin
+            sf = (min(canvas_w, canvas_h) * 0.4) / max_dist
+
+        if sf is None or sf <= 0:
+            return
+
+        _dir_angles = {
+            'E': 0, 'NE': math.pi/4, 'N': math.pi/2, 'NW': 3*math.pi/4,
+            'W': math.pi, 'SW': 5*math.pi/4, 'S': 3*math.pi/2, 'SE': 7*math.pi/4
+        }
+
+        for item in self.items:
+            if item.dx_m is not None and item.dy_m is not None:
+                item.x = ox + item.dx_m * sf
+                item.y = oy - item.dy_m * sf
+            else:
+                angle = _dir_angles.get(item.direction, 0)
+                item.x = ox + item.distance * math.cos(angle) * sf
+                item.y = oy - item.distance * math.sin(angle) * sf
+
+        # Sync to MapOverlay's list and redraw
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            self.map_overlay.survey_items = self.items
+            self.map_overlay.clear_items()
+            for i, item in enumerate(self.items):
+                self.map_overlay._draw_item(item, i)
+            # Redraw route pins if a route is active
+            if self.current_route:
+                self.map_overlay.draw_route(self.current_route, self.current_route_index, self.items)
+
+
     def _update_map_opacity(self):
         """Update map overlay opacity (from percentage spinbox)."""
         try:
@@ -2357,6 +2411,13 @@ class SurveyHelperWindow(tk.Toplevel):
         
         if self.session_start is None:
             self.session_start = datetime.now()
+
+        # Ensure map is open so pins are visible
+        if not self.map_open:
+            self._show_map()
+
+        # Ensure all items have canvas coordinates before drawing
+        self._recalculate_item_positions()
 
         # Draw route on overlays
         if self.map_overlay and self.map_overlay.winfo_exists():
