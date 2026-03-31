@@ -679,12 +679,11 @@ class MapOverlay(tk.Toplevel):
         
         # Bind drag to title bar (left-click) and canvas (right-click fallback)
         self._bind_drag(self._title_bar)
-        self.canvas.bind('<Button-1>', self._on_click)
         self.canvas.bind('<Button-3>', self._start_drag)
         self.canvas.bind('<B3-Motion>', self._on_drag)
         self.bind('<Configure>', self._on_resize)
         
-        # Resize handle
+        # Resize handle (also binds canvas Button-1 via _create_resize_handle)
         self._create_resize_handle()
         
         # Close handler to save position/size
@@ -714,23 +713,52 @@ class MapOverlay(tk.Toplevel):
             self._bind_drag(child)
 
     def _create_resize_handle(self):
-        """Create a resize handle in the bottom-right corner."""
-        self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
-        self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
-        self.resize_handle.bind('<Button-1>', self._start_resize)
-        self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
-    
-    def _start_resize(self, event):
-        self._resize_start = {'x': event.x_root, 'y': event.y_root, 'w': self.winfo_width(), 'h': self.winfo_height()}
-    
-    def _on_resize_drag(self, event):
-        if hasattr(self, '_resize_start'):
+        """Draw a visible resize corner on the canvas and handle resize via canvas events."""
+        self._resize_zone = 20  # px from bottom-right corner
+        self._resize_start = None
+        self._draw_resize_corner()
+        # Bind canvas left-click: resize zone takes priority over item clicks
+        self.canvas.bind('<Button-1>', self._on_canvas_press)
+        self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
+        self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
+
+    def _draw_resize_corner(self):
+        """Draw a small grip indicator in the bottom-right of the canvas."""
+        self.canvas.delete('resize_corner')
+        w = self.winfo_width() or 400
+        h = self.winfo_height() or 400
+        sz = self._resize_zone
+        color = UI_COLORS.get("muted_text", "#888888")
+        # Draw 3 diagonal lines as a grip
+        for i in range(3):
+            offset = 4 + i * 5
+            self.canvas.create_line(w - offset, h, w, h - offset,
+                                    fill=color, width=1, tags='resize_corner')
+        self.canvas.tag_raise('resize_corner')
+
+    def _on_canvas_press(self, event):
+        w = self.winfo_width()
+        h = self.winfo_height()
+        sz = self._resize_zone
+        if event.x >= w - sz and event.y >= h - sz:
+            self._resize_start = {'x': event.x_root, 'y': event.y_root,
+                                  'w': w, 'h': h}
+        else:
+            self._resize_start = None
+            self._on_click(event)
+
+    def _on_canvas_motion(self, event):
+        if self._resize_start:
             dx = event.x_root - self._resize_start['x']
             dy = event.y_root - self._resize_start['y']
             new_w = max(100, self._resize_start['w'] + dx)
             new_h = max(100, self._resize_start['h'] + dy)
             self.geometry(f"{new_w}x{new_h}")
-    
+            self._draw_resize_corner()
+
+    def _on_canvas_release(self, event):
+        self._resize_start = None
+
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
         self._skip_configure = False
@@ -760,6 +788,7 @@ class MapOverlay(tk.Toplevel):
                 self.settings.map_position = (x, y)
                 self.settings.map_size = (w, h)
                 self.settings.save()
+            self._draw_resize_corner()
     
     def _on_click(self, event):
         if self._is_setting_position:
@@ -1029,24 +1058,47 @@ class InventoryOverlay(tk.Toplevel):
             self._bind_drag(child)
 
     def _create_resize_handle(self):
-        self.resize_handle = tk.Frame(self, bg=UI_COLORS["secondary"], width=15, height=15)
-        self.resize_handle.place(relx=1.0, rely=1.0, anchor='se')
-        self.resize_handle.bind('<Button-1>', self._start_resize)
-        self.resize_handle.bind('<B1-Motion>', self._on_resize_drag)
-    
-    def _start_resize(self, event):
-        self._resize_start = {'x': event.x_root, 'y': event.y_root, 
-                              'w': self.winfo_width(), 'h': self.winfo_height()}
-    
-    def _on_resize_drag(self, event):
-        if hasattr(self, '_resize_start'):
+        """Draw a visible resize corner on the canvas and handle resize via canvas events."""
+        self._resize_zone = 20
+        self._resize_start = None
+        self._draw_resize_corner()
+        self.canvas.bind('<Button-1>', self._on_canvas_press)
+        self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
+        self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
+
+    def _draw_resize_corner(self):
+        """Draw a small grip indicator in the bottom-right of the canvas."""
+        self.canvas.delete('resize_corner')
+        w = self.winfo_width() or 200
+        h = self.winfo_height() or 100
+        color = UI_COLORS.get("muted_text", "#888888")
+        for i in range(3):
+            offset = 4 + i * 5
+            self.canvas.create_line(w - offset, h, w, h - offset,
+                                    fill=color, width=1, tags='resize_corner')
+        self.canvas.tag_raise('resize_corner')
+
+    def _on_canvas_press(self, event):
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if event.x >= w - self._resize_zone and event.y >= h - self._resize_zone:
+            self._resize_start = {'x': event.x_root, 'y': event.y_root, 'w': w, 'h': h}
+        else:
+            self._resize_start = None
+
+    def _on_canvas_motion(self, event):
+        if self._resize_start:
             dx = event.x_root - self._resize_start['x']
             dy = event.y_root - self._resize_start['y']
             new_w = max(100, self._resize_start['w'] + dx)
             new_h = max(100, self._resize_start['h'] + dy)
             self.geometry(f"{new_w}x{new_h}")
             self._recalculate_grid()
-    
+            self._draw_resize_corner()
+
+    def _on_canvas_release(self, event):
+        self._resize_start = None
+
     def _calculate_size(self):
         """Calculate window size based on grid settings."""
         cols = self.settings.grid_cols
@@ -1128,6 +1180,9 @@ class InventoryOverlay(tk.Toplevel):
                 )
                 
                 self.slots.append(rect)
+        # Redraw resize corner on top of everything
+        if hasattr(self, '_resize_zone'):
+            self._draw_resize_corner()
     
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
@@ -1162,6 +1217,8 @@ class InventoryOverlay(tk.Toplevel):
                 self.settings.inv_position = (x, y)
                 self.settings.inv_size = (w, h)
                 self.settings.save()
+            if hasattr(self, '_resize_zone'):
+                self._draw_resize_corner()
     
     def _enable_configure_tracking(self):
         """Enable Configure event tracking after window initialization."""
