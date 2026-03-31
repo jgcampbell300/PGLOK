@@ -1235,7 +1235,6 @@ class InventoryOverlay(tk.Toplevel):
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
         self.settings.survey_count = count
-        self._calculate_size()
         self._draw_grid()
         self.settings.save()
     
