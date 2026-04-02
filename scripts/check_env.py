@@ -15,6 +15,7 @@ REQUIRED_MODULES = (
     ("requests", "requests"),
     ("bs4", "beautifulsoup4"),
     ("PIL.Image", "Pillow"),
+    ("cv2", "opencv-python"),
 )
 NETWORK_CHECKS = (
     "https://api.github.com/",

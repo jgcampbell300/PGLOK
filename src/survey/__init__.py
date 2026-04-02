@@ -389,6 +389,9 @@ class SurveyItem:
     # Direct meter offsets (east=+, north=+) used when compound direction is parsed
     dx_m: Optional[float] = None
     dy_m: Optional[float] = None
+    # True when this item has been precisely aligned from a detected ring
+    # (or explicit map calibration), and safe to draw as a map pin.
+    calibrated: bool = False
 
     def to_dict(self):
         return {
@@ -401,6 +404,7 @@ class SurveyItem:
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
             'dx_m': self.dx_m,
             'dy_m': self.dy_m,
+            'calibrated': self.calibrated,
         }
     
     @classmethod
@@ -421,6 +425,7 @@ class SurveyItem:
             timestamp=ts,
             dx_m=data.get('dx_m'),
             dy_m=data.get('dy_m'),
+            calibrated=data.get('calibrated', False),
         )
 
 
@@ -450,6 +455,9 @@ class SurveySettings:
         self.origin_y: Optional[float] = None
         self.current_player_x: Optional[float] = None
         self.current_player_y: Optional[float] = None
+        # Player position as fraction of the logical zone map (0.0–1.0)
+        self.player_frac_x: Optional[float] = None
+        self.player_frac_y: Optional[float] = None
         self.main_window_position: Optional[Tuple[int, int]] = None  # (x, y)
         self.main_window_size: Optional[Tuple[int, int]] = None  # (width, height)
         self.map_was_open: bool = False  # whether map was open on last close
@@ -493,6 +501,8 @@ class SurveySettings:
                 self.origin_y = data.get('origin_y')
                 self.current_player_x = data.get('current_player_x')
                 self.current_player_y = data.get('current_player_y')
+                self.player_frac_x = data.get('player_frac_x')
+                self.player_frac_y = data.get('player_frac_y')
                 
                 if data.get('main_window_position'):
                     self.main_window_position = tuple(data['main_window_position'])
@@ -531,6 +541,8 @@ class SurveySettings:
             'origin_y': self.origin_y,
             'current_player_x': self.current_player_x,
             'current_player_y': self.current_player_y,
+            'player_frac_x': self.player_frac_x,
+            'player_frac_y': self.player_frac_y,
             'main_window_position': list(self.main_window_position) if self.main_window_position else None,
             'main_window_size': list(self.main_window_size) if self.main_window_size else None,
             'map_was_open': self.map_was_open,
@@ -545,6 +557,16 @@ class SurveySettings:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Error saving survey settings: {e}")
+
+
+# Canonical in-game map sizes (in "survey meters"), from pg_survey_helper.
+MAP_SIZES: Dict[str, Tuple[int, int]] = {
+    "Serbule": (2382, 2488),
+    "Serbule Hills": (2748, 2668),
+    "Eltibule": (2684, 2778),
+    "Ilmari": (2920, 2920),
+    "Kur Mountains": (3000, 3000),
+}
 
 
 def _get_all_xids(tk_win):
@@ -700,21 +722,13 @@ class MapOverlay(tk.Toplevel):
                   relief='flat', bd=0, font=(UI_ATTRS["font_family"], 7),
                   command=self._close_window).pack(side='right', padx=2)
 
-        # Route nav bar (hidden until route is active)
-        self._nav_bar = tk.Frame(self, bg=UI_COLORS["card_bg"], height=24)
-        # Not packed initially — shown by show_nav_bar()
-        _nbtn = dict(bg=UI_COLORS["secondary"], fg=UI_COLORS["text"],
-                     relief='flat', bd=1, font=(UI_ATTRS["font_family"], 7),
-                     activebackground=UI_COLORS["accent"])
-        self._nav_prev_btn = tk.Button(self._nav_bar, text="◀ Prev", **_nbtn)
-        self._nav_prev_btn.pack(side='left', padx=2, pady=1)
-        self._nav_next_btn = tk.Button(self._nav_bar, text="Next ▶", **_nbtn)
-        self._nav_next_btn.pack(side='left', padx=2, pady=1)
-        self._nav_skip_btn = tk.Button(self._nav_bar, text="Skip", **_nbtn)
-        self._nav_skip_btn.pack(side='left', padx=2, pady=1)
-        self._nav_label = tk.Label(self._nav_bar, text="", bg=UI_COLORS["card_bg"],
-                                   fg=UI_COLORS["text"], font=(UI_ATTRS["font_family"], 7))
-        self._nav_label.pack(side='left', padx=4)
+        # Route nav bar is no longer shown; navigation is controlled from the
+        # main window only. Keep minimal placeholders so existing calls are no-ops.
+        self._nav_bar = None
+        self._nav_prev_btn = None
+        self._nav_next_btn = None
+        self._nav_skip_btn = None
+        self._nav_label = None
         self._nav_bar_visible = False
 
         self._supports_isolated_background = False
@@ -803,6 +817,8 @@ class MapOverlay(tk.Toplevel):
         self.canvas.bind('<Button-1>', self._on_canvas_press)
         self.canvas.bind('<B1-Motion>', self._on_canvas_motion)
         self.canvas.bind('<ButtonRelease-1>', self._on_canvas_release)
+        # Bind double-click to set spawn position
+        self.canvas.bind('<Double-Button-1>', self._on_double_click)
 
     def _draw_resize_corner(self):
         """Draw a small grip indicator in the bottom-right of the canvas."""
@@ -991,7 +1007,6 @@ class MapOverlay(tk.Toplevel):
             self.settings.current_player_x = event.x
             self.settings.current_player_y = event.y
             self._is_setting_position = False
-            self._draw_player_dot()
             if self.on_click_callback:
                 self.on_click_callback(event.x, event.y, 'set_origin')
         else:
@@ -999,6 +1014,33 @@ class MapOverlay(tk.Toplevel):
             item_index = self._find_item_index_at(event.x, event.y)
             if item_index is not None and self.on_click_callback:
                 self.on_click_callback(event.x, event.y, 'item_clicked', item_index)
+    
+    def _on_double_click(self, event):
+        """Double-click on map to set spawn position."""
+        # Check if not clicking on a survey item
+        item_index = self._find_item_index_at(event.x, event.y)
+        if item_index is not None:
+            return  # Don't set spawn if clicking on a survey pin
+        
+        # Set spawn position at double-click location
+        self.settings.origin_x = event.x
+        self.settings.origin_y = event.y
+        self.settings.current_player_x = event.x
+        self.settings.current_player_y = event.y
+        
+        # Update fractional position
+        cw = max(self.canvas.winfo_width(), 1)
+        ch = max(self.canvas.winfo_height(), 1)
+        self.settings.player_frac_x = max(0.0, min(1.0, event.x / cw))
+        self.settings.player_frac_y = max(0.0, min(1.0, event.y / ch))
+        self.settings.save()
+        
+        # Redraw player marker
+        self._draw_player_dot()
+        
+        # Notify parent
+        if self.on_click_callback:
+            self.on_click_callback(event.x, event.y, 'set_origin')
     
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
@@ -1024,18 +1066,76 @@ class MapOverlay(tk.Toplevel):
             self.canvas.config(cursor='')
     
     def _draw_player_dot(self):
-        """Draw the player position dot."""
-        if self.player_dot:
-            self.canvas.delete(self.player_dot)
+        """Draw a draggable player marker at the current origin position."""
+        self.canvas.delete('player_marker')
+        if self.settings.origin_x is None or self.settings.origin_y is None:
+            return
         
-        x = self.settings.current_player_x if self.settings.current_player_x is not None else self.settings.origin_x
-        y = self.settings.current_player_y if self.settings.current_player_y is not None else self.settings.origin_y
-        if x is not None and y is not None:
-            self.player_dot = self.canvas.create_oval(
-                x-5, y-5, x+5, y+5,
-                fill=UI_COLORS["accent"], outline=UI_COLORS["text"], width=2,
-                tags='player'
-            )
+        x, y = self.settings.origin_x, self.settings.origin_y
+        # Shrink marker ~50% to reduce visual clutter
+        radius = 5
+        
+        # Draw a distinctive player marker (green with white outline)
+        self.canvas.create_oval(
+            x - radius, y - radius, x + radius, y + radius,
+            fill='#00ff88', outline='white', width=2,
+            tags=('player_marker', 'player')
+        )
+        # Inner dot for visibility
+        self.canvas.create_oval(
+            x - 2, y - 2, x + 2, y + 2,
+            fill='white', outline='',
+            tags=('player_marker', 'player')
+        )
+        # Make the player marker draggable
+        self.canvas.tag_bind('player_marker', '<Button-1>', self._on_player_marker_click)
+        self.canvas.tag_bind('player_marker', '<B1-Motion>', self._on_player_marker_drag)
+        self.canvas.tag_bind('player_marker', '<ButtonRelease-1>', self._on_player_marker_release)
+    
+    def _on_player_marker_click(self, event):
+        """Start dragging the player marker."""
+        self._player_drag_start = (event.x, event.y)
+        self.canvas.config(cursor='fleur')
+    
+    def _on_player_marker_drag(self, event):
+        """Drag the player marker to a new position."""
+        if not hasattr(self, '_player_drag_start'):
+            return
+        
+        # Move the player marker visually
+        dx = event.x - self._player_drag_start[0]
+        dy = event.y - self._player_drag_start[1]
+        self.canvas.move('player_marker', dx, dy)
+        self._player_drag_start = (event.x, event.y)
+    
+    def _on_player_marker_release(self, event):
+        """Set the new spawn position after dragging."""
+        self.canvas.config(cursor='')
+        
+        # Get the new position from the marker center
+        coords = self.canvas.coords('player_marker')
+        if len(coords) >= 4:
+            x1, y1, x2, y2 = coords[0], coords[1], coords[2], coords[3]
+            new_x = (x1 + x2) / 2
+            new_y = (y1 + y2) / 2
+            
+            # Update settings
+            self.settings.origin_x = new_x
+            self.settings.origin_y = new_y
+            
+            # Update fractional position
+            cw = max(self.canvas.winfo_width(), 1)
+            ch = max(self.canvas.winfo_height(), 1)
+            self.settings.player_frac_x = max(0.0, min(1.0, new_x / cw))
+            self.settings.player_frac_y = max(0.0, min(1.0, new_y / ch))
+            self.settings.save()
+            
+            # Notify parent
+            if self.on_click_callback:
+                self.on_click_callback(new_x, new_y, 'player_dragged')
+        
+        if hasattr(self, '_player_drag_start'):
+            del self._player_drag_start
     
     def add_survey_item(self, item: SurveyItem) -> bool:
         """Add a survey item to the map. Returns True if placed automatically."""
@@ -1066,9 +1166,14 @@ class MapOverlay(tk.Toplevel):
         return angles.get(direction, 0)
     
     def _draw_item(self, item: SurveyItem, index: int):
-        """Draw a survey item on the map."""
+        """Draw a survey item on the map.
+
+        Labels are renumbered so that uncollected items show 1..N with no
+        gaps. Collected items keep their dot but lose their number.
+        """
         color = UI_COLORS["primary"] if not item.collected else UI_COLORS["muted_text"]
-        dot_radius = 12
+        # Slightly smaller pins to reduce clutter
+        dot_radius = 5
         
         # Dot
         self.canvas.create_oval(
@@ -1077,21 +1182,31 @@ class MapOverlay(tk.Toplevel):
             tags=('survey_item', f'item_{index}', f'item_dot_{index}')
         )
         
-        # Label
+        # Label (dynamic numbering only - no names)
+        label_text = ""
+        display_map = getattr(self, "_display_index_map", None)
+        if not item.collected and isinstance(display_map, dict):
+            num = display_map.get(index)
+            if num is not None:
+                label_text = str(num)
+        # Don't show any label for collected items (they're being removed anyway)
+        
         self.canvas.create_text(
-            item.x, item.y-15,
-            text=f"{index+1}. {item.name[:15]}",
-            fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-2), 'bold'),
+            item.x, item.y-12,
+            text=label_text,
+            fill=UI_COLORS["text"], font=(UI_ATTRS["font_family"], max(10, UI_ATTRS["font_size"]+1), 'bold'),
             tags=('survey_item', f'item_{index}', f'item_label_{index}')
         )
         
-        # Distance line
-        if self.settings.origin_x:
+        # Distance line from origin to this survey point. Tagged separately
+        # as 'distance_line' so that route optimization can hide these radial
+        # guides and only show the optimized path.
+        if self.settings.origin_x is not None and self.settings.origin_y is not None:
             self.canvas.create_line(
                 self.settings.origin_x, self.settings.origin_y,
                 item.x, item.y,
                 fill=UI_COLORS["accent"], dash=(3, 3), width=1,
-                tags=('survey_item', f'item_{index}', f'item_line_{index}')
+                tags=('survey_item', 'distance_line', f'item_{index}', f'item_line_{index}')
             )
     
     def calibrate_from_click(self, item_index: int, click_x: float, click_y: float):
@@ -1124,8 +1239,16 @@ class MapOverlay(tk.Toplevel):
         """Clear all survey items from the map."""
         self.canvas.delete('survey_item')
     
+    def clear_item(self, index: int):
+        """Clear a specific survey item from the map (completely remove it)."""
+        if 0 <= index < len(self.survey_items):
+            # Delete the specific item's dot, label, and distance line
+            self.canvas.delete(f'item_dot_{index}')
+            self.canvas.delete(f'item_label_{index}')
+            self.canvas.delete(f'item_line_{index}')
+    
     def mark_collected(self, index: int):
-        """Mark an item as collected."""
+        """Mark an item as collected (legacy, now uses clear_item instead)."""
         if 0 <= index < len(self.survey_items):
             self.survey_items[index].collected = True
             # Redraw as gray
@@ -1145,7 +1268,10 @@ class MapOverlay(tk.Toplevel):
             items: the authoritative SurveyItem list from SurveyHelperWindow;
                    falls back to self.survey_items if not provided (legacy)
         """
+        # Hide any radial distance lines once a route is drawn so only the
+        # optimized path is visible.
         self.canvas.delete('route_viz')
+        self.canvas.delete('distance_line')
         if not route:
             return
 
@@ -1157,7 +1283,7 @@ class MapOverlay(tk.Toplevel):
         for item_idx in route:
             if item_idx < len(source):
                 item = source[item_idx]
-                if item.x != 0.0 or item.y != 0.0:
+                if item.x is not None and item.y is not None:
                     stops.append((item.x, item.y, item_idx, item))
 
         if not stops:
@@ -1189,17 +1315,17 @@ class MapOverlay(tk.Toplevel):
                 pin_fill = '#555555'
                 pin_outline = '#888888'
                 text_color = '#cccccc'
-                head_radius = 10
+                head_radius = 8
             elif is_current:
                 pin_fill = '#00ff88'
                 pin_outline = 'white'
                 text_color = '#000000'
-                head_radius = 14
+                head_radius = 12
             else:
                 pin_fill = '#ffcc00'
                 pin_outline = 'white'
                 text_color = '#000000'
-                head_radius = 12
+                head_radius = 10
 
             tip_y = y
             head_center_y = tip_y - head_radius - 6
@@ -1211,12 +1337,6 @@ class MapOverlay(tk.Toplevel):
                 x - 7, head_center_y + 6 + shadow_offset,
                 x + 7, head_center_y + 6 + shadow_offset,
                 fill='black', outline='',
-                tags='route_viz'
-            )
-            self.canvas.create_oval(
-                x - head_radius - shadow_offset, head_center_y - head_radius - shadow_offset,
-                x + head_radius + shadow_offset, head_center_y + head_radius + shadow_offset,
-                fill='black', outline='', width=0,
                 tags='route_viz'
             )
 
@@ -1248,27 +1368,18 @@ class MapOverlay(tk.Toplevel):
     def clear_route(self):
         """Remove route visualization."""
         self.canvas.delete('route_viz')
-        self.hide_nav_bar()
 
     def show_nav_bar(self, prev_cmd, next_cmd, skip_cmd, label: str = ""):
-        """Show route navigation bar below title bar."""
-        self._nav_prev_btn.config(command=prev_cmd)
-        self._nav_next_btn.config(command=next_cmd)
-        self._nav_skip_btn.config(command=skip_cmd)
-        self._nav_label.config(text=label)
-        if not self._nav_bar_visible:
-            self._nav_bar.pack(fill='x', side='top', before=self.canvas)
-            self._nav_bar_visible = True
+        """Navigation bar disabled; keep for API compatibility."""
+        return
 
     def hide_nav_bar(self):
-        """Hide route navigation bar."""
-        if self._nav_bar_visible:
-            self._nav_bar.pack_forget()
-            self._nav_bar_visible = False
+        """Navigation bar disabled; keep for API compatibility."""
+        self._nav_bar_visible = False
 
     def update_nav_label(self, label: str):
-        """Update the nav bar info label."""
-        self._nav_label.config(text=label)
+        """Nav label disabled; keep for API compatibility."""
+        return
 
     def update_opacity(self, value: float):
         """Update window opacity."""
@@ -1358,8 +1469,17 @@ class InventoryOverlay(tk.Toplevel):
         
         # Slots
         self.slots: List[int] = []  # Canvas item IDs
-        self.filled_slots: set = set()
+        # Item indices we believe still have survey maps in the inventory.
+        self.filled_slots: set[int] = set()
+        # Mapping between logical survey items (by index into the helper's
+        # items list) and visual inventory slot indices (0..N-1 after
+        # inv_offset). This lets us slide numbers left when surveys are used
+        # without assuming item index == slot index.
+        self.item_to_slot: Dict[int, int] = {}
+        self.slot_to_item: Dict[int, int] = {}
         self._route_order: List[int] = []  # route passed to show_route_order
+        # Track how many slots to display (total crafted, not remaining)
+        self._display_slot_count: int = self.settings.survey_count
         
         # Restore position/size
         if self.settings.inv_position and self.settings.inv_size:
@@ -1488,7 +1608,9 @@ class InventoryOverlay(tk.Toplevel):
         self.slots = []
         
         cols = self.settings.grid_cols
-        count = max(self.settings.survey_count, 1)
+        # Use display_slot_count if available, otherwise fall back to survey_count
+        slot_count = getattr(self, '_display_slot_count', self.settings.survey_count)
+        count = max(slot_count, 1)
         offset = self.settings.inv_offset
         total_slots = count + offset  # Include blank slots in calculation
         rows = (total_slots + cols - 1) // cols
@@ -1514,26 +1636,23 @@ class InventoryOverlay(tk.Toplevel):
                     tags=f'blank_{i}'
                 )
             else:
-                item_idx = i - offset
+                slot_idx = i - offset
+                item_idx = self.slot_to_item.get(slot_idx)
+                has_item = item_idx is not None and item_idx in self.filled_slots
                 # Draw slot
-                color = UI_COLORS["primary"] if item_idx in self.filled_slots else UI_COLORS["secondary"]
-                outline = UI_COLORS["text"] if item_idx in self.filled_slots else UI_COLORS["muted_text"]
+                color = UI_COLORS["primary"] if has_item else UI_COLORS["secondary"]
+                outline = UI_COLORS["text"] if has_item else UI_COLORS["muted_text"]
                 
                 rect = self.canvas.create_rectangle(
                     x1, y1, x2, y2,
                     fill=color, outline=outline, width=2,
-                    tags=f'slot_{item_idx}'
-                )
-                
-                # Add number
-                self.canvas.create_text(
-                    (x1 + x2) // 2, (y1 + y2) // 2,
-                    text=str(item_idx + 1),
-                    fill=UI_COLORS["text"],
-                    font=(UI_ATTRS["font_family"], max(8, int(UI_ATTRS["font_size"] * 1.5)), 'bold')
+                    tags=(f'slot_{slot_idx}', 'slot_rect')
                 )
                 
                 self.slots.append(rect)
+        # After drawing slots, apply numbering based on active (uncollected)
+        # survey maps so that numbers compress when maps are used.
+        self.renumber_active_slots()
         # Redraw resize corner on top of everything
         if hasattr(self, '_resize_zone'):
             self._draw_resize_corner()
@@ -1542,9 +1661,30 @@ class InventoryOverlay(tk.Toplevel):
             self._apply_route_badges(self._route_order)
 
     def show_route_order(self, route: List[int]):
-        """Overlay route-sequence badges on inventory slots."""
+        """Overlay route-sequence badges on inventory slots.
+
+        If survey_count is smaller than the largest item index in the route,
+        automatically grow the grid so every routed item has a visible slot
+        number.
+        """
         self._route_order = route
-        self._apply_route_badges(route)
+        if route:
+            needed = 1 + max(route)
+            # Use display_slot_count for comparison
+            slot_count = getattr(self, '_display_slot_count', self.settings.survey_count)
+            if slot_count < needed:
+                self._display_slot_count = needed
+                self.settings.survey_count = needed
+            # Ensure logical occupancy and mappings cover all routed items.
+            slot_count = getattr(self, '_display_slot_count', self.settings.survey_count)
+            self.filled_slots = set(range(slot_count))
+            self.item_to_slot = {i: i for i in range(slot_count)}
+            self.slot_to_item = {i: i for i in range(slot_count)}
+            self._draw_grid()
+            self.settings.save()
+        # Recompute central slot numbers so they reflect route order instead
+        # of simple slot index when a route is active.
+        self.renumber_active_slots()
 
     def clear_route_order(self):
         """Remove route-sequence badges."""
@@ -1554,47 +1694,16 @@ class InventoryOverlay(tk.Toplevel):
             self._draw_resize_corner()
 
     def _apply_route_badges(self, route: List[int]):
-        """Draw small numbered badges showing route visit order on each slot."""
+        """Route badges disabled on inventory to avoid double numbers.
+
+        The map overlay already shows full route numbering; inventory slots
+        only use the main compressed slot numbers plus highlight_next_slot().
+        """
+        # Clear any old badges that might exist from a previous version.
         self.canvas.delete('route_badge')
-        if not route:
-            return
-        # Map item_idx -> 1-based route position
-        order_map = {item_idx: pos + 1 for pos, item_idx in enumerate(route)}
-
-        cols = self.settings.grid_cols
-        offset = self.settings.inv_offset
-        slot = self.settings.slot_size
-        gap = self.settings.slot_gap
-        margin = 10
-
-        for item_idx, route_pos in order_map.items():
-            if item_idx < 0 or item_idx >= self.settings.survey_count:
-                continue
-            i = item_idx + offset
-            col = i % cols
-            row = i // cols
-            x1 = margin + col * (slot + gap)
-            y1 = margin + row * (slot + gap)
-            # Small circle badge in top-right corner of slot
-            r = max(10, int((max(7, slot // 5)) * 1.5))
-            bx = x1 + slot - r - 1
-            by = y1 + r + 1
-            self.canvas.create_oval(
-                bx - r, by - r, bx + r, by + r,
-                fill='#ffcc00', outline='#333333', width=1,
-                tags='route_badge'
-            )
-            self.canvas.create_text(
-                bx, by,
-                text=str(route_pos),
-                fill='#000000',
-                font=(UI_ATTRS["font_family"], max(9, int(max(6, r - 1) * 1.5)), 'bold'),
-                tags='route_badge'
-            )
-
-        self.canvas.tag_raise('route_badge')
         if hasattr(self, '_resize_zone'):
             self._draw_resize_corner()
+        return
 
     def _start_drag(self, event):
         self._drag_data['x'] = event.x_root - self.winfo_x()
@@ -1646,63 +1755,149 @@ class InventoryOverlay(tk.Toplevel):
     def set_survey_count(self, count: int):
         """Update the number of survey maps."""
         self.settings.survey_count = count
+        # Track display slots separately - this is the total crafted
+        self._display_slot_count = count
+        # Reset logical occupancy and slot mapping.
         self.filled_slots = set(range(count))
+        self.item_to_slot = {i: i for i in range(count)}
+        self.slot_to_item = {i: i for i in range(count)}
         self._draw_grid()
         self.settings.save()
     
     def mark_slot_filled(self, index: int):
-        """Mark a slot as having a survey map."""
-        if index >= 0:
-            self.filled_slots.add(index)
-            self.canvas.itemconfig(f'slot_{index}', fill='green', outline='white')
+        """Mark an item index as having a survey map.
+
+        `index` is the logical survey item index. We ensure it has a slot
+        assigned (creating one if necessary) and mark that slot as filled.
+        """
+        if index < 0:
+            return
+        self.filled_slots.add(index)
+        slot_idx = self.item_to_slot.get(index)
+        if slot_idx is None:
+            # Assign the next free slot index for this item.
+            slot_idx = max(self.slot_to_item.keys()) + 1 if self.slot_to_item else 0
+            self.item_to_slot[index] = slot_idx
+            self.slot_to_item[slot_idx] = index
+        # Visually mark the slot as filled if it exists on the canvas.
+        if self.canvas.find_withtag(f'slot_{slot_idx}'):
+            self.canvas.itemconfig(f'slot_{slot_idx}', fill=UI_COLORS["primary"], outline=UI_COLORS["text"], width=2)
     
     def mark_slot_empty(self, index: int):
-        """Mark a slot as empty (collected)."""
-        if index in self.filled_slots:
-            self.filled_slots.remove(index)
-            self.canvas.itemconfig(f'slot_{index}', fill='darkgray', outline='gray')
+        """Mark a slot as empty (collected).
+
+        `index` is the logical survey item index that was just used. We drop
+        it from the active set, free its slot, and shift all items to the
+        right one slot left so numbers stay aligned with the remaining
+        surveys in the real inventory.
+        """
+        if index not in self.filled_slots:
+            return
+        self.filled_slots.remove(index)
+        slot_idx = self.item_to_slot.pop(index, None)
+        if slot_idx is None:
+            # Nothing to compact; just redraw labels.
+            self.renumber_active_slots()
+            return
+        # Remove the item from its current slot.
+        self.slot_to_item.pop(slot_idx, None)
+        # Shift any items in higher-numbered slots one step left.
+        for s in sorted(list(self.slot_to_item.keys())):
+            if s > slot_idx:
+                item = self.slot_to_item.pop(s)
+                new_s = s - 1
+                self.slot_to_item[new_s] = item
+                self.item_to_slot[item] = new_s
+        # Redraw grid and labels to reflect new layout.
+        self._draw_grid()
+    
+    def renumber_active_slots(self):
+        """Renumber visible slot labels so active maps are 1..N with no gaps.
+
+        When a route is active, numbers follow the current route order (1..N
+        in visit sequence) and are drawn on top of the corresponding slots.
+        Otherwise, they compress left-to-right based on which slots still have
+        surveys.
+        """
+        # Remove any existing slot labels
+        self.canvas.delete('slot_label')
+        # Use display_slot_count for drawing, not survey_count (which decrements)
+        slot_count = getattr(self, '_display_slot_count', self.settings.survey_count)
+        if slot_count <= 0:
+            return
+        # When a route is active, center numbers should show route order
+        # (1..N in visit sequence) instead of simple slot index. Otherwise,
+        # compress active maps 1..N left-to-right.
+        route = getattr(self, '_route_order', []) or []
+        display_map: Dict[int, int] = {}
+        if route:
+            # active_route is the list of item indices in route order that are
+            # still present. We then map their *slot* indices to 1..N so the
+            # labels slide left but still follow the route sequence.
+            active_items = [idx for idx in route if idx in self.filled_slots and idx in self.item_to_slot]
+            for pos, item_idx in enumerate(active_items):
+                slot_idx = self.item_to_slot.get(item_idx)
+                if slot_idx is not None:
+                    display_map[slot_idx] = pos + 1
+        else:
+            # No active route: compress based purely on occupied slot order.
+            active_slots = sorted(s for s, item in self.slot_to_item.items() if item in self.filled_slots)
+            display_map = {slot_idx: pos + 1 for pos, slot_idx in enumerate(active_slots)}
+        num_font_size = max(14, int(UI_ATTRS["font_size"] * 2.0))
+        for slot_idx in range(slot_count):
+            coords = self.canvas.coords(f'slot_{slot_idx}')
+            if not coords:
+                continue
+            x1, y1, x2, y2 = coords
+            label = display_map.get(slot_idx)
+            if label is None:
+                continue
+            # Draw a black outline behind the white number for readability.
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            text = str(label)
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                self.canvas.create_text(
+                    cx + dx, cy + dy,
+                    text=text,
+                    fill="#000000",
+                    font=(UI_ATTRS["font_family"], num_font_size, 'bold'),
+                    tags=('slot_label', f'slot_label_{slot_idx}')
+                )
+            self.canvas.create_text(
+                cx, cy,
+                text=text,
+                fill="#ffffff",
+                font=(UI_ATTRS["font_family"], num_font_size, 'bold'),
+                tags=('slot_label', f'slot_label_{slot_idx}')
+            )
     
     def highlight_next_slot(self, item_index: int):
         """Highlight the next-in-route slot with a bright border."""
+        # Use display_slot_count for iterating, not survey_count
+        slot_count = getattr(self, '_display_slot_count', self.settings.survey_count)
         # Reset all survey slot outlines to their default state
-        for idx in range(self.settings.survey_count):
-            if idx in self.filled_slots:
-                self.canvas.itemconfig(f'slot_{idx}', outline=UI_COLORS["text"], width=2)
+        for slot_idx in range(slot_count):
+            item_for_slot = self.slot_to_item.get(slot_idx)
+            if item_for_slot is not None and item_for_slot in self.filled_slots:
+                self.canvas.itemconfig(f'slot_{slot_idx}', outline=UI_COLORS["text"], width=2)
             else:
-                self.canvas.itemconfig(f'slot_{idx}', outline='gray', width=1)
-        # Apply highlight to the target slot
-        if 0 <= item_index < self.settings.survey_count:
-            self.canvas.itemconfig(f'slot_{item_index}', outline='#00ff88', width=4)
-        # Show/hide the Next button on the overlay
-        self._draw_next_button(item_index)
-    
-    def _draw_next_button(self, item_index: int):
-        """Draw (or refresh) the Next button at the top of the overlay canvas."""
-        self.canvas.delete('next_btn')
-        if item_index < 0 or item_index >= self.settings.survey_count:
-            return
-        w = self.winfo_width() or 200
-        btn_x1, btn_y1, btn_x2, btn_y2 = 4, 2, w - 4, 22
-        self.canvas.create_rectangle(
-            btn_x1, btn_y1, btn_x2, btn_y2,
-            fill=UI_COLORS["accent"], outline=UI_COLORS["text"], width=1,
-            tags='next_btn'
-        )
-        self.canvas.create_text(
-            (btn_x1 + btn_x2) // 2, (btn_y1 + btn_y2) // 2,
-            text=f"✓ Done  —  Next Survey →",
-            fill=UI_COLORS["bg"], font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], 'bold'),
-            tags='next_btn'
-        )
-        self.canvas.tag_bind('next_btn', '<Button-1>', self._on_next_clicked)
-    
+                self.canvas.itemconfig(f'slot_{slot_idx}', outline='gray', width=1)
+        # Apply highlight to the target slot (item_index is a logical item
+        # index; we convert it to the current slot index).
+        if item_index >= 0 and item_index in self.item_to_slot:
+            slot_idx = self.item_to_slot[item_index]
+            if 0 <= slot_idx < slot_count:
+                self.canvas.itemconfig(f'slot_{slot_idx}', outline='#00ff88', width=4)
+
     def _on_next_clicked(self, event=None):
         if self.next_callback:
             self.next_callback()
     
     def clear_all(self):
-        """Clear all filled slots."""
+        """Clear all filled slots and reset mapping."""
         self.filled_slots.clear()
+        self.item_to_slot.clear()
+        self.slot_to_item.clear()
         self._draw_grid()
     
     def update_opacity(self, value: float):
@@ -1783,6 +1978,12 @@ class SurveyHelperWindow(tk.Toplevel):
         self._build_survey_loot_set()
         
         self.settings = SurveySettings()
+
+        # Internal-only remaining survey count driven by chat events.
+        # The manual "Survey Maps" UI is gone but we still use this IntVar
+        # to keep settings.survey_count and the inventory overlay in sync.
+        self.count_var = tk.IntVar(value=getattr(self.settings, "survey_count", 0) or 0)
+
         self.items: List[SurveyItem] = []
         self.current_route: List[int] = []
         self.current_route_index = 0
@@ -1792,8 +1993,15 @@ class SurveyHelperWindow(tk.Toplevel):
         self._ring_detection_active = False
         self._ring_watch_stop = threading.Event()
         self._ring_detection_target: Optional[int] = None
-        self.ring_watch_btn: Optional[ttk.Button] = None
-        self.player_track_btn: Optional[ttk.Button] = None
+        
+        # Track total surveys crafted (for inventory slot count)
+        # This is different from survey_count which tracks remaining
+        self._total_surveys_crafted: int = 0
+
+        # Remember the user's preferred map + inventory opacity so "Pins Only"
+        # can toggle between 20% and whatever the sliders are set to.
+        self._preferred_map_opacity: Optional[float] = self.settings.map_opacity
+        self._preferred_inv_opacity: Optional[float] = self.settings.inv_opacity
         
         # Restore main window geometry or use default
         if self.settings.main_window_position and self.settings.main_window_size:
@@ -1828,11 +2036,13 @@ class SurveyHelperWindow(tk.Toplevel):
         self.configure(bg=UI_COLORS["bg"])
         
         self._build_ui()
+
+        # Start every launch as a fresh session so old items/positions
+        # and timestamps do not leak into the new run.
+        self._reset_session()
+
         self._restore_overlays()
         self._start_chat_monitor()
-
-        # Auto-detect player marker once on startup if we don't know origin yet
-        self.after(2000, self._auto_initial_player_detect)
     
     def _build_ui(self):
         """Build the control panel UI."""
@@ -1861,17 +2071,7 @@ class SurveyHelperWindow(tk.Toplevel):
         dir_btn_row.pack(fill='x', pady=1)
         ttk.Button(dir_btn_row, text="💬 Set Folder", command=self._set_chatlog_dir, style="App.Secondary.TButton").pack(side='left', padx=2)
         ttk.Button(dir_btn_row, text="🔄 Reset Session", command=self._reset_session, style="App.Secondary.TButton").pack(side='left', padx=2)
-        
-        # Survey count - use tk.LabelFrame with dark theme colors
-        count_frame = tk.LabelFrame(frame, text="Survey Maps", padx=4, pady=3,
-                                    bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
-                                    font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
-                                    borderwidth=1, relief="solid")
-        count_frame.pack(fill='x', pady=3)
-        
-        self.count_var = tk.IntVar(value=self.settings.survey_count)
-        ttk.Spinbox(count_frame, from_=0, to=100, textvariable=self.count_var, width=5, style="App.TSpinbox").pack(side='left', padx=4)
-        ttk.Button(count_frame, text="Set Count", command=self._set_survey_count, style="App.Secondary.TButton").pack(side='left', padx=4)
+        ttk.Button(dir_btn_row, text="❔ Help", command=self._show_help, style="App.Secondary.TButton").pack(side='right', padx=2)
         
         # Inventory arrangement - use tk.LabelFrame with dark theme colors
         arrange_frame = tk.LabelFrame(frame, text="Inventory Arrangement", padx=4, pady=3,
@@ -1916,24 +2116,30 @@ class SurveyHelperWindow(tk.Toplevel):
         btn_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
         btn_frame.pack(fill='x', pady=1)
         
+        # Left side: overlay buttons
         self.overlays_button = ttk.Button(btn_frame, text="🗺📦 Show Overlays", command=self._show_overlays, style="App.Secondary.TButton")
         self.overlays_button.pack(side='left', padx=2)
-        
-        self.map_clickthrough_var = tk.BooleanVar(value=self.settings.map_clickthrough)
-        self.inv_clickthrough_var = tk.BooleanVar(value=self.settings.inv_clickthrough)
-        self.lock_btn = ttk.Button(btn_frame, text="🔒 Lock Overlays: OFF", command=self._toggle_lock_overlays, style="App.Secondary.TButton")
-        self.lock_btn.pack(side='left', padx=2)
-        self._update_lock_btn()
-
         ttk.Button(btn_frame, text="💾 Save Layout", command=self._save_overlay_layout, style="App.Secondary.TButton").pack(side='left', padx=2)
-        self.player_track_btn = ttk.Button(btn_frame, text="📍 Detect Player", command=self._detect_player_from_map, style="App.Secondary.TButton")
-        self.player_track_btn.pack(side='left', padx=2)
+
+        # Quick toggle: hide/show background but keep pins/lines fully visible
+        self.pins_only_var = tk.BooleanVar(value=False)
+        self.pins_only_button = ttk.Checkbutton(
+            btn_frame,
+            text="🎯 Pins Only",
+            variable=self.pins_only_var,
+            command=self._toggle_pins_only_mode,
+            style="App.TCheckbutton",
+        )
+        self.pins_only_button.pack(side='left', padx=4)
         
-        # Opacity controls
-        opacity_frame = tk.Frame(overlay_frame, bg=UI_COLORS["panel_bg"])
-        opacity_frame.pack(fill='x', pady=1)
+        self.map_clickthrough_var = tk.BooleanVar(value=False)  # Map: always OFF
+        self.inv_clickthrough_var = tk.BooleanVar(value=True)   # Inventory: always ON
+
+        # Right side: opacity controls on same row
+        opacity_frame = tk.Frame(btn_frame, bg=UI_COLORS["panel_bg"])
+        opacity_frame.pack(side='right', pady=1)
         
-        ttk.Label(opacity_frame, text="Inv Opacity %:", style="App.TLabel").pack(side='left', padx=4)
+        ttk.Label(opacity_frame, text="Inv %:", style="App.TLabel").pack(side='left', padx=4)
         self.inv_opacity_var = tk.IntVar(value=int(self.settings.inv_opacity * 100))
         self.inv_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=10, to=100, textvariable=self.inv_opacity_var, width=5,
                    style="App.TSpinbox", command=self._update_inv_opacity)
@@ -1941,7 +2147,7 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_opacity_spinbox.bind('<Return>', lambda e: self._update_inv_opacity())
         self.inv_opacity_spinbox.bind('<FocusOut>', lambda e: self._update_inv_opacity())
         
-        ttk.Label(opacity_frame, text="Map Opacity %:", style="App.TLabel").pack(side='left', padx=4)
+        ttk.Label(opacity_frame, text="Map %:", style="App.TLabel").pack(side='left', padx=4)
         self.map_opacity_var = tk.IntVar(value=int(self.settings.map_opacity * 100))
         self.map_opacity_spinbox = ttk.Spinbox(opacity_frame, from_=5, to=100, textvariable=self.map_opacity_var, width=5,
                    style="App.TSpinbox", command=self._update_map_opacity)
@@ -1959,8 +2165,6 @@ class SurveyHelperWindow(tk.Toplevel):
         route_btn_frame = tk.Frame(route_frame, bg=UI_COLORS["panel_bg"])
         route_btn_frame.pack(fill='x', pady=1)
         ttk.Button(route_btn_frame, text="🗺 Optimize Route", command=self._optimize_route, style="App.Secondary.TButton").pack(side='left', padx=2)
-        self.ring_watch_btn = ttk.Button(route_btn_frame, text="🔴 Watch Ring: OFF", command=self._toggle_ring_watch, style="App.Secondary.TButton")
-        self.ring_watch_btn.pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="← Previous", command=self._prev_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="Next →", command=self._next_item, style="App.Secondary.TButton").pack(side='left', padx=2)
         ttk.Button(route_btn_frame, text="Skip", command=self._skip_item, style="App.Secondary.TButton").pack(side='left', padx=2)
@@ -2006,35 +2210,41 @@ class SurveyHelperWindow(tk.Toplevel):
         ttk.Label(info_row, textvariable=self.zone_var, style="App.TLabel").pack(side='left', padx=6)
         ttk.Label(info_row, textvariable=self.positions_var, style="App.TLabel").pack(side='left', padx=6)
         
-        # Positions list (scrollable)
-        pos_frame = tk.LabelFrame(frame, text="Detected Positions", padx=4, pady=3,
+        # Positions + Loot side by side using grid so they always share space 50/50
+        bottom_row = tk.Frame(frame, bg=UI_COLORS["panel_bg"])
+        bottom_row.pack(fill='both', expand=True, pady=3)
+        bottom_row.columnconfigure(0, weight=1)
+        bottom_row.columnconfigure(1, weight=1)
+
+        # Positions list (scrollable) pinned to the left
+        pos_frame = tk.LabelFrame(bottom_row, text="Detected Positions", padx=4, pady=3,
                                   bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
                                   font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
                                   borderwidth=1, relief="solid")
-        pos_frame.pack(fill='x', pady=3)
-        self.positions_text = tk.Text(pos_frame, height=4, state='disabled',
+        pos_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        self.positions_text = tk.Text(pos_frame, height=6, state='disabled',
                                       bg=UI_COLORS["card_bg"], fg=UI_COLORS["text"],
                                       font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-1)),
                                       relief='flat', wrap='none')
         pos_scroll = ttk.Scrollbar(pos_frame, orient='vertical', command=self.positions_text.yview)
         self.positions_text.configure(yscrollcommand=pos_scroll.set)
         pos_scroll.pack(side='right', fill='y')
-        self.positions_text.pack(fill='x')
+        self.positions_text.pack(fill='both', expand=True)
         
-        # Loot summary
-        loot_frame = tk.LabelFrame(frame, text="Loot Gained", padx=4, pady=3,
+        # Loot summary pinned to the right
+        loot_frame = tk.LabelFrame(bottom_row, text="Loot Gained", padx=4, pady=3,
                                    bg=UI_COLORS["panel_bg"], fg=UI_COLORS["text"],
                                    font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
                                    borderwidth=1, relief="solid")
-        loot_frame.pack(fill='x', pady=3)
-        self.loot_text = tk.Text(loot_frame, height=4, state='disabled',
+        loot_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
+        self.loot_text = tk.Text(loot_frame, height=6, state='disabled',
                                  bg=UI_COLORS["card_bg"], fg=UI_COLORS["text"],
                                  font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"]-1)),
                                  relief='flat', wrap='none')
         loot_scroll = ttk.Scrollbar(loot_frame, orient='vertical', command=self.loot_text.yview)
         self.loot_text.configure(yscrollcommand=loot_scroll.set)
         loot_scroll.pack(side='right', fill='y')
-        self.loot_text.pack(fill='x')
+        self.loot_text.pack(fill='both', expand=True)
         ttk.Button(loot_frame, text="📋 Copy Loot", command=self._copy_loot,
                    style="App.Secondary.TButton").pack(pady=2)
     
@@ -2048,11 +2258,63 @@ class SurveyHelperWindow(tk.Toplevel):
             self.dir_var.set(dir_path)
             self.settings.save()
             self._start_chat_monitor()
+
+    def _show_help(self):
+        """Show basic instructions for using the Survey Helper in a themed window."""
+        help_text = (
+            "Survey Helper quick guide:\n\n"
+            "1. ChatLogs Folder: Point this to your Project Gorgon ChatLogs folder.\n\n"
+            "2. Overlays: Use 'Show Overlays' to open the Map + Inventory helpers.\n"
+            "   Move/resize them like normal windows; use 'Save Layout' to remember.\n\n"
+            "3. Player Position: Double-click the map to set your spawn/player position.\n\n"
+            "4. Calibrate: Double-click the first survey pin and drag it so the pin\n"
+            "   sits exactly on the in-game red ring. This teaches the helper your\n"
+            "   current map scale so later pins line up.\n\n"
+            "5. Surveys: As you detect survey positions in chat, pins appear on the map\n"
+            "   and numbered slots appear in the inventory overlay.\n\n"
+            "6. Route: After positions are found, click 'Optimize Route' to get an\n"
+            "   efficient path and step through it with Previous/Next/Skip.\n"
+        )
+
+        win = tk.Toplevel(self)
+        win.title("Survey Helper Help")
+        apply_theme(win)
+        win.configure(bg=UI_COLORS["bg"])
+        set_window_icon(win)
+        win.transient(self)
+
+        frame = tk.Frame(win, bg=UI_COLORS["panel_bg"])
+        frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        text_widget = tk.Text(
+            frame,
+            height=14,
+            wrap="word",
+            bg=UI_COLORS["card_bg"],
+            fg=UI_COLORS["text"],
+            relief="flat",
+            font=(UI_ATTRS["font_family"], max(8, UI_ATTRS["font_size"] - 1)),
+        )
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text_widget.pack(side="left", fill="both", expand=True)
+
+        text_widget.insert("1.0", help_text)
+        text_widget.config(state="disabled")
+
+        btn_row = tk.Frame(win, bg=UI_COLORS["panel_bg"])
+        btn_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(btn_row, text="Close", command=win.destroy, style="App.Secondary.TButton").pack(pady=2)
     
     def _set_survey_count(self):
-        """Set the number of survey maps."""
+        """Synchronize overlay with the internally tracked survey count.
+
+        The manual "Survey Maps" controls have been removed; this now just
+        keeps the inventory overlay in sync when count_var changes
+        automatically from chat events.
+        """
         count = max(0, self.count_var.get())
-        self.count_var.set(count)
         self.settings.survey_count = count
         self.settings.save()
         
@@ -2150,18 +2412,33 @@ class SurveyHelperWindow(tk.Toplevel):
         self.map_open = True
         self.map_opacity_var.set(int(self.settings.map_opacity * 100))
         self._update_overlays_btn()
+        # Enforce map click-through always OFF
+        self.map_overlay.set_clickthrough(False)
+        # Draw the player marker if origin is set
+        if self.settings.origin_x is not None and self.settings.origin_y is not None:
+            self.map_overlay._draw_player_dot()
 
     def _show_inventory(self):
         """Open (or restore) the inventory overlay."""
         if self.inventory_open:
             return
+        
+        # Calculate total slots: max of (found + remaining) or tracked total crafted
+        total_crafted = len(self.items) + self.settings.survey_count
+        if total_crafted > self._total_surveys_crafted:
+            self._total_surveys_crafted = total_crafted
+        total_slots = max(self._total_surveys_crafted, total_crafted, self.settings.survey_count)
+        if total_slots == 0:
+            total_slots = self.settings.survey_count
+        
         if self.inv_overlay is None or not self.inv_overlay.winfo_exists():
             self.inv_overlay = InventoryOverlay(self, self.settings,
                                                on_close=self._on_inv_closed,
                                                next_callback=self._on_inv_next_clicked,
                                                activate_callback=self._start_ring_detection_for_item)
-            for i in range(self.settings.survey_count):
-                self.inv_overlay.mark_slot_filled(i)
+            # Set the display count first so grid draws enough slots
+            self.inv_overlay._display_slot_count = total_slots
+            self.inv_overlay.set_survey_count(total_slots)
         else:
             self.inv_overlay.deiconify()
             self.inv_overlay.lift()
@@ -2169,6 +2446,8 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inventory_open = True
         self.inv_opacity_var.set(int(self.settings.inv_opacity * 100))
         self._update_overlays_btn()
+        # Enforce inventory click-through always ON
+        self.inv_overlay.set_clickthrough(True)
 
     def _on_map_closed(self):
         """Called when map overlay is closed by user."""
@@ -2206,27 +2485,8 @@ class SurveyHelperWindow(tk.Toplevel):
         return (ordered[mid - 1] + ordered[mid]) / 2.0
 
     def _detect_player_from_map(self):
-        """Capture the visible map once and detect the player marker."""
-        if cv2 is None or np is None or ImageGrab is None:
-            self.status_var.set("OpenCV/Pillow capture is not available")
-            return
-        self._show_map()
-        if not (self.map_overlay and self.map_overlay.winfo_exists()):
-            self.status_var.set("Open the map overlay first")
-            return
-
-        self.status_var.set("Detecting player marker from the visible map...")
-        self._detect_player_once()
-
-    def _auto_initial_player_detect(self):
-        """Run a one-off player detection if we don't yet know origin.
-
-        Used on startup and after Reset Session so the map center tracks
-        the current character position without manual clicks.
-        """
-        if self.settings.origin_x is not None and self.settings.origin_y is not None:
-            return
-        self._detect_player_from_map()
+        """Auto player detection is disabled; fall back to manual spawn set."""
+        self._set_player_position()
 
     def _capture_map_bbox(self) -> Optional[Tuple[int, int, int, int]]:
         """Return the screen bbox of the map overlay canvas."""
@@ -2317,13 +2577,20 @@ class SurveyHelperWindow(tk.Toplevel):
 
         if best_center is None:
             return None
-        if best_shape_match > 0.4 or best_score < 120:
+
+        # Require a fairly strong match so we avoid snapping to the wrong
+        # UI element. If this fails, we fall back to manual click-to-set.
+        if best_shape_match > 0.35 or best_score < 130:
             return None
 
         return best_center
 
     def _apply_detected_player_marker(self, x: float, y: float):
-        """Update the visible player marker from detected map coordinates."""
+        """Update the visible player marker from detected map coordinates.
+
+        Also re-project all survey pins around the new origin so the
+        player dot and pins stay in sync on the map.
+        """
         self.settings.current_player_x = x
         self.settings.current_player_y = y
         if self.settings.origin_x is None or self.settings.origin_y is None:
@@ -2332,6 +2599,13 @@ class SurveyHelperWindow(tk.Toplevel):
         self.settings.save()
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay._draw_player_dot()
+        # Recalculate survey item positions to match the new origin/player
+        if getattr(self, "items", None):
+            try:
+                self._recalculate_item_positions()
+            except Exception:
+                # Failsafe: never let projection errors break the UI
+                pass
 
     def _detect_player_once(self):
         """Capture the map once and seed the player marker immediately."""
@@ -2348,10 +2622,8 @@ class SurveyHelperWindow(tk.Toplevel):
             return
         center = self._detect_player_marker(np.array(frame))
         if center is None:
-            self.status_var.set("Could not find the player marker on the map")
             return
         self._apply_detected_player_marker(*center)
-        self.status_var.set("Player marker detected from the visible map")
 
     def _start_ring_detection_for_current(self):
         """Arm ring watching for the current route item or first survey."""
@@ -2362,18 +2634,7 @@ class SurveyHelperWindow(tk.Toplevel):
         else:
             self.status_var.set("No survey items available for ring detection")
 
-    def _update_ring_watch_btn(self):
-        """Refresh the persistent ring-watch button label."""
-        if self.ring_watch_btn is not None:
-            state = "ON" if self._ring_detection_active else "OFF"
-            self.ring_watch_btn.config(text=f"🔴 Watch Ring: {state}")
 
-    def _toggle_ring_watch(self):
-        """Toggle persistent ring watching on or off."""
-        if self._ring_detection_active:
-            self._stop_ring_watch("Ring watch stopped")
-        else:
-            self._start_ring_watch()
 
     def _start_ring_watch(self):
         """Start the persistent ring watcher and arm the current survey if possible."""
@@ -2388,7 +2649,6 @@ class SurveyHelperWindow(tk.Toplevel):
 
         self._ring_watch_stop.clear()
         self._ring_detection_active = True
-        self._update_ring_watch_btn()
         self.status_var.set("Ring watch running. Double-click a survey slot to arm it.")
         threading.Thread(target=self._ring_watch_worker, args=(bbox,), daemon=True).start()
         if self.current_route or self.items:
@@ -2399,7 +2659,6 @@ class SurveyHelperWindow(tk.Toplevel):
         self._ring_watch_stop.set()
         self._ring_detection_active = False
         self._ring_detection_target = None
-        self._update_ring_watch_btn()
         if status_message:
             self.status_var.set(status_message)
 
@@ -2526,10 +2785,13 @@ class SurveyHelperWindow(tk.Toplevel):
         item = self.items[item_index]
         item.x = center_x
         item.y = center_y
+        # Convert from pixels to logical map meters where south is +Y. A ring
+        # north of the player has center_y < origin_y, giving dy_m < 0.
         item.dx_m = (center_x - self.settings.origin_x) / self.settings.scale_factor
-        item.dy_m = (self.settings.origin_y - center_y) / self.settings.scale_factor
+        item.dy_m = (center_y - self.settings.origin_y) / self.settings.scale_factor
         item.distance = round(math.sqrt(item.dx_m ** 2 + item.dy_m ** 2), 1)
         item.direction = self._vector_to_direction(item.dx_m, item.dy_m)
+        item.calibrated = True  # ring refined, but math pins still work without it
 
         self._recalculate_item_positions()
         self._ring_detection_target = None
@@ -2544,8 +2806,8 @@ class SurveyHelperWindow(tk.Toplevel):
         angle_deg = math.degrees(math.atan2(dy_m, dx_m))
         snap = round(angle_deg / 45) * 45 % 360
         snap_to_dir = {
-            0: 'E', 45: 'NE', 90: 'N', 135: 'NW',
-            180: 'W', 225: 'SW', 270: 'S', 315: 'SE'
+            0: 'E', 45: 'NE', 90: 'S', 135: 'SW',
+            180: 'W', 225: 'NW', 270: 'N', 315: 'NE'
         }
         return snap_to_dir.get(snap, 'N')
 
@@ -2560,6 +2822,8 @@ class SurveyHelperWindow(tk.Toplevel):
         self.settings.scale_factor = None
         self.settings.current_player_x = None
         self.settings.current_player_y = None
+        self.settings.player_frac_x = None
+        self.settings.player_frac_y = None
         self.settings.save()
 
         prompt = f"{event_msg}  —  Click map to set spawn position"
@@ -2573,6 +2837,21 @@ class SurveyHelperWindow(tk.Toplevel):
     def _on_map_click(self, x: float, y: float, action: str, item_index: Optional[int] = None):
         """Handle map click events."""
         if action == 'set_origin':
+            # When the user clicks their spawn, remember that position as a
+            # fraction of the current map canvas so we can project pins using
+            # the canonical per-zone map sizes.
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                try:
+                    cw = max(self.map_overlay.canvas.winfo_width(), 1)
+                    ch = max(self.map_overlay.canvas.winfo_height(), 1)
+                    self.settings.player_frac_x = max(0.0, min(1.0, x / cw))
+                    self.settings.player_frac_y = max(0.0, min(1.0, y / ch))
+                except Exception:
+                    self.settings.player_frac_x = None
+                    self.settings.player_frac_y = None
+            # Clear any legacy pixel-per-meter scale; canonical map math owns it now.
+            self.settings.scale_factor = None
+            self.settings.save()
             self.status_var.set(f"Player position set: ({x:.0f}, {y:.0f})")
             # Recalculate canvas coordinates for all items that have metric offsets
             self._recalculate_item_positions()
@@ -2600,6 +2879,12 @@ class SurveyHelperWindow(tk.Toplevel):
         elif action == 'item_preview_moved' and item_index is not None:
             self.status_var.set(f"Adjusting pin #{item_index + 1}...")
         elif action == 'item_dragged' and item_index is not None:
+            # When we have a canonical map size for this zone, pin dragging should
+            # not mutate scale: positions come purely from survey math.
+            if self.settings.zone_name and self.settings.zone_name in MAP_SIZES:
+                self.status_var.set("Pin drag calibration is disabled when zone map size is known")
+                self._recalculate_item_positions()
+                return
             if self.settings.origin_x is None or self.settings.origin_y is None:
                 self.status_var.set("Set your position first, then drag a pin to calibrate")
                 self._recalculate_item_positions()
@@ -2619,10 +2904,13 @@ class SurveyHelperWindow(tk.Toplevel):
     def _recalculate_item_positions(self):
         """Recalculate canvas x/y for all items and refresh map + route.
 
-        - If a real player origin is set, items are positioned around it.
-        - If not, a temporary center origin is used **only for drawing pins**;
-          the saved player marker is NOT changed.
+        Prefer canonical per-zone map sizes (from MAP_SIZES) so that pins match
+        the original pg_survey_helper math. If no canonical size is known for
+        the current zone, fall back to the legacy pixel-per-meter scaling.
         """
+        if not self.items:
+            return
+
         # Determine canvas size (from live overlay or saved size)
         if self.map_overlay and self.map_overlay.winfo_exists():
             cw = self.map_overlay.canvas.winfo_width()
@@ -2640,42 +2928,96 @@ class SurveyHelperWindow(tk.Toplevel):
             # Temporary render origin at canvas center (do NOT write back to settings)
             ox, oy = cw // 2, ch // 2
 
-        # Auto-compute a scale that fits all items if none is saved
-        sf = self.settings.scale_factor
-        if sf is None and self.items:
-            max_dist = max((item.distance for item in self.items if item.distance > 0), default=1)
-            # Fit furthest item within 40% of the shorter canvas dimension from origin
-            sf = (min(cw, ch) * 0.4) / max_dist
-            # Remember this auto scale so subsequent calls are stable
-            self.settings.scale_factor = sf
-            self.settings.save()
-
-        if sf is None or sf <= 0:
-            return
-
+        # Common direction table (0 = East, CCW in radians)
         _dir_angles = {
-            'E': 0, 'NE': math.pi/4, 'N': math.pi/2, 'NW': 3*math.pi/4,
-            'W': math.pi, 'SW': 5*math.pi/4, 'S': 3*math.pi/2, 'SE': 7*math.pi/4
+            # Angles in radians, 0 = East, counter-clockwise, but we convert
+            # to map meters where south is +Y (north is -Y).
+            'E': 0.0,
+            'NE': -math.pi / 4.0,
+            'N': -math.pi / 2.0,
+            'NW': -3.0 * math.pi / 4.0,
+            'W': math.pi,
+            'SW': 3.0 * math.pi / 4.0,
+            'S': math.pi / 2.0,
+            'SE': math.pi / 4.0,
         }
 
-        for item in self.items:
-            if item.dx_m is not None and item.dy_m is not None:
-                item.x = ox + item.dx_m * sf
-                item.y = oy - item.dy_m * sf
-            else:
-                angle = _dir_angles.get(item.direction, 0)
-                item.x = ox + item.distance * math.cos(angle) * sf
-                item.y = oy - item.distance * math.sin(angle) * sf
+        # ── Canonical per-zone map math (preferred) ────────────────────────────
+        zone = self.settings.zone_name
+        map_size = MAP_SIZES.get(zone) if zone else None
+        used_canonical = False
+        if map_size is not None and cw > 1 and ch > 1 and has_real_origin:
+            map_w, map_h = map_size
+
+            # Player position in logical map meters, stored as fractions so it
+            # survives window resizes, matching the web survey helper.
+            frac_x = self.settings.player_frac_x
+            frac_y = self.settings.player_frac_y
+            if frac_x is None or frac_y is None:
+                frac_x = max(0.0, min(1.0, ox / cw))
+                frac_y = max(0.0, min(1.0, oy / ch))
+                self.settings.player_frac_x = frac_x
+                self.settings.player_frac_y = frac_y
+                self.settings.save()
+
+            player_x_m = frac_x * map_w
+            player_y_m = frac_y * map_h
+
+            for item in self.items:
+                dx_m = item.dx_m
+                dy_m = item.dy_m
+                if dx_m is None or dy_m is None:
+                    angle = _dir_angles.get(item.direction, 0.0)
+                    dx_m = item.distance * math.cos(angle)
+                    dy_m = item.distance * math.sin(angle)
+
+                # In map space, +X is east and +Y is south. dx_m/dy_m are
+                # already in that space, so just add them to the player.
+                survey_x_m = player_x_m + dx_m
+                survey_y_m = player_y_m + dy_m
+
+                item.x = (survey_x_m / map_w) * cw
+                item.y = (survey_y_m / map_h) * ch
+
+            used_canonical = True
+
+        # ── Legacy pixel-per-meter fallback ────────────────────────────────────
+        if not used_canonical:
+            sf = self.settings.scale_factor
+            if sf is None:
+                max_dist = max((item.distance for item in self.items if item.distance > 0), default=1.0)
+                sf = (min(cw, ch) * 0.48) / max_dist
+                self.settings.scale_factor = sf
+                self.settings.save()
+
+            if sf is None or sf <= 0:
+                return
+
+            for item in self.items:
+                if item.dx_m is not None and item.dy_m is not None:
+                    item.x = ox + item.dx_m * sf
+                    item.y = oy + item.dy_m * sf
+                else:
+                    angle = _dir_angles.get(item.direction, 0.0)
+                    dx_m = item.distance * math.cos(angle)
+                    dy_m = item.distance * math.sin(angle)
+                    item.x = ox + dx_m * sf
+                    item.y = oy + dy_m * sf
 
         # Sync to MapOverlay's list and redraw
         if self.map_overlay and self.map_overlay.winfo_exists():
             self.map_overlay.survey_items = self.items
             self.map_overlay.clear_items()
-            # Only draw player marker if we have a real origin
-            if has_real_origin:
-                self.map_overlay.settings.origin_x = self.settings.origin_x
-                self.map_overlay.settings.origin_y = self.settings.origin_y
-                self.map_overlay._draw_player_dot()
+            # Build a display index map so that uncollected items are
+            # renumbered 1..N with no gaps, and collected ones lose their
+            # numbers. This mirrors pg_survey_helper's renumbering mode.
+            display_map: Dict[int, int] = {}
+            pos = 1
+            for idx, it in enumerate(self.items):
+                if not it.collected:
+                    display_map[idx] = pos
+                    pos += 1
+            self.map_overlay._display_index_map = display_map
             for i, item in enumerate(self.items):
                 self.map_overlay._draw_item(item, i)
             # Redraw route pins if a route is active
@@ -2683,17 +3025,91 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.map_overlay.draw_route(self.current_route, self.current_route_index, self.items)
 
 
+    def _toggle_pins_only_mode(self):
+        """Toggle a mode where both overlays are dimmed to 20%.
+
+        On: save the current Map % and Inv % as preferences, then set both to
+        20% opacity so you can see the game clearly while still seeing pins and
+        slots. Off: restore both sliders to the saved values.
+        """
+        enabled = self.pins_only_var.get()
+
+        if enabled:
+            # Snapshot current preferred opacity whenever the user turns Pins Only on.
+            try:
+                preferred_map_pct = max(0, min(100, self.map_opacity_var.get()))
+            except tk.TclError:
+                preferred_map_pct = int(self.settings.map_opacity * 100)
+            if preferred_map_pct <= 0:
+                preferred_map_pct = 40
+            self._preferred_map_opacity = preferred_map_pct / 100.0
+
+            try:
+                preferred_inv_pct = max(0, min(100, self.inv_opacity_var.get()))
+            except tk.TclError:
+                preferred_inv_pct = int(self.settings.inv_opacity * 100)
+            if preferred_inv_pct <= 0:
+                preferred_inv_pct = 40
+            self._preferred_inv_opacity = preferred_inv_pct / 100.0
+
+            # Set both overlays to 20% (0.2) opacity if they are open; also keep
+            # the spinboxes in sync.
+            low_pct = 20
+            low_value = 0.2
+
+            self.map_opacity_var.set(low_pct)
+            self.settings.map_opacity = low_value
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay.update_opacity(low_value)
+
+            self.inv_opacity_var.set(low_pct)
+            self.settings.inv_opacity = low_value
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay.update_opacity(low_value)
+
+            self.settings.save()
+        else:
+            # Restore last non-zero preferences, defaulting to 0.4 (40%) if unknown.
+            restore_map = self._preferred_map_opacity
+            if restore_map is None or restore_map <= 0.0:
+                restore_map = 0.4
+            restore_inv = self._preferred_inv_opacity
+            if restore_inv is None or restore_inv <= 0.0:
+                restore_inv = 0.4
+
+            map_pct = int(round(restore_map * 100))
+            inv_pct = int(round(restore_inv * 100))
+
+            self.map_opacity_var.set(map_pct)
+            self.settings.map_opacity = restore_map
+            if self.map_overlay and self.map_overlay.winfo_exists():
+                self.map_overlay.update_opacity(restore_map)
+
+            self.inv_opacity_var.set(inv_pct)
+            self.settings.inv_opacity = restore_inv
+            if self.inv_overlay and self.inv_overlay.winfo_exists():
+                self.inv_overlay.update_opacity(restore_inv)
+
+            self.settings.save()
+
     def _update_map_opacity(self):
         """Update map overlay opacity (from percentage spinbox)."""
         try:
             percentage = self.map_opacity_var.get()
         except tk.TclError:
             return
-        percentage = max(5, min(100, percentage))
+        percentage = max(0, min(100, percentage))
         self.map_opacity_var.set(percentage)
         decimal_value = percentage / 100.0
         self.settings.map_opacity = decimal_value
+
+        # Remember preferred map opacity when not in Pins Only mode.
+        if not self.pins_only_var.get():
+            self._preferred_map_opacity = decimal_value
+
         if self.map_overlay and self.map_overlay.winfo_exists():
+            # Delegate to MapOverlay so it can choose between isolated
+            # background mode and whole-window alpha based on platform.
             self.map_overlay.update_opacity(decimal_value)
         else:
             self.settings.save()
@@ -2708,6 +3124,11 @@ class SurveyHelperWindow(tk.Toplevel):
         self.inv_opacity_var.set(percentage)
         decimal_value = percentage / 100.0
         self.settings.inv_opacity = decimal_value
+
+        # Remember preferred inventory opacity when not in Pins Only mode.
+        if not self.pins_only_var.get():
+            self._preferred_inv_opacity = decimal_value
+
         if self.inv_overlay and self.inv_overlay.winfo_exists():
             # update_opacity() will call save() for us
             self.inv_overlay.update_opacity(decimal_value)
@@ -2715,24 +3136,6 @@ class SurveyHelperWindow(tk.Toplevel):
             # Overlay not open, save directly
             self.settings.save()
     
-    def _toggle_lock_overlays(self):
-        """Toggle click-through lock on both overlays."""
-        enabled = not (self.map_clickthrough_var.get() and self.inv_clickthrough_var.get())
-        self.map_clickthrough_var.set(enabled)
-        self.inv_clickthrough_var.set(enabled)
-        self.settings.map_clickthrough = enabled
-        self.settings.inv_clickthrough = enabled
-        self.settings.save()
-        if self.map_overlay and self.map_overlay.winfo_exists():
-            self.map_overlay.set_clickthrough(enabled)
-        if self.inv_overlay and self.inv_overlay.winfo_exists():
-            self.inv_overlay.set_clickthrough(enabled)
-        self._update_lock_btn()
-
-    def _update_lock_btn(self):
-        """Update lock button text."""
-        locked = self.map_clickthrough_var.get() and self.inv_clickthrough_var.get()
-        self.lock_btn.config(text=f"🔒 Lock Overlays: {'ON' if locked else 'OFF'}")
 
     def _save_overlay_layout(self):
         """Read current overlay geometry and save to settings."""
@@ -2780,7 +3183,9 @@ class SurveyHelperWindow(tk.Toplevel):
     
     def _update_positions_display(self):
         """Refresh the detected positions text widget."""
-        total = self.settings.survey_count
+        # `survey_count` tracks remaining maps; the total crafted is
+        # remaining + positions already found.
+        total = self.settings.survey_count + len(self.items)
         found = len(self.items)
         self.positions_var.set(f"Positions: {found}/{total} found")
         self.positions_text.config(state='normal')
@@ -2859,16 +3264,18 @@ class SurveyHelperWindow(tk.Toplevel):
         # Schedule next poll
         self.after(1000, self._poll_chat)
     
-    # Map full compass words to (dx_unit, dy_unit) where east=+x, north=+y
+    # Map full compass words to (dx_unit, dy_unit) in logical map meters
+    # where east = +X and **south = +Y**. This matches pg_survey_helper's
+    # convention: north is negative Y, south is positive Y.
     _COMPASS_VECTORS = {
-        'n': (0.0, 1.0), 'north': (0.0, 1.0),
-        's': (0.0, -1.0), 'south': (0.0, -1.0),
+        'n': (0.0, -1.0), 'north': (0.0, -1.0),
+        's': (0.0, 1.0), 'south': (0.0, 1.0),
         'e': (1.0, 0.0), 'east': (1.0, 0.0),
         'w': (-1.0, 0.0), 'west': (-1.0, 0.0),
-        'ne': (0.7071, 0.7071), 'northeast': (0.7071, 0.7071),
-        'nw': (-0.7071, 0.7071), 'northwest': (-0.7071, 0.7071),
-        'se': (0.7071, -0.7071), 'southeast': (0.7071, -0.7071),
-        'sw': (-0.7071, -0.7071), 'southwest': (-0.7071, -0.7071),
+        'ne': (0.7071, -0.7071), 'northeast': (0.7071, -0.7071),
+        'nw': (-0.7071, -0.7071), 'northwest': (-0.7071, -0.7071),
+        'se': (0.7071, 0.7071), 'southeast': (0.7071, 0.7071),
+        'sw': (-0.7071, 0.7071), 'southwest': (-0.7071, 0.7071),
     }
     _ABBREV_DIR = {
         'n': 'N', 's': 'S', 'e': 'E', 'w': 'W',
@@ -2917,6 +3324,8 @@ class SurveyHelperWindow(tk.Toplevel):
             self._on_player_position_reset("🔁 Recalled — position reset")
 
         # ── 2. Item added to inventory (survey creation OR loot) ──────────────────
+        # NOTE: count_var is internal-only; the manual "Survey Maps" UI has
+        # been removed so users don't have to manage counts by hand.
         added_match = re.search(r'\[Status\]\s+(.+?)\s+added to inventory', line, re.IGNORECASE)
         if added_match:
             item_name = added_match.group(1).strip()
@@ -2924,6 +3333,7 @@ class SurveyHelperWindow(tk.Toplevel):
                 # Survey map crafted — auto-increment counter
                 new_count = self.count_var.get() + 1
                 self.count_var.set(new_count)
+                self._total_surveys_crafted = new_count  # Track total crafted
                 self._set_survey_count()
                 self.status_var.set(f"Survey #{new_count} made — {item_name}")
                 self._set_phase(max(self.settings.current_phase, 1))
@@ -2977,25 +3387,58 @@ class SurveyHelperWindow(tk.Toplevel):
                             180: 'W', 225: 'SW', 270: 'S', 315: 'SE'}
             direction = _snap_to_dir.get(snap, 'N')
 
+            # Check for duplicate survey positions for the *same* survey map.
+            # If you click the same survey multiple times without moving, the
+            # game will emit repeated "The X is ..." lines. Those should *not*
+            # create new pins.
+            for existing in reversed(self.items):  # check most recent first
+                if not getattr(existing, 'name', None):
+                    continue
+                if existing.collected:
+                    continue
+                if existing.name.strip().lower() != name.lower():
+                    continue
+                # Treat as duplicate if both the direction and distance match
+                # very closely. This is much stricter than the 8m dx/dy check
+                # and is tuned specifically for repeated clicks on the same map.
+                if (existing.direction == direction and
+                        abs(existing.distance - total_dist) < 1.0):
+                    self.status_var.set(
+                        f"Duplicate position ignored for {name} ({total_dist:.0f}m {direction})"
+                    )
+                    return
+
             item = SurveyItem(
                 name=name,
                 distance=round(total_dist, 1),
                 direction=direction,
                 dx_m=dx_m,
                 dy_m=dy_m,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
+                calibrated=True,  # text-based position is good enough for pins
             )
 
             self.items.append(item)
 
-            if self.map_overlay and self.map_overlay.winfo_exists():
-                auto_placed = self.map_overlay.add_survey_item(item)
-                if not auto_placed:
-                    self.status_var.set(f"Found: {name} — click map to calibrate")
-                else:
-                    self.status_var.set(f"Found: {name} at {total_dist:.0f}m {direction}")
-            else:
-                self.status_var.set(f"Found: {name} at {total_dist:.0f}m {direction}")
+            # Each successful survey position means one map was just used.
+            # Decrement the remaining survey map count, but never let it go
+            # below zero. The inventory overlay's per-slot numbering is driven
+            # by loot/collection events, not this counter.
+            current = max(self.settings.survey_count, self.count_var.get())
+            if current > 0:
+                new_count = current - 1
+                self.count_var.set(new_count)
+                self.settings.survey_count = new_count
+                # Update total crafted tracking (used + remaining)
+                total_crafted = len(self.items) + new_count
+                if total_crafted > self._total_surveys_crafted:
+                    self._total_surveys_crafted = total_crafted
+                self.settings.save()
+
+            # Always compute/refresh map pins using math from origin, scale,
+            # and the text offsets. This does not depend on ring detection.
+            self._recalculate_item_positions()
+            self.status_var.set(f"Found: {name} at {total_dist:.0f}m {direction}")
 
             self._update_session_info()
             self._set_phase(max(self.settings.current_phase, 2))
@@ -3006,6 +3449,8 @@ class SurveyHelperWindow(tk.Toplevel):
         collected_match = re.search(r'\[Status\]\s+(.+?)\s+collected!', line, re.IGNORECASE)
         if collected_match:
             item_name = collected_match.group(1).strip()
+            # Record loot, then let _mark_item_collected resolve which survey
+            # this belongs to based on the name and current route.
             self._record_loot(item_name)
             self._mark_item_collected(item_name)
             return
@@ -3027,24 +3472,61 @@ class SurveyHelperWindow(tk.Toplevel):
         self._update_loot_display()
 
     def _mark_item_collected(self, name: str):
-        """Mark a survey item as collected by name."""
-        for i, item in enumerate(self.items):
-            if not item.collected and (
-                name.lower() in item.name.lower() or item.name.lower() in name.lower()
-            ):
-                item.collected = True
+        """Mark a survey item as collected by name.
 
-                if self.map_overlay and self.map_overlay.winfo_exists():
-                    self.map_overlay.mark_collected(i)
+        To avoid corrupting the overlays, we only act on *exact* name matches
+        (case-insensitive) and never use loose substring matching.
+        """
+        target = name.strip().lower()
 
-                self.status_var.set(f"Collected: {item.name}")
-                self._update_session_info()
-                # Auto-advance route when item matches current next
-                if (self.current_route and
-                        self.current_route_index < len(self.current_route) and
-                        self.current_route[self.current_route_index] == i):
-                    self.after(300, self._next_item)
-                break
+        # Exact case-insensitive matches for uncollected items
+        exact_indices = [
+            i for i, item in enumerate(self.items)
+            if (not item.collected and item.name and item.name.strip().lower() == target)
+        ]
+
+        if not exact_indices:
+            return
+
+        # If we have a route, prefer the current route item when it matches
+        chosen_index = None
+        if self.current_route and 0 <= self.current_route_index < len(self.current_route):
+            route_idx = self.current_route[self.current_route_index]
+            if route_idx in exact_indices:
+                chosen_index = route_idx
+
+        if chosen_index is None:
+            # Fall back to the first exact match
+            chosen_index = exact_indices[0]
+
+        item = self.items[chosen_index]
+        item.collected = True
+
+        if self.map_overlay and self.map_overlay.winfo_exists():
+            # Completely remove the pin from the map
+            self.map_overlay.clear_item(chosen_index)
+
+        if self.inv_overlay and self.inv_overlay.winfo_exists():
+            # Mark the corresponding inventory slot empty and let the
+            # inventory overlay compact its labels based on its
+            # internal mapping.
+            self.inv_overlay.mark_slot_empty(chosen_index)
+
+        # Redraw pins with compressed numbering
+        try:
+            self._recalculate_item_positions()
+        except Exception:
+            pass
+
+        self.status_var.set(f"Collected: {item.name}")
+        self._update_session_info()
+        # Auto-advance route when item matches current next
+        if (
+            self.current_route
+            and 0 <= self.current_route_index < len(self.current_route)
+            and self.current_route[self.current_route_index] == chosen_index
+        ):
+            self.after(300, self._next_item)
     
     def _optimize_route(self):
         """Optimize route using nearest neighbor algorithm."""
@@ -3055,7 +3537,7 @@ class SurveyHelperWindow(tk.Toplevel):
         # Route selection must use the latest calibrated canvas positions.
         self._recalculate_item_positions()
         
-        # Get uncollected items
+        # Get uncollected items that have valid projected positions
         uncollected = [
             (i, item) for i, item in enumerate(self.items)
             if not item.collected and item.x is not None and item.y is not None
@@ -3065,14 +3547,13 @@ class SurveyHelperWindow(tk.Toplevel):
             self.status_var.set("No uncollected survey positions available for routing")
             return
         
-        # Use player position as start if known; otherwise start from centroid of items
-        if self.settings.current_player_x is not None and self.settings.current_player_y is not None:
-            start_x, start_y = self.settings.current_player_x, self.settings.current_player_y
-        elif self.settings.origin_x is not None:
-            start_x, start_y = self.settings.origin_x, self.settings.origin_y
-        else:
-            start_x = sum(item.x for _, item in uncollected) / len(uncollected)
-            start_y = sum(item.y for _, item in uncollected) / len(uncollected)
+        # Use spawn/origin position as the route start. If we don't know it
+        # yet, force the user to set/detect player position first so routes
+        # are always anchored correctly on the map.
+        if self.settings.origin_x is None or self.settings.origin_y is None:
+            self.status_var.set("Set player position first (click your spawn on the map)")
+            return
+        start_x, start_y = self.settings.origin_x, self.settings.origin_y
         
         # Nearest neighbor algorithm
         route = []
@@ -3222,9 +3703,8 @@ class SurveyHelperWindow(tk.Toplevel):
         self._update_positions_display()
         self._update_loot_display()
 
-        # After a reset, automatically re-detect the player marker so the
-        # new session starts from the current character position.
-        self.after(1000, self._auto_initial_player_detect)
+        # After a reset, we no longer auto-detect the player marker. The user
+        # sets spawn by clicking on the map when ready.
     
     def on_close(self):
         """Clean up on window close."""
@@ -3255,10 +3735,15 @@ class SurveyHelperWindow(tk.Toplevel):
                 self.settings.main_window_size = (width, height)
     
     def _restore_overlays(self):
-        """Restore map and/or inventory overlays if they were open before."""
-        if self.settings.map_was_open:
+        """Restore map and/or inventory overlays.
+
+        On first launch (no prior state), automatically show both overlays so
+        new users immediately see the map + inventory helpers. On later runs,
+        respect the last-opened state stored in settings.
+        """
+        if self.settings.map_was_open or (not self.settings.map_was_open and not self.settings.inventory_was_open):
             self._show_map()
-        if self.settings.inventory_was_open:
+        if self.settings.inventory_was_open or (not self.settings.map_was_open and not self.settings.inventory_was_open):
             self._show_inventory()
 
 

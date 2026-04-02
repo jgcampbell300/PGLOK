@@ -1,0 +1,17 @@
+1. go to the zone you want to survey.
+    this shows what area the user just entered from the chat monitor "******************** Entering Area: Eltibule"
+    and the character posistion should be set at this point and a reminder for the user not to move till it is time to start surveying.
+2. make the ammount of surveys you want to do.
+    This lets us know that we just made a survey."26-03-30 17:23:57	[Status] Eltibule Blue Mineral Survey added to inventory.
+" the survey count should be set each time a survey is made and the count increased with a reset button when you are done.
+3. When done making surveys we need a reminder to sort the surveys. Then click each one to get its possistion.
+     when a survey is click it will show the position "26-03-30 17:37:26	[Status] The Fluorite is 2001m east and 25m north."
+4. Once we click every survey and have all the positions, we need to click the Optimize Route button so the helper can show us the optimized route on the map over lay.
+    on the inv overlay we need a marker over the survey that is next in line.
+5. We need clickable buttons on the inv overlay to move to next survey once the prevous servey is done.
+    Every time a survey is used it will be remove from the inventory. so we need a way to track this and keep the route in order.
+6. Every time a survey is used we gain something like a gem or metal etc. I would like all of the gained items tracked and a list made of everrything we gained.
+    these are examples of what is shown every time we use a survey secsfully.
+    "26-03-30 17:47:17	[Status] Fluorite added to inventory."
+    "26-03-30 17:47:17	[Status] Fluorite collected!"
+

@@ -10,6 +10,13 @@ if exist ".venv\Scripts\python.exe" (
   goto :eof
 )
 
+if exist "build_env\Scripts\python.exe" (
+  "build_env\Scripts\python.exe" scripts\check_env.py
+  if errorlevel 1 goto :ask_install_build_env
+  "build_env\Scripts\python.exe" -m src.pglok
+  goto :eof
+)
+
 where py >nul 2>&1
 if %errorlevel%==0 (
   py -3 scripts\check_env.py
@@ -30,6 +37,17 @@ if /I "%ANSWER%"=="Y" (
   call install_windows.bat
   ".venv\Scripts\python.exe" scripts\check_env.py || goto :fail
   ".venv\Scripts\python.exe" -m src.pglok
+  goto :eof
+)
+goto :cancel
+
+:ask_install_build_env
+echo.
+set /p ANSWER=Dependencies are missing. Install now? (Y/N): 
+if /I "%ANSWER%"=="Y" (
+  call install_windows.bat
+  "build_env\Scripts\python.exe" scripts\check_env.py || goto :fail
+  "build_env\Scripts\python.exe" -m src.pglok
   goto :eof
 )
 goto :cancel

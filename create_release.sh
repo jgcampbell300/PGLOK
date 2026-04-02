@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TAG="v0.1.9"
-TITLE="PGLOK v0.1.9"
-LINUX_ASSET="PGLOK-Linux-v0.1.9.tar.gz"
-SOURCE_ASSET="PGLOK-v0.1.9-source.tar.gz"
+TAG="v0.2.0"
+TITLE="PGLOK v0.2.0"
+LINUX_ASSET="PGLOK-Linux-v0.2.0.tar.gz"
+SOURCE_ASSET="PGLOK-v0.2.0-source.tar.gz"
 
 echo "Creating $TITLE"
 
