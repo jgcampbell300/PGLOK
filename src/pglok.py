@@ -29,12 +29,22 @@ import sys
 from src.database.database_manager import get_database_manager
 
 # Import base addon
+# Addon base class (optional at runtime)
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     addon_root = Path(sys._MEIPASS) / "addons"
 else:
     addon_root = Path(__file__).resolve().parent.parent / "addons"
-sys.path.insert(0, str(addon_root))
-from base_addon import BaseAddon
+
+try:
+    # Allow import both from the source tree (addons/base_addon.py) and from
+    # the frozen bundle where "addons" is next to the executable.
+    if addon_root.exists():
+        sys.path.insert(0, str(addon_root))
+    from base_addon import BaseAddon  # type: ignore
+except Exception:
+    # If the addons package or BaseAddon is missing, continue without crashing;
+    # the Addons menu will simply show as unavailable.
+    BaseAddon = object  # fallback placeholder
 
 
 WINDOW_STATE_FILE = config.CONFIG_DIR / "ui_window_state.json"

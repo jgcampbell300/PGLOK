@@ -26,13 +26,13 @@
     437,
     547
   ],
-  "scale_factor": 0.15228876789675339,
-  "origin_x": 245,
-  "origin_y": 242,
-  "current_player_x": 245,
-  "current_player_y": 242,
-  "player_frac_x": 0.5190677966101694,
-  "player_frac_y": 0.4898785425101215,
+  "scale_factor": null,
+  "origin_x": null,
+  "origin_y": null,
+  "current_player_x": null,
+  "current_player_y": null,
+  "player_frac_x": null,
+  "player_frac_y": null,
   "main_window_position": [
     5846,
     1377
@@ -41,9 +41,9 @@
     633,
     782
   ],
-  "map_was_open": true,
-  "inventory_was_open": true,
+  "map_was_open": false,
+  "inventory_was_open": false,
   "always_on_top": true,
-  "zone_name": null,
-  "current_phase": 3
+  "zone_name": "Serbule",
+  "current_phase": 1
 }
