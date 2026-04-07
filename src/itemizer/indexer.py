@@ -286,6 +286,48 @@ def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Pat
     return result
 
 
+def get_carried_item_names(server: str = "", character: str = "", db_path: Optional[Path] = None):
+    """Return a sorted list of item names carried by the given character.
+
+    "Carried" is defined as items that are flagged IsInInventory in the
+    character's item report and whose StorageVault is either NULL/empty or
+    looks like a saddle/saddlebag.
+    """
+    db_path = Path(db_path) if db_path else get_db_path()
+    if not db_path.exists() or not character:
+        return []
+
+    where = ["1=1", "i.is_in_inventory = 1"]
+    params = []
+
+    if server:
+        where.append("r.server = ?")
+        params.append(server)
+    if character:
+        where.append("r.character = ?")
+        params.append(character)
+
+    # Treat NULL/empty storage_vault as personal inventory; include saddles/bags.
+    where.append("(i.storage_vault IS NULL OR i.storage_vault = '' OR i.storage_vault LIKE '%Saddle%')")
+
+    where_sql = " AND ".join(where)
+
+    with sqlite3.connect(db_path) as conn:
+        ensure_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT i.item_name
+            FROM items i
+            JOIN reports r ON r.id = i.report_id
+            WHERE {where_sql}
+            ORDER BY i.item_name COLLATE NOCASE
+            """,
+            tuple(params),
+        ).fetchall()
+
+    return [row[0] for row in rows if row[0]]
+
+
 def get_filter_values(db_path: Optional[Path] = None):
     db_path = Path(db_path) if db_path else get_db_path()
     if not db_path.exists():

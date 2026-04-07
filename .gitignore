@@ -41,3 +41,9 @@ create_icon.py
 **/bin/python3*
 **/lib64/
 **/lib/python*
+
+# Local analysis notes
+notes/favor_gain_info.txt
+
+# Local notes (ignored from Git)
+notes/

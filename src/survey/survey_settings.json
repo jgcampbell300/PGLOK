@@ -1,6 +1,6 @@
 {
   "chatlog_dir": "/home/jgcampbell300/.config/unity3d/Elder Game/Project Gorgon/ChatLogs",
-  "survey_count": 2,
+  "survey_count": 0,
   "map_opacity": 0.5,
   "inv_opacity": 0.5,
   "map_clickthrough": false,
@@ -34,16 +34,16 @@
   "player_frac_x": null,
   "player_frac_y": null,
   "main_window_position": [
-    5846,
+    5848,
     1377
   ],
   "main_window_size": [
     633,
     782
   ],
-  "map_was_open": false,
-  "inventory_was_open": false,
+  "map_was_open": true,
+  "inventory_was_open": true,
   "always_on_top": true,
-  "zone_name": "Serbule",
-  "current_phase": 1
+  "zone_name": null,
+  "current_phase": 0
 }

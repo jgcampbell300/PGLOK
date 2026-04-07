@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Optional, List
 import threading
 
+import tkinter as tk
+from tkinter import ttk
+
+from src.config.ui_theme import apply_theme
+from src.config import config
+from src.config.window_state import setup_window
 from src.food_tracker import FoodTracker, FoodEntry
 from src.food_parser import parse_foods, clear_food_cache
 
@@ -13,29 +19,40 @@ from src.food_parser import parse_foods, clear_food_cache
 class FoodComparisonWindow:
     """Window for comparing and tracking foods."""
     
-    def __init__(self, parent: tk.Tk, character_name: str = "Unknown"):
+    def __init__(self, parent, character_name: str = "Unknown"):
         """Initialize the food comparison window.
         
         Args:
-            parent: Parent Tk window
+            parent: PGLOKApp instance or root Tk window
             character_name: Current character name for tracking
         """
         self.parent = parent
         self.character_name = character_name
-        
-        # Create window
-        self.window = tk.Toplevel(parent)
-        self.window.title("Food Comparison & Tracking")
-        self.window.geometry("900x600")
-        self.window.minsize(700, 400)
-        
+
+        # Create window using the central theming + persistence helper when available
+        try:
+            if hasattr(parent, "create_themed_toplevel"):
+                self.window = parent.create_themed_toplevel("food_comparison", "Food Comparison", on_close=self._on_close)
+            else:
+                # Fallback: standalone window with persistent geometry
+                self.window = tk.Toplevel(parent)
+                setup_window(self.window, "food_comparison", min_w=700, min_h=400, on_close=self._on_close)
+        except Exception:
+            # Ultimate fallback: plain Toplevel with basic theming
+            self.window = tk.Toplevel(parent)
+            self.window.title("Food Comparison & Tracking")
+            try:
+                apply_theme(self.window)
+            except Exception:
+                pass
+
         # Initialize food tracker and load data
         self.tracker = FoodTracker()
         self._load_foods_from_parser()
-        
+
         # Build UI
         self._build_ui()
-        
+
         # Initial refresh
         self.refresh_all_tabs()
     
@@ -48,20 +65,20 @@ class FoodComparisonWindow:
     def _build_ui(self):
         """Build the user interface."""
         # Main frame
-        main_frame = ttk.Frame(self.window, padding="10")
+        main_frame = ttk.Frame(self.window, padding=10, style="App.Panel.TFrame")
         main_frame.pack(fill="both", expand=True)
         
         # Title and stats
-        header_frame = ttk.Frame(main_frame)
+        header_frame = ttk.Frame(main_frame, style="App.Panel.TFrame")
         header_frame.pack(fill="x", pady=(0, 10))
         
         ttk.Label(
-            header_frame, 
-            text="Food Comparison & Tracking", 
-            font=('Helvetica', 14, 'bold')
+            header_frame,
+            text="Food Comparison & Tracking",
+            style="App.Header.TLabel",
         ).pack(side="left")
-        
-        self.stats_label = ttk.Label(header_frame, text="")
+
+        self.stats_label = ttk.Label(header_frame, text="", style="App.Status.TLabel")
         self.stats_label.pack(side="right")
         
         # Notebook for tabs

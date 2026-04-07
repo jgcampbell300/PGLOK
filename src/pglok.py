@@ -124,6 +124,8 @@ class PGLOKApp:
         self.character_json_text = None
         self.character_entries = []
         self.chat_monitor = None
+        # Active Favor Tracker window (if open), used for chat-based item watching
+        self.favor_tracker_window = None
         self.chat_polling = False
         self.chat_after_id = None
         self.chat_text = None
@@ -131,6 +133,8 @@ class PGLOKApp:
         self.chat_tab_text = {}
         self.chat_info_var = tk.StringVar(value="Lines: 0    Date: --    Time: --    File: None")
         self.chat_lines_seen = 0
+        # Comma-separated list of watch terms for the PGLok chat channel
+        self.chat_watch_terms_var = tk.StringVar(value=str(self._get_ui_pref("chat_watch_terms", "")))
         # Character and game info tracking
         self.current_character = tk.StringVar(value="Unknown")
         self.current_area = tk.StringVar(value="Unknown")
@@ -213,7 +217,16 @@ class PGLOKApp:
         )
         ttk.Button(toolbar, text="Planner", command=self._open_planner, style="App.Secondary.TButton").pack(side="left", padx=(3, 0))
 
-        # Right side: Alpha version button
+        # Right side: Always on Top toggle + Alpha version button
+        self.pin_button = ttk.Checkbutton(
+            toolbar,
+            text="Always on Top",
+            variable=self.pin_var,
+            command=self._toggle_always_on_top,
+            style="App.TCheckbutton",
+        )
+        self.pin_button.pack(side="right", padx=(0, 4))
+
         self.alpha_button = ttk.Button(
             toolbar,
             text=f"ALPHA v{__version__}",
@@ -408,6 +421,7 @@ class PGLOKApp:
         tools_menu.add_command(label="Planner", command=self._open_planner)
         tools_menu.add_command(label="Timer", command=self._open_timer)
         tools_menu.add_command(label="Food Comparison", command=self._open_food_comparison)
+        tools_menu.add_command(label="Favor Tracker", command=self._open_favor_tracker)
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         # Addons menu
@@ -879,23 +893,45 @@ class PGLOKApp:
     def _open_duration_manager(self):
         """Open the duration manager window."""
         self.status_var.set("Duration manager not implemented yet.")
+
     def _open_food_comparison(self):
         """Open the food comparison and tracking window."""
         try:
             from src.food_comparison import FoodComparisonWindow
-            
-            # Get current character name from tracked info
+
             character = self.current_character.get() if hasattr(self, 'current_character') else "Unknown"
-            
-            # Create and show the food comparison window
-            food_window = FoodComparisonWindow(self.root, character)
+            # Pass self so the window can use create_themed_toplevel and shared settings
+            food_window = FoodComparisonWindow(self, character)
             self.status_var.set("Food comparison window opened")
-            
         except Exception as e:
             self.status_var.set(f"Error opening food comparison: {e}")
             import traceback
             traceback.print_exc()
-    
+
+    def _open_favor_tracker(self):
+        """Open the Favor Tracker window."""
+        try:
+            from src.favor_tracker import FavorTrackerWindow
+
+            # Reuse existing Favor Tracker window when possible
+            if self.favor_tracker_window is not None:
+                try:
+                    if self.favor_tracker_window.window.winfo_exists():
+                        self.favor_tracker_window.focus()
+                        self.status_var.set("Favor Tracker opened")
+                        return
+                except Exception:
+                    self.favor_tracker_window = None
+
+            window = FavorTrackerWindow(self)
+            self.favor_tracker_window = window
+            self._set_window_open_state("favor_tracker", True)
+            self.status_var.set("Favor Tracker opened")
+        except Exception as e:
+            self.status_var.set(f"Error opening Favor Tracker: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _save_timer_settings(self):
         """Save timer settings to preferences."""
         try:
@@ -1059,6 +1095,21 @@ class PGLOKApp:
         )
         ttk.Button(header, text="Clear", command=self._clear_chat_output, style="App.Secondary.TButton").pack(side="right")
 
+        # Watch terms row (used with the in-game PGLok chat channel)
+        watch_row = ttk.Frame(shell, style="App.Panel.TFrame")
+        watch_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(
+            watch_row,
+            text="Watch terms (PGLok channel, comma-separated):",
+            style="App.TLabel",
+        ).pack(side="left")
+        ttk.Entry(
+            watch_row,
+            textvariable=self.chat_watch_terms_var,
+            width=40,
+            style="App.TEntry",
+        ).pack(side="left", padx=(6, 0))
+
         info = ttk.Frame(shell, style="App.Card.TFrame", padding=10)
         info.pack(fill="x", pady=(0, 8))
         ttk.Label(info, textvariable=self.chat_info_var, style="App.Status.TLabel").pack(anchor="w")
@@ -1083,6 +1134,11 @@ class PGLOKApp:
 
     def _on_close_chat_window(self):
         self._stop_chat_monitor()
+        # Persist watch-term settings for next run
+        try:
+            self._set_ui_pref("chat_watch_terms", self.chat_watch_terms_var.get())
+        except Exception:
+            pass
         if self.chat_window is not None and self.chat_window.winfo_exists():
             self._save_window_geometry("chat_monitor", self.chat_window)
             self.chat_window.destroy()
@@ -1139,16 +1195,19 @@ class PGLOKApp:
             if lines and self.chat_notebook is not None:
                 for line in lines:
                     channel = self._extract_chat_channel(line)
-                    
+
                     # Parse game info from chat lines
                     self._parse_game_info(line)
-                    
+
+                    # Handle PGLok channel commands / watch terms
+                    self._handle_pglok_watch_terms(line, channel)
+
                     # Combine Status and Error channels into System tab
                     if channel in ["Status", "Error"]:
                         combined_channel = "System"
                     else:
                         combined_channel = channel
-                    
+
                     self._append_chat_line("All", line)
                     self._append_chat_line(combined_channel, line)
                 self.chat_lines_seen += len(lines)
@@ -1158,6 +1217,32 @@ class PGLOKApp:
             self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}")
 
         self.chat_after_id = self.root.after(500, self._chat_poll_tick)
+
+    def _handle_pglok_watch_terms(self, line, channel):
+        """Watch for user-defined terms on the in-game PGLok chat channel.
+
+        Lines that match will be echoed into the Info tab with a [WATCH] prefix
+        so they are easy to spot. Terms are a comma-separated list.
+        """
+        if not line:
+            return
+
+        # Only pay attention to the dedicated PGLok channel
+        if str(channel).lower() != "pglok":
+            return
+
+        raw = (self.chat_watch_terms_var.get() or "").strip()
+        if not raw:
+            return
+
+        lower_line = line.lower()
+        terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
+        for term in terms:
+            if term and term in lower_line:
+                self._append_chat_line("Info", f"[WATCH:{channel}] {line}")
+                # Also surface on status bar for quick feedback
+                self.status_var.set(f"PGLok match: '{term}' in chat")
+                break
 
     def _parse_game_info(self, line):
         """Parse login, logout, area, and guild info from chat lines."""
@@ -2152,9 +2237,26 @@ class PGLOKApp:
         header = ttk.Frame(shell, style="App.Panel.TFrame")
         header.pack(fill="x", pady=(0, 8))
         ttk.Label(header, text="Data Browser", style="Data.Header.TLabel").pack(side="left")
+
+        # Always-on-top toggle for the Data Browser window
+        self.data_browser_pin_var = tk.BooleanVar(value=bool(self._get_ui_pref("data_browser_always_on_top", False)))
+        ttk.Checkbutton(
+            header,
+            text="Always on Top",
+            variable=self.data_browser_pin_var,
+            command=self._toggle_data_browser_always_on_top,
+            style="App.TCheckbutton",
+        ).pack(side="right", padx=(6, 0))
+
         ttk.Button(header, text="Refresh Index", command=self._refresh_data_index_async, style="Data.Primary.TButton").pack(
             side="right"
         )
+
+        # Apply saved always-on-top state for this window
+        try:
+            self.data_browser_window.attributes("-topmost", bool(self.data_browser_pin_var.get()))
+        except Exception:
+            pass
 
         body = ttk.Panedwindow(shell, orient="horizontal")
         body.pack(fill="both", expand=True)
@@ -2314,6 +2416,20 @@ class PGLOKApp:
         self.data_offset = 0
         self.data_total_rows = 0
 
+    def _toggle_data_browser_always_on_top(self) -> None:
+        """Toggle always-on-top state for the Data Browser window only."""
+        if self.data_browser_window is None or not self.data_browser_window.winfo_exists():
+            return
+        enabled = bool(self.data_browser_pin_var.get())
+        try:
+            self.data_browser_window.attributes("-topmost", enabled)
+        except Exception:
+            return
+        try:
+            self._set_ui_pref("data_browser_always_on_top", enabled)
+        except Exception:
+            pass
+
     def _on_data_browser_window_configure(self, event):
         if self.data_browser_window is None or event.widget is not self.data_browser_window:
             return
@@ -2392,11 +2508,27 @@ class PGLOKApp:
         header.pack(fill="x", pady=(0, 8))
         header.columnconfigure(0, weight=1)
         header.columnconfigure(1, weight=0)
-        header.columnconfigure(2, weight=1)
+        header.columnconfigure(2, weight=0)
+        header.columnconfigure(3, weight=1)
         ttk.Label(header, text="Itemizer", style="App.Header.TLabel").grid(row=0, column=1)
         ttk.Button(header, text="Refresh Index", command=self._refresh_itemizer_index_async, style="App.Primary.TButton").grid(
             row=0, column=2, sticky="e"
         )
+        # Independent always-on-top toggle for the Itemizer window
+        self.itemizer_pin_var = tk.BooleanVar(value=bool(self._get_ui_pref("itemizer_always_on_top", False)))
+        ttk.Checkbutton(
+            header,
+            text="Always on Top",
+            variable=self.itemizer_pin_var,
+            command=self._toggle_itemizer_always_on_top,
+            style="App.TCheckbutton",
+        ).grid(row=0, column=3, sticky="e", padx=(8, 0))
+
+        # Apply saved always-on-top state for the Itemizer window
+        try:
+            self.itemizer_window.attributes("-topmost", bool(self.itemizer_pin_var.get()))
+        except Exception:
+            pass
 
         filters = ttk.Frame(shell, padding=10, style="App.Card.TFrame")
         filters.pack(fill="x", pady=(0, 8))
@@ -2568,6 +2700,21 @@ class PGLOKApp:
         self.itemizer_window.after(10, self._restore_itemizer_pane_split)
         self.itemizer_window.after(20, self._restore_itemizer_bottom_pane_split)
         self._refresh_itemizer_index_async()
+
+    def _toggle_itemizer_always_on_top(self) -> None:
+        """Toggle always-on-top state for the Itemizer window only."""
+        if self.itemizer_window is None or not self.itemizer_window.winfo_exists():
+            return
+        enabled = bool(self.itemizer_pin_var.get())
+        try:
+            self.itemizer_window.attributes("-topmost", enabled)
+        except Exception:
+            return
+        # Persist preference
+        try:
+            self._set_ui_pref("itemizer_always_on_top", enabled)
+        except Exception:
+            pass
 
     def _on_close_itemizer_window(self):
         if self._itemizer_resize_after_id is not None:
@@ -3792,6 +3939,8 @@ class PGLOKApp:
             self.open_map_tools_window()
         if self._is_window_marked_open("survey_helper"):
             self._open_survey_helper()
+        if self._is_window_marked_open("favor_tracker"):
+            self._open_favor_tracker()
 
     def _raise_main_window_default(self):
         try:
@@ -3897,6 +4046,12 @@ class PGLOKApp:
         )
         self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
         self._set_window_open_state("survey_helper", self.survey_helper_window is not None and self.survey_helper_window.winfo_exists())
+        # Track favor tracker window open state if present
+        try:
+            is_favor_open = self.favor_tracker_window is not None and self.favor_tracker_window.window.winfo_exists()
+        except Exception:
+            is_favor_open = False
+        self._set_window_open_state("favor_tracker", is_favor_open)
         self._save_window_geometry("settings", self.settings_window)
         self._save_data_browser_pane_split()
         self._save_data_browser_display_pane_split()

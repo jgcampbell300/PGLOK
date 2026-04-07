@@ -4,7 +4,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "📦 Creating PGLOK distribution package..."
+PY_BIN="python3"
+if ! command -v "$PY_BIN" >/dev/null 2>&1; then
+  PY_BIN="python"
+fi
+
+VERSION="$("$PY_BIN" - << 'EOF'
+import src
+print(src.__version__)
+EOF
+)"
+
+if [[ -z "$VERSION" ]]; then
+  echo "❌ Could not determine PGLOK version from src.__version__"
+  exit 1
+fi
+
+echo "📦 Creating PGLOK distribution package for version $VERSION..."
 
 # Check if executable exists
 if [[ ! -f "dist/PGLOK" ]]; then
@@ -19,8 +35,8 @@ if [[ ! -f "icon.png" ]]; then
 fi
 
 # Create package directory
-PACKAGE_NAME="PGLOK-Linux-$(date +%Y%m%d)"
-PACKAGE_DIR="$PACKAGE_NAME"
+LINUX_PACKAGE_NAME="PGLOK-Linux-v${VERSION}"
+PACKAGE_DIR="$LINUX_PACKAGE_NAME"
 
 rm -rf "$PACKAGE_DIR"
 mkdir -p "$PACKAGE_DIR"
@@ -77,16 +93,23 @@ chmod +x "$PACKAGE_DIR/install.sh"
 
 # Create tar.gz package
 echo "🗜️  Creating package..."
-tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_DIR"
+mkdir -p dist
+tar -czf "dist/${LINUX_PACKAGE_NAME}.tar.gz" "$PACKAGE_DIR"
+
+# Create source package
+echo "🗜️  Creating source package..."
+SOURCE_ARCHIVE="dist/PGLOK-v${VERSION}-source.tar.gz"
+git archive --format=tar.gz --prefix="PGLOK-v${VERSION}-source/" HEAD > "$SOURCE_ARCHIVE"
 
 # Cleanup
 rm -rf "$PACKAGE_DIR"
 
 echo ""
-echo "✅ Package created: ${PACKAGE_NAME}.tar.gz"
-echo "📦 Size: $(du -h "${PACKAGE_NAME}.tar.gz" | cut -f1)"
+echo "✅ Package created: dist/${LINUX_PACKAGE_NAME}.tar.gz"
+echo "✅ Source package created: $SOURCE_ARCHIVE"
+echo "📦 Size (binary package): $(du -h "dist/${LINUX_PACKAGE_NAME}.tar.gz" | cut -f1)"
 echo ""
 echo "To install:"
-echo "  tar -xzf ${PACKAGE_NAME}.tar.gz"
-echo "  cd $PACKAGE_NAME"
+echo "  tar -xzf dist/${LINUX_PACKAGE_NAME}.tar.gz"
+echo "  cd ${LINUX_PACKAGE_NAME}"
 echo "  ./install.sh"
