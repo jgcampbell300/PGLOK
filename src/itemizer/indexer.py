@@ -207,11 +207,8 @@ def cleanup_orphaned_data(db_path: Optional[Path] = None):
         # Clean up any orphaned items (should be handled by FK cascade, but let's be explicit)
         conn.execute("""
             DELETE FROM items 
-            WHERE report_id NOT IN (
-                SELECT id FROM reports 
-                WHERE file_path IN ({})
-            )
-        """.format(",".join("?" for _ in current_files) if current_files else "''"), tuple(current_files))
+            WHERE report_id NOT IN (SELECT id FROM reports)
+        """)
         
         conn.commit()
         
@@ -222,12 +219,64 @@ def cleanup_orphaned_data(db_path: Optional[Path] = None):
     }
 
 
+def cleanup_old_report_files(reports_dir: Optional[Path] = None) -> dict:
+    """Remove old item report files, keeping only the most recent per character/server.
+    
+    Returns dict with info about removed files.
+    """
+    reports_dir = Path(reports_dir) if reports_dir else get_reports_dir()
+    if reports_dir is None or not reports_dir.exists():
+        return {"removed": 0, "kept": 0, "files": []}
+    
+    # Group files by (character, server) and keep most recent
+    files_by_character = {}
+    for path in reports_dir.glob(ITEM_REPORT_GLOB):
+        try:
+            parsed = _read_report(path)
+            if parsed is None:
+                continue
+            char = parsed.get("character") or ""
+            server = parsed.get("server") or ""
+            if not char or not server:
+                continue
+            key = (char.lower(), server.lower())
+            mtime = path.stat().st_mtime
+            if key not in files_by_character or mtime > files_by_character[key][0]:
+                files_by_character[key] = (mtime, path)
+        except Exception:
+            continue
+    
+    # Collect all current files and find old ones to remove
+    all_files = set(reports_dir.glob(ITEM_REPORT_GLOB))
+    files_to_keep = {path for (_, path) in files_by_character.values()}
+    files_to_remove = all_files - files_to_keep
+    
+    removed_files = []
+    for path in files_to_remove:
+        try:
+            path.unlink()
+            removed_files.append(str(path))
+        except Exception:
+            pass
+    
+    return {
+        "removed": len(removed_files),
+        "kept": len(files_to_keep),
+        "files": removed_files,
+    }
+
+
 def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Path] = None, force_refresh: bool = False):
     reports_dir = Path(reports_dir) if reports_dir else get_reports_dir()
     db_path = Path(db_path) if db_path else get_db_path()
 
     if reports_dir is None or not reports_dir.exists():
         return {"indexed_reports": 0, "skipped_reports": 0, "total_reports": 0, "db_path": str(db_path)}
+
+    # Clean up old files before indexing if force_refresh is True
+    file_cleanup_result = {"removed": 0, "kept": 0}
+    if force_refresh:
+        file_cleanup_result = cleanup_old_report_files(reports_dir)
 
     report_files = sorted(reports_dir.glob(ITEM_REPORT_GLOB))
     indexed = 0
@@ -277,6 +326,11 @@ def index_item_reports(reports_dir: Optional[Path] = None, db_path: Optional[Pat
         "total_reports": len(report_files),
         "db_path": str(db_path),
     }
+    
+    # Add file cleanup info if force_refresh was used
+    if force_refresh:
+        result["files_removed"] = file_cleanup_result.get("removed", 0)
+        result["files_kept"] = file_cleanup_result.get("kept", 0)
     
     # Add cleanup info if force_refresh was used
     if force_refresh and 'cleanup_result' in locals():
@@ -374,15 +428,44 @@ def search_items(
     with sqlite3.connect(db_path) as conn:
         ensure_schema(conn)
 
+        # Find the single most recent report with AccountStorage items (across all characters)
+        latest_account_report = conn.execute(
+            """
+            SELECT r.id
+            FROM reports r
+            WHERE EXISTS (
+                SELECT 1 FROM items i2
+                WHERE i2.report_id = r.id
+                AND i2.storage_vault LIKE 'AccountStorage%'
+            )
+            ORDER BY r.timestamp DESC, r.file_path DESC
+            LIMIT 1
+            """,
+        ).fetchone()
+        latest_account_report_id = latest_account_report[0] if latest_account_report else None
+
+        # Build WHERE clause for items
+        # Regular items: all reports
+        # AccountStorage items: only from most recent report
+        if latest_account_report_id:
+            item_where_sql = f"""({where_sql} AND (
+                (i.storage_vault IS NULL OR i.storage_vault = '' OR i.storage_vault NOT LIKE 'AccountStorage%')
+                OR (i.storage_vault LIKE 'AccountStorage%' AND r.id = ?)
+            ))"""
+            item_params = params + [latest_account_report_id]
+        else:
+            item_where_sql = where_sql
+            item_params = params
+
         total = int(
             conn.execute(
                 f"""
                 SELECT COUNT(*)
                 FROM items i
                 JOIN reports r ON r.id = i.report_id
-                WHERE {where_sql}
+                WHERE {item_where_sql}
                 """,
-                tuple(params),
+                tuple(item_params),
             ).fetchone()[0]
         )
 
@@ -402,11 +485,11 @@ def search_items(
                 i.raw_json
             FROM items i
             JOIN reports r ON r.id = i.report_id
-            WHERE {where_sql}
+            WHERE {item_where_sql}
             ORDER BY r.server COLLATE NOCASE, r.character COLLATE NOCASE, i.item_name COLLATE NOCASE
             LIMIT ? OFFSET ?
             """,
-            (*params, int(limit), int(offset)),
+            (*item_params, int(limit), int(offset)),
         ).fetchall()
 
     results = [
@@ -457,7 +540,9 @@ def search_item_totals(
 
     with sqlite3.connect(db_path) as conn:
         ensure_schema(conn)
-        qty_total, value_total = conn.execute(
+
+        # Get totals for non-AccountStorage items (sum normally)
+        regular_qty, regular_value = conn.execute(
             f"""
             SELECT
                 COALESCE(SUM(CASE WHEN typeof(i.stack_size) IN ('integer', 'real') THEN i.stack_size ELSE 0 END), 0),
@@ -471,8 +556,74 @@ def search_item_totals(
             FROM items i
             JOIN reports r ON r.id = i.report_id
             WHERE {where_sql}
+                AND (i.storage_vault IS NULL OR i.storage_vault = '' OR i.storage_vault NOT LIKE 'AccountStorage%')
             """,
             tuple(params),
         ).fetchone()
 
-    return {"qty_total": int(qty_total or 0), "value_total": int(value_total or 0)}
+        # Get AccountStorage items only from the single most recent report
+        # AccountStorage is shared across account, so use the latest file only
+        latest_report = conn.execute(
+            """
+            SELECT r.id, r.file_path, r.timestamp
+            FROM reports r
+            WHERE EXISTS (
+                SELECT 1 FROM items i2
+                WHERE i2.report_id = r.id
+                AND i2.storage_vault LIKE 'AccountStorage%'
+            )
+            ORDER BY r.timestamp DESC, r.file_path DESC
+            LIMIT 1
+            """,
+        ).fetchone()
+
+        account_rows = []
+        if latest_report:
+            latest_report_id = latest_report[0]
+            # Build item-level WHERE clause for text filtering
+            item_where = []
+            item_params = [latest_report_id]
+            if text:
+                item_where.append("(i.search_text LIKE ? OR i.item_name LIKE ?)")
+                like = f"%{text}%"
+                item_params.extend([like, like])
+            item_where_sql = " AND " + " AND ".join(item_where) if item_where else ""
+
+            account_rows = conn.execute(
+                f"""
+                SELECT
+                    r.server,
+                    i.item_name,
+                    i.storage_vault,
+                    i.stack_size,
+                    i.value
+                FROM items i
+                JOIN reports r ON r.id = i.report_id
+                WHERE r.id = ?
+                    AND i.storage_vault LIKE 'AccountStorage%'
+                    {item_where_sql}
+                """,
+                tuple(item_params),
+            ).fetchall()
+
+        # Calculate AccountStorage totals from deduplicated rows
+        account_qty = 0
+        account_value = 0
+        for row in account_rows:
+            stack_size = row[3] if row[3] is not None else 0
+            value = row[4] if row[4] is not None else 0
+            try:
+                stack_size = int(stack_size)
+            except (TypeError, ValueError):
+                stack_size = 0
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = 0
+            account_qty += stack_size
+            account_value += value * stack_size
+
+    total_qty = int(regular_qty or 0) + account_qty
+    total_value = int(regular_value or 0) + account_value
+
+    return {"qty_total": total_qty, "value_total": total_value}

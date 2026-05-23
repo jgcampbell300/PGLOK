@@ -1,4 +1,5 @@
 from src.itemizer.indexer import (
+    cleanup_old_report_files,
     cleanup_orphaned_data,
     get_carried_item_names,
     get_db_path,
@@ -10,6 +11,7 @@ from src.itemizer.indexer import (
 )
 
 __all__ = [
+    "cleanup_old_report_files",
     "cleanup_orphaned_data",
     "get_carried_item_names",
     "get_db_path",

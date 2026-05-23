@@ -76,6 +76,7 @@ class PGLOKApp:
         self.map_tools_window = None
         self.map_tools_browser = None
         self.survey_helper_window = None
+        self.communications_window = None
         self.home_paned = None
         self.itemizer_paned = None
         self.itemizer_bottom_paned = None
@@ -159,6 +160,8 @@ class PGLOKApp:
         self.timer_auto_start_var = tk.BooleanVar(value=self._get_ui_pref("timer_auto_start", True))
         self.timer_scan_interval_var = tk.IntVar(value=self._get_ui_pref("timer_scan_interval", 5))
         self.timer_notification_var = tk.BooleanVar(value=self._get_ui_pref("timer_notifications", True))
+        # Chat monitor auto-start preference
+        self.chat_auto_start_var = tk.BooleanVar(value=self._get_ui_pref("chat_auto_start", True))
         
         # Addon manager will be initialized lazily
         self.addon_manager = None
@@ -195,6 +198,10 @@ class PGLOKApp:
         
         # Start player position monitoring
         self._start_player_monitor()
+        
+        # Auto-start chat monitor if enabled
+        if self.chat_auto_start_var.get():
+            self.root.after(500, self._try_start_chat_monitor)
 
     def _build_layout(self):
         # Toolbar
@@ -375,6 +382,8 @@ class PGLOKApp:
         file_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(file_menu)
         file_menu.add_command(label="Home", command=lambda: self.show_page("home"))
+        file_menu.add_command(label="Download Newer Files", command=self.download_newer_files)
+        file_menu.add_command(label="Locate Project Gorgon", command=self.locate_pg)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menu_bar.add_cascade(label="File", menu=file_menu)
@@ -407,21 +416,18 @@ class PGLOKApp:
 
         tools_menu = tk.Menu(menu_bar, tearoff=0)
         configure_menu_theme(tools_menu)
-        tools_menu.add_command(label="Locate Project Gorgon", command=self.locate_pg)
-        tools_menu.add_command(label="Download Newer Files", command=self.download_newer_files)
+        # Tools menu entries sorted alphabetically by label (excluding items now in File menu)
         tools_menu.add_command(label="Character Browser", command=self.open_character_browser_window)
+        tools_menu.add_command(label="Communications", command=self._open_communications_window)
         tools_menu.add_command(label="Data Browser", command=self.open_data_browser_window)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Map Tools", command=self.open_map_tools_window)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Survey Helper", command=self._open_survey_helper)
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Fletcher", command=self._open_fletcher)
-        tools_menu.add_command(label="Itemizer", command=self._open_itemizer)
-        tools_menu.add_command(label="Planner", command=self._open_planner)
-        tools_menu.add_command(label="Timer", command=self._open_timer)
-        tools_menu.add_command(label="Food Comparison", command=self._open_food_comparison)
         tools_menu.add_command(label="Favor Tracker", command=self._open_favor_tracker)
+        tools_menu.add_command(label="Fletcher", command=self._open_fletcher)
+        tools_menu.add_command(label="Food Comparison", command=self._open_food_comparison)
+        tools_menu.add_command(label="Itemizer", command=self.open_itemizer_window)
+        tools_menu.add_command(label="Maps", command=self.open_map_tools_window)
+        tools_menu.add_command(label="Planner", command=self._open_planner)
+        tools_menu.add_command(label="Survey Helper", command=self._open_survey_helper)
+        tools_menu.add_command(label="Timer", command=self._open_timer)
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         # Addons menu
@@ -932,6 +938,43 @@ class PGLOKApp:
             import traceback
             traceback.print_exc()
 
+    def _open_communications_window(self):
+        """Open the Communications window for MQTT chat and data sharing."""
+        try:
+            # Reuse existing Communications window when possible
+            if self.communications_window is not None:
+                try:
+                    if self.communications_window.window.winfo_exists():
+                        self.communications_window.window.lift()
+                        self.status_var.set("Communications opened")
+                        return
+                except Exception:
+                    self.communications_window = None
+
+            # Get character name - TODO: improve detection
+            character_name = "raloc"  # Hardcoded temporarily
+
+            # Create window with app reference
+            from src.communications.communications_window import CommunicationsWindow
+            window = CommunicationsWindow(self.root, character_name)
+            self.communications_window = window
+            
+            # Bind close event
+            window.window.protocol("WM_DELETE_WINDOW", self._on_close_communications_window)
+            self.status_var.set("Communications opened")
+        except Exception as e:
+            self.status_var.set(f"Error opening Communications: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_close_communications_window(self):
+        """Handle communications window close."""
+        if self.communications_window is not None and self.communications_window.window.winfo_exists():
+            self.communications_window._cleanup_mqtt()
+            self.communications_window.window.destroy()
+        self.communications_window = None
+    
+    
     def _save_timer_settings(self):
         """Save timer settings to preferences."""
         try:
@@ -941,6 +984,14 @@ class PGLOKApp:
             self.status_var.set("Timer settings saved")
         except Exception as e:
             self.status_var.set(f"Error saving timer settings: {e}")
+
+    def _save_chat_settings(self):
+        """Save chat monitor settings to preferences."""
+        try:
+            self._set_ui_pref("chat_auto_start", self.chat_auto_start_var.get())
+            self.status_var.set("Chat settings saved")
+        except Exception as e:
+            self.status_var.set(f"Error saving chat settings: {e}")
     
     def apply_theme_to_window(self, window):
         """Apply PGLOK theme to a window."""
@@ -1040,7 +1091,7 @@ class PGLOKApp:
             self.map_tools_window.focus_force()
             return
 
-        self.map_tools_window = self.create_themed_toplevel("map_tools", "Map Tools", on_close=self._on_close_map_tools_window)
+        self.map_tools_window = self.create_themed_toplevel("map_tools", "Maps", on_close=self._on_close_map_tools_window)
 
         shell = ttk.Frame(self.map_tools_window, padding=12, style="App.Panel.TFrame")
         shell.pack(fill="both", expand=True)
@@ -1071,6 +1122,20 @@ class PGLOKApp:
         self._set_window_open_state("map_tools", False)
         self.map_tools_window = None
         self.map_tools_browser = None
+
+    def _toggle_character_browser_always_on_top(self) -> None:
+        """Toggle always-on-top state for the Character Browser window only."""
+        if self.character_browser_window is None or not self.character_browser_window.winfo_exists():
+            return
+        enabled = bool(self.character_browser_pin_var.get())
+        try:
+            self.character_browser_window.attributes("-topmost", enabled)
+        except Exception:
+            return
+        try:
+            self._set_ui_pref("character_browser_always_on_top", enabled)
+        except Exception:
+            pass
 
     def open_chat_window(self):
         if self.chat_window is not None and self.chat_window.winfo_exists():
@@ -1173,6 +1238,22 @@ class PGLOKApp:
             self.chat_after_id = None
         self.status_var.set("Chat monitor stopped.")
 
+    def _try_start_chat_monitor(self):
+        """Try to auto-start chat monitor if PG_BASE is available."""
+        if self.chat_polling:
+            return
+        if config.PG_BASE is None:
+            # PG not located yet - show status and try again later
+            self.status_var.set("Chat monitor waiting for PG location...")
+            # Retry every 5 seconds until PG is located
+            self.root.after(5000, self._try_start_chat_monitor)
+            return
+        try:
+            self._start_chat_monitor()
+        except Exception as exc:
+            # Show error on auto-start failure
+            self.status_var.set(f"Chat monitor auto-start failed: {exc}")
+
     def _clear_chat_output(self):
         self.chat_lines_seen = 0
         for widget in self.chat_tab_text.values():
@@ -1198,6 +1279,9 @@ class PGLOKApp:
 
                     # Parse game info from chat lines
                     self._parse_game_info(line)
+
+                    # Parse favor gain messages
+                    self._parse_favor_gain(line)
 
                     # Handle PGLok channel commands / watch terms
                     self._handle_pglok_watch_terms(line, channel)
@@ -1248,7 +1332,7 @@ class PGLOKApp:
         """Parse login, logout, area, and guild info from chat lines."""
         import re
         lower = line.lower()
-        
+
         # Login detection - various patterns
         login_patterns = [
             "you have entered",
@@ -1262,18 +1346,42 @@ class PGLOKApp:
                 # Format: "You have entered [Area] as [Character]"
                 # Format: "Welcome to [Area], [Character]!"
                 # Format: "Logged in as: [Character]"
-                
+
                 # Look for character name after "as" or comma
                 match = re.search(r"as\s+(\w+)", line, re.IGNORECASE)
                 if match:
                     self.current_character.set(match.group(1))
                     self._append_chat_line("Info", f"[LOGIN] Character: {match.group(1)}")
-                
-                # Look for area/zone
-                area_match = re.search(r"entered\s+([\w\s]+?)(?:\s+as|,)", line, re.IGNORECASE)
-                if area_match:
-                    self.current_area.set(area_match.group(1).strip())
-                break
+                    # Update favor tracker with character if open
+                    if self.favor_tracker_window is not None:
+                        try:
+                            if self.favor_tracker_window.window.winfo_exists():
+                                if hasattr(self.favor_tracker_window, 'update_character_from_chat'):
+                                    self.favor_tracker_window.update_character_from_chat(match.group(1))
+                        except Exception:
+                            pass
+
+    def _parse_favor_gain(self, line):
+        """Parse favor gain messages from chat logs and automatically record them."""
+        import re
+        lower = line.lower()
+
+        # Pattern: "You gained X favor with NPC Name"
+        # Example: "You gained 5.5 favor with Willem Fangblade"
+        match = re.search(r"you gained ([\d.]+) favor with (.+)", line, re.IGNORECASE)
+        if match:
+            favor_amount = match.group(1)
+            npc_name = match.group(2).strip()
+
+            # Try to record the favor gain in the favor tracker
+            if self.favor_tracker_window is not None:
+                try:
+                    if self.favor_tracker_window.window.winfo_exists():
+                        if hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat'):
+                            # Record without item name since it's not in the message
+                            self.favor_tracker_window.record_favor_gain_from_chat(npc_name, favor_amount)
+                except Exception:
+                    pass
         
         # Logout detection
         logout_patterns = ["you have left", "logged out", "disconnected", "logout"]
@@ -1319,6 +1427,14 @@ class PGLOKApp:
                     if area and area != self.current_area.get():
                         self.current_area.set(area)
                         self._append_chat_line("Info", f"[AREA] {area}")
+                        # Update favor tracker with area if open
+                        if self.favor_tracker_window is not None:
+                            try:
+                                if self.favor_tracker_window.window.winfo_exists():
+                                    if hasattr(self.favor_tracker_window, 'update_area_from_chat'):
+                                        self.favor_tracker_window.update_area_from_chat(area)
+                            except Exception:
+                                pass
                 break
         
         # Guild info detection
@@ -1335,16 +1451,16 @@ class PGLOKApp:
                 self._append_chat_line("Info", f"[GUILD] {line.strip()}")
 
     def _on_area_change(self, *args):
-        """Handle area change - update map browser if open."""
+        """Handle area change - update map browser and favor tracker if open."""
         new_area = self.current_area.get()
-        
+
         # Update map browser if it's open
         if self.map_tools_browser is not None and self.map_tools_window is not None:
             if self.map_tools_window.winfo_exists():
                 # Check if the new area matches a map file
                 browser = self.map_tools_browser
                 available_maps = browser.map_combo["values"] if browser.map_combo else []
-                
+
                 # Try to find matching map (case-insensitive, partial match)
                 if available_maps:
                     # Direct match first
@@ -1352,13 +1468,22 @@ class PGLOKApp:
                         browser.selected_map_var.set(new_area)
                         browser._on_map_selected()
                         return
-                    
+
                     # Partial match (e.g., "Serbule" matches "Serbule.png")
                     for map_name in available_maps:
                         if new_area.lower() in map_name.lower() or map_name.lower() in new_area.lower():
                             browser.selected_map_var.set(map_name)
                             browser._on_map_selected()
                             return
+
+        # Update favor tracker if it's open and has the update method
+        if self.favor_tracker_window is not None:
+            try:
+                if self.favor_tracker_window.window.winfo_exists():
+                    if hasattr(self.favor_tracker_window, 'update_area_from_chat'):
+                        self.favor_tracker_window.update_area_from_chat(new_area)
+            except Exception:
+                pass
 
     def _update_info_tab(self):
         """Update the Info tab with current game information."""
@@ -1725,7 +1850,7 @@ class PGLOKApp:
 
                 self.root.after(0, done)
             except Exception as exc:
-                self.root.after(0, lambda: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
+                self.root.after(0, lambda e=exc: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{e}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2133,6 +2258,21 @@ class PGLOKApp:
         ttk.Button(durations_frame, text="Open Duration Manager", 
                  command=self._open_duration_manager, style="App.Secondary.TButton").pack(pady=10)
         
+        # Chat Monitor configuration frame
+        chat_frame = ttk.LabelFrame(shell, text="💬 Chat Monitor Settings", 
+                                     style="App.Card.TFrame", padding=10)
+        chat_frame.pack(fill="x", pady=(10, 0))
+        
+        # Auto-start settings
+        chat_auto_frame = ttk.Frame(chat_frame, style="App.Panel.TFrame")
+        chat_auto_frame.pack(fill="x")
+        
+        ttk.Checkbutton(chat_auto_frame, text="Auto-start chat monitor on program startup", 
+                       variable=self.chat_auto_start_var, style="App.TCheckbutton",
+                       command=self._save_chat_settings).pack(anchor="w")
+        
+        # Button row for actions
+        button_row = ttk.Frame(shell, style="App.Panel.TFrame")
         button_row.pack(fill="x", pady=14)
 
         self.locate_button = ttk.Button(
@@ -2621,6 +2761,13 @@ class PGLOKApp:
         self.itemizer_tree.bind("<<TreeviewSelect>>", self._on_itemizer_row_select)
         self.itemizer_tree.bind("<ButtonRelease-1>", self._on_itemizer_tree_mouse_release, add="+")
 
+        # Configure rarity color tags for the Itemizer tree
+        self.itemizer_tree.tag_configure("rarity_rare", foreground=UI_COLORS["rarity_rare"])
+        self.itemizer_tree.tag_configure("rarity_uncommon", foreground=UI_COLORS["rarity_uncommon"])
+        self.itemizer_tree.tag_configure("rarity_exceptional", foreground=UI_COLORS["rarity_exceptional"])
+        self.itemizer_tree.tag_configure("rarity_epic", foreground=UI_COLORS["rarity_epic"])
+        self.itemizer_tree.tag_configure("rarity_legendary", foreground=UI_COLORS["rarity_legendary"])
+
         bottom_split = ttk.Panedwindow(bottom, orient="horizontal")
         bottom_split.pack(fill="both", expand=True)
         self.itemizer_bottom_paned = bottom_split
@@ -2786,6 +2933,8 @@ class PGLOKApp:
                     
                     # Show cleanup info if applicable
                     status_msg = f"Itemizer index ready: {result['indexed_reports']} updated, {result['skipped_reports']} skipped."
+                    if result.get('files_removed', 0) > 0:
+                        status_msg += f" {result['files_removed']} old file(s) removed, {result['files_kept']} kept."
                     if result.get('cleaned_reports', 0) > 0:
                         status_msg += f" {result['cleaned_reports']} orphaned reports removed."
                     if result.get('cleaned_items', 0) > 0:
@@ -2795,7 +2944,7 @@ class PGLOKApp:
 
                 self.root.after(0, update_ui)
             except Exception as exc:
-                self.root.after(0, lambda: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
+                self.root.after(0, lambda exc=exc: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2825,6 +2974,8 @@ class PGLOKApp:
 
         self.itemizer_tree.delete(*self.itemizer_tree.get_children())
         for row in rows:
+            rarity = row.get("rarity", "")
+            rarity_tag = f"rarity_{rarity.lower()}" if rarity else ""
             self.itemizer_tree.insert(
                 "",
                 tk.END,
@@ -2839,7 +2990,7 @@ class PGLOKApp:
                     row["storage_vault"],
                     row["timestamp"],
                 ),
-                tags=(row["raw_json"],),
+                tags=(rarity_tag, row["raw_json"]),
             )
 
         if self.itemizer_json_text is not None:
@@ -2862,7 +3013,9 @@ class PGLOKApp:
         selection = self.itemizer_tree.selection()
         if not selection:
             return
-        payload = self.itemizer_tree.item(selection[0], "tags")[0]
+        tags = self.itemizer_tree.item(selection[0], "tags")
+        # Tags tuple is (rarity_tag, raw_json); raw_json is at index 1
+        payload = tags[1] if len(tags) > 1 else tags[0] if tags else ""
         self.itemizer_json_text.delete("1.0", tk.END)
         try:
             parsed = json.loads(payload)
@@ -3164,6 +3317,17 @@ class PGLOKApp:
         header = ttk.Frame(shell, style="App.Panel.TFrame")
         header.pack(fill="x", pady=(0, 8))
         ttk.Label(header, text="Character Browser", style="App.Header.TLabel").pack(side="left")
+
+        # Per-window always-on-top toggle for Character Browser
+        self.character_browser_pin_var = tk.BooleanVar(value=bool(self._get_ui_pref("character_browser_always_on_top", False)))
+        ttk.Checkbutton(
+            header,
+            text="Always on Top",
+            variable=self.character_browser_pin_var,
+            command=self._toggle_character_browser_always_on_top,
+            style="App.TCheckbutton",
+        ).pack(side="right", padx=(6, 0))
+
         ttk.Button(header, text="Refresh", command=self._load_character_entries, style="App.Primary.TButton").pack(
             side="right"
         )
@@ -3212,6 +3376,18 @@ class PGLOKApp:
             highlightcolor=UI_COLORS["accent"],
         )
         self.character_json_text.pack(fill="both", expand=True)
+
+        # Apply saved always-on-top state for this window
+        try:
+            self.character_browser_window.attributes("-topmost", bool(self.character_browser_pin_var.get()))
+        except Exception:
+            pass
+
+        # Apply saved always-on-top state for this window
+        try:
+            self.character_browser_window.attributes("-topmost", bool(self.character_browser_pin_var.get()))
+        except Exception:
+            pass
 
         self.character_browser_window.update_idletasks()
         req_w = max(920, self.character_browser_window.winfo_reqwidth())
@@ -3462,7 +3638,17 @@ class PGLOKApp:
 
                 self.root.after(0, update_ui)
             except Exception as exc:
-                self.root.after(0, lambda: self.status_var.set(f"{UI_TEXT['status_error_prefix']}{exc}"))
+                def show_error(e=exc):
+                    try:
+                        self.status_var.set(f"{UI_TEXT['status_error_prefix']}{e}")
+                    except RuntimeError:
+                        # Main loop not running, can't update UI
+                        pass
+                try:
+                    self.root.after(0, show_error)
+                except RuntimeError:
+                    # Main loop not running, can't schedule update
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
 

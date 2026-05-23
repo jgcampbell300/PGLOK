@@ -27,6 +27,62 @@ PGLOK/
         └── __init__.py
 ```
 
+## 🌍 External Addon Paths
+
+You can store addons outside the PGLOK repository using the `PGLOK_ADDON_PATH` environment variable.
+
+### Setting the Environment Variable
+
+```bash
+# Linux/Mac - Single path
+export PGLOK_ADDON_PATH=/path/to/my-addons
+
+# Linux/Mac - Multiple paths (colon-separated)
+export PGLOK_ADDON_PATH=/path/to/my-addons:/path/to/other-addons
+
+# Windows - Single path
+set PGLOK_ADDON_PATH=C:\path\to\my-addons
+
+# Windows - Multiple paths (semicolon-separated)
+set PGLOK_ADDON_PATH=C:\path\to\my-addons;C:\path\to\other-addons
+```
+
+### External Addon Directory Structure
+
+```
+/path/to/my-addons/                # Your external directory
+├── MyAddon/                       # Addon folder
+│   ├── addon.json                 # Addon manifest
+│   ├── main.py                    # Entry point
+│   └── ...                        # Other files
+└── AnotherAddon/                  # Another addon
+    └── ...
+```
+
+### Features
+
+- **Multiple paths** - Use `:` (Linux/Mac) or `;` (Windows) to separate directories
+- **No duplicates** - Addons with the same name use the first path found
+- **No Git conflicts** - External addons don't appear in PGLOK's Git status
+- **Settings saved locally** - Window geometry is stored in PGLOK's `addons/` folder
+
+### Launching PGLOK with External Addons
+
+```bash
+# Linux/Mac
+export PGLOK_ADDON_PATH=/path/to/my-addons
+python3 /path/to/PGLOK/PGLOK
+
+# Or set per-command
+PGLOK_ADDON_PATH=/path/to/my-addons python3 /path/to/PGLOK/PGLOK
+
+# Windows
+set PGLOK_ADDON_PATH=C:\path\to\my-addons
+C:\path\to\PGLOK\PGLOK.exe
+```
+
+---
+
 ## 🔧 Creating an Addon
 
 ### 1. Addon Manifest (addon.json)

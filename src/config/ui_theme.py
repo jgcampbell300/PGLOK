@@ -18,6 +18,12 @@ UI_COLORS = {
     "entry_border": "#2a5568",
     "accent": "#7dd3fc",
     "menu_active": "#17374b",
+    # Item rarity colors
+    "rarity_rare": "#9fb4c9",      # Light gray-blue (lowest tier)
+    "rarity_uncommon": "#22c55e",  # Green
+    "rarity_exceptional": "#3b82f6",  # Blue
+    "rarity_epic": "#a855f7",      # Purple
+    "rarity_legendary": "#f59e0b", # Orange/Gold
 }
 
 UI_ATTRS = {

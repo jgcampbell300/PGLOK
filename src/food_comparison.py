@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from src.config.ui_theme import apply_theme
+from src.config.ui_theme import apply_theme, UI_COLORS, UI_ATTRS
 from src.config import config
 from src.config.window_state import setup_window
 from src.food_tracker import FoodTracker, FoodEntry
@@ -31,37 +31,93 @@ class FoodComparisonWindow:
 
         # Create window using the central theming + persistence helper when available
         try:
+            master = getattr(parent, "root", parent)
             if hasattr(parent, "create_themed_toplevel"):
-                self.window = parent.create_themed_toplevel("food_comparison", "Food Comparison", on_close=self._on_close)
+                self.window = parent.create_themed_toplevel(
+                    "food_comparison",
+                    "Food Comparison",
+                    on_close=self._on_close,
+                )
             else:
                 # Fallback: standalone window with persistent geometry
-                self.window = tk.Toplevel(parent)
+                self.window = tk.Toplevel(master)
                 setup_window(self.window, "food_comparison", min_w=700, min_h=400, on_close=self._on_close)
         except Exception:
             # Ultimate fallback: plain Toplevel with basic theming
-            self.window = tk.Toplevel(parent)
+            master = getattr(parent, "root", parent)
+            self.window = tk.Toplevel(master)
             self.window.title("Food Comparison & Tracking")
             try:
                 apply_theme(self.window)
             except Exception:
                 pass
 
-        # Initialize food tracker and load data
+        # Per-window always-on-top state
+        self.always_on_top_var = tk.BooleanVar(value=self._get_initial_always_on_top())
+
+        # Initialize food tracker (data is loaded asynchronously to keep UI responsive)
         self.tracker = FoodTracker()
-        self._load_foods_from_parser()
 
         # Build UI
         self._build_ui()
 
-        # Initial refresh
-        self.refresh_all_tabs()
+        # Apply initial always-on-top setting
+        self._toggle_always_on_top()
+
+        # Load foods in the background so opening the window doesn't block the UI
+        threading.Thread(target=self._load_and_refresh_async, daemon=True).start()
     
-    def _load_foods_from_parser(self):
-        """Load foods from the food parser into the tracker."""
-        parser = parse_foods()
-        foods_data = [f.__dict__ for f in parser.get_all_foods()]
-        self.tracker.import_food_list(foods_data)
+    def _on_close(self):
+        """Handle closing the food comparison window."""
+        try:
+            if hasattr(self.window, "destroy"):
+                self.window.destroy()
+        finally:
+            # Placeholder for future parent state cleanup
+            pass
     
+    def _get_initial_always_on_top(self) -> bool:
+        """Read initial always-on-top preference from parent app when available."""
+        if hasattr(self.parent, "_get_ui_pref"):
+            try:
+                return bool(self.parent._get_ui_pref("food_comparison_always_on_top", False))
+            except Exception:
+                return False
+        return False
+
+    def _toggle_always_on_top(self) -> None:
+        """Toggle always-on-top state for this window and persist when possible."""
+        enabled = bool(self.always_on_top_var.get())
+        try:
+            self.window.attributes("-topmost", enabled)
+        except Exception:
+            pass
+        if hasattr(self.parent, "_set_ui_pref"):
+            try:
+                self.parent._set_ui_pref("food_comparison_always_on_top", enabled)
+            except Exception:
+                pass
+
+    def _load_and_refresh_async(self, refresh: bool = False):
+        """Background load of foods and UI refresh to keep the window responsive."""
+        try:
+            # Load foods into the tracker (uses cache by default unless refresh=True)
+            self._load_foods_from_parser(refresh=refresh)
+ 
+            # Refresh UI on the main thread
+            if hasattr(self, "window"):
+                self.window.after(0, self.refresh_all_tabs)
+        except Exception as e:
+            # Report errors on the main thread without crashing the app
+            def _report_error():
+                try:
+                    messagebox.showerror("Food Comparison Error", f"Error loading foods: {e}")
+                except Exception:
+                    pass
+ 
+            if hasattr(self, "window"):
+                self.window.after(0, _report_error)
+ 
     def _build_ui(self):
         """Build the user interface."""
         # Main frame
@@ -78,11 +134,20 @@ class FoodComparisonWindow:
             style="App.Header.TLabel",
         ).pack(side="left")
 
+        # Per-window always-on-top toggle to match other PGLOK tools
+        ttk.Checkbutton(
+            header_frame,
+            text="Always on Top",
+            variable=self.always_on_top_var,
+            command=self._toggle_always_on_top,
+            style="App.TCheckbutton",
+        ).pack(side="right", padx=(6, 0))
+
         self.stats_label = ttk.Label(header_frame, text="", style="App.Status.TLabel")
         self.stats_label.pack(side="right")
         
         # Notebook for tabs
-        self.notebook = ttk.Notebook(main_frame)
+        self.notebook = ttk.Notebook(main_frame, style="Food.TNotebook")
         self.notebook.pack(fill="both", expand=True, pady=(0, 10))
         
         # All Foods tab
@@ -98,37 +163,42 @@ class FoodComparisonWindow:
         self.notebook.add(self.uneaten_frame, text="Uneaten")
         
         # Button frame
-        button_frame = ttk.Frame(main_frame)
+        button_frame = ttk.Frame(main_frame, style="App.Panel.TFrame")
         button_frame.pack(fill="x", pady=(10, 0))
         
         ttk.Button(
-            button_frame, 
-            text="Mark Selected as Eaten", 
-            command=self._mark_selected_eaten
+            button_frame,
+            text="Mark Selected as Eaten",
+            command=self._mark_selected_eaten,
+            style="App.Primary.TButton",
         ).pack(side="left", padx=(0, 5))
         
         ttk.Button(
-            button_frame, 
-            text="Mark Selected as Uneaten", 
-            command=self._mark_selected_uneaten
+            button_frame,
+            text="Mark Selected as Uneaten",
+            command=self._mark_selected_uneaten,
+            style="App.Secondary.TButton",
         ).pack(side="left", padx=(0, 5))
         
         ttk.Button(
             button_frame,
             text="Import Gourmand Report",
-            command=self._import_gourmand_report
+            command=self._import_gourmand_report,
+            style="App.Primary.TButton",
         ).pack(side="left", padx=(0, 5))
         
         ttk.Button(
-            button_frame, 
-            text="Export to CSV", 
-            command=self._export_csv
+            button_frame,
+            text="Export to CSV",
+            command=self._export_csv,
+            style="App.Secondary.TButton",
         ).pack(side="right")
         
         ttk.Button(
-            button_frame, 
-            text="Refresh", 
-            command=self._on_refresh_clicked
+            button_frame,
+            text="Refresh",
+            command=self._on_refresh_clicked,
+            style="App.Secondary.TButton",
         ).pack(side="right", padx=(0, 5))
     
     def _create_food_tab(self, tab_name: str) -> ttk.Frame:
@@ -140,19 +210,23 @@ class FoodComparisonWindow:
         Returns:
             The created frame
         """
-        frame = ttk.Frame(self.notebook, padding="5")
-        
-        # Search frame
-        search_frame = ttk.Frame(frame)
-        search_frame.pack(fill="x", pady=(0, 5))
-        
-        ttk.Label(search_frame, text="Search:").pack(side="left")
+        frame = ttk.Frame(self.notebook, padding="8", style="App.Panel.TFrame")
+
+        # Card-style container to match other PGLOK tools (like Survey Helper)
+        card = ttk.Frame(frame, padding=8, style="App.Card.TFrame")
+        card.pack(fill="both", expand=True)
+
+        # Search row
+        search_frame = ttk.Frame(card, style="App.Card.TFrame")
+        search_frame.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(search_frame, text="Search:", style="App.TLabel").pack(side="left")
         search_var = tk.StringVar()
-        search_entry = ttk.Entry(search_frame, textvariable=search_var, width=30)
+        search_entry = ttk.Entry(search_frame, textvariable=search_var, width=30, style="App.TEntry")
         search_entry.pack(side="left", padx=(5, 0))
-        
+
         # Treeview with scrollbar
-        tree_frame = ttk.Frame(frame)
+        tree_frame = ttk.Frame(card, style="App.Card.TFrame")
         tree_frame.pack(fill="both", expand=True)
         
         columns = ('name', 'base_name', 'descriptors', 'status', 'date', 'time')
@@ -160,7 +234,8 @@ class FoodComparisonWindow:
             tree_frame, 
             columns=columns,
             show='headings',
-            selectmode='extended'
+            selectmode='extended',
+            style="App.Treeview",
         )
         
         # Define column headings
@@ -362,16 +437,22 @@ class FoodComparisonWindow:
         x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
         y = (dialog.winfo_screenheight() // 2) - (350 // 2)
         dialog.geometry(f"500x350+{x}+{y}")
-        
-        # Main frame
-        frame = ttk.Frame(dialog, padding="20")
+
+        # Apply PGLOK theme so the dialog matches the main UI
+        try:
+            apply_theme(dialog)
+        except Exception:
+            pass
+
+        # Main frame with dark panel background
+        frame = ttk.Frame(dialog, padding="20", style="App.Panel.TFrame")
         frame.pack(fill="both", expand=True)
-        
+
         # Instructions
         ttk.Label(
             frame,
             text="Import Gourmand Report",
-            font=('Helvetica', 14, 'bold')
+            style="App.Header.TLabel",
         ).pack(pady=(0, 15))
         
         instructions = """
@@ -391,7 +472,8 @@ and mark all foods you've eaten.
             frame,
             text=instructions,
             justify="left",
-            wraplength=440
+            wraplength=440,
+            style="App.TLabel",
         ).pack(pady=(0, 15))
         
         # Status label
@@ -399,7 +481,7 @@ and mark all foods you've eaten.
         status_label = ttk.Label(
             frame,
             textvariable=self.import_status_var,
-            font=('Helvetica', 10, 'italic')
+            style="App.Status.TLabel",
         )
         status_label.pack(pady=(0, 15))
         
@@ -415,7 +497,8 @@ and mark all foods you've eaten.
         ttk.Button(
             btn_frame,
             text="Cancel",
-            command=dialog.destroy
+            command=dialog.destroy,
+            style="App.Secondary.TButton",
         ).pack(side="right", padx=(5, 0))
         
         # Start watching for files

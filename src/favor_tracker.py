@@ -29,10 +29,16 @@ from src.config.ui_theme import UI_COLORS, UI_ATTRS, apply_theme
 DATA_DIR = config.DATA_DIR
 
 FAVOR_DB_FILENAME = "favor_cache.db"
+USER_GIFT_DATA_FILENAME = "user_gift_data.json"
+FAVOR_GAIN_DATA_FILENAME = "favor_gain_data.json"
 
 
 def _get_favor_db_path() -> Path:
     return DATA_DIR / FAVOR_DB_FILENAME
+
+
+# Cache version - bump this when gift computation logic changes to force cache rebuild
+_FAVOR_CACHE_VERSION = "3"
 
 
 def _compute_cdn_hash() -> str:
@@ -53,6 +59,8 @@ def _compute_cdn_hash() -> str:
                 if not chunk:
                     break
                 h.update(chunk)
+    # Include cache version in hash so code changes invalidate cache
+    h.update(_FAVOR_CACHE_VERSION.encode("utf-8"))
     return h.hexdigest() if have_any else ""
 
 
@@ -161,7 +169,7 @@ def _maybe_update_favor_cache_db(items: Dict[str, "FavorItem"], npcs: List["Favo
                 )
 
             # Precompute best gifts for this NPC and persist non-zero scores.
-            for item, score, top_pref in compute_best_gifts(npc, items, limit=300):
+            for item, score, top_pref, actual_favor in compute_best_gifts(npc, items, limit=300):
                 score_rows.append(
                     (
                         npc.key,
@@ -200,6 +208,7 @@ def _maybe_update_favor_cache_db(items: Dict[str, "FavorItem"], npcs: List["Favo
 @dataclass
 class FavorPreference:
     desire: str  # e.g. "Love", "Like"
+    name: str  # e.g. "Green Crystals", "Brass Items"
     keywords: List[str]
     pref: float  # numeric weight from npcs.json
 
@@ -218,6 +227,7 @@ class FavorItem:
     name: str
     value: float
     keywords: List[str]
+    keyword_weights: Dict[str, float]  # parsed keyword weights (e.g., {"Dirt": 50, "MoldDirt": 50})
     location: str = ""    # last known storage/location hint from Itemizer
 
 
@@ -248,12 +258,29 @@ def _load_items() -> Dict[str, FavorItem]:
         keywords = payload.get("Keywords") or []
         if not isinstance(keywords, list):
             keywords = []
+
+        # Parse keyword weights from format "keyword=value" (e.g., "bone=500")
+        keyword_weights: Dict[str, float] = {}
+        keyword_list: List[str] = []
+        for kw in keywords:
+            kw_str = str(kw)
+            keyword_list.append(kw_str)
+            # Check if keyword has a weight value (format: "keyword=value")
+            if "=" in kw_str:
+                try:
+                    kw_name, kw_value = kw_str.split("=", 1)
+                    keyword_weights[kw_name] = float(kw_value)
+                except Exception:
+                    # If parsing fails, just store the keyword without weight
+                    pass
+
         # Initialize without a location; we fill that in lazily when needed.
         items[key] = FavorItem(
             key=key,
             name=name,
             value=value_f,
-            keywords=[str(k) for k in keywords],
+            keywords=keyword_list,
+            keyword_weights=keyword_weights,
             location="",
         )
     return items
@@ -275,6 +302,21 @@ def _load_npcs() -> List[FavorNpc]:
         name = str(payload.get("Name") or "").strip()
         if not name:
             continue
+
+        # Filter out non-NPC entries (objects, signs, etc.)
+        # Exclude entries that are clearly not NPCs
+        excluded_patterns = [
+            "work orders",
+            "beehive",
+            "lootchest",
+            "myconian_gate",
+            "bluecrystal",
+            "shopgolem",
+            "teleportationattendant",
+        ]
+        name_lower = name.lower()
+        if any(pattern in name_lower for pattern in excluded_patterns):
+            continue
         area = str(payload.get("AreaFriendlyName") or "").strip()
         prefs_raw = payload.get("Preferences") or []
         preferences: List[FavorPreference] = []
@@ -283,6 +325,7 @@ def _load_npcs() -> List[FavorNpc]:
                 if not isinstance(p, dict):
                     continue
                 desire = str(p.get("Desire") or "").strip() or "Unknown"
+                pref_name = str(p.get("Name") or "").strip() or ""
                 kw_list = p.get("Keywords") or []
                 if not isinstance(kw_list, list) or not kw_list:
                     continue
@@ -293,16 +336,270 @@ def _load_npcs() -> List[FavorNpc]:
                 preferences.append(
                     FavorPreference(
                         desire=desire,
+                        name=pref_name,
                         keywords=[str(k) for k in kw_list],
                         pref=pref_val,
                     )
                 )
-        if preferences:
-            npcs.append(FavorNpc(key=key, name=name, area=area, preferences=preferences))
+        # Include all NPCs, even those without gift preferences
+        npcs.append(FavorNpc(key=key, name=name, area=area, preferences=preferences))
 
     # Sort NPCs by area then name for nicer dropdown
     npcs.sort(key=lambda n: (n.area.lower(), n.name.lower()))
     return npcs
+
+
+def _get_user_gift_data_path() -> Path:
+    """Get path to user gift data file."""
+    return DATA_DIR / USER_GIFT_DATA_FILENAME
+
+
+def _get_favor_gain_data_path() -> Path:
+    """Get path to favor gain data file."""
+    return DATA_DIR / FAVOR_GAIN_DATA_FILENAME
+
+
+def _load_user_gift_data() -> dict:
+    """Load user-defined gift preferences from JSON file.
+
+    Returns dict mapping NPC keys to list of preference dicts.
+    """
+    path = _get_user_gift_data_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_user_gift_data(data: dict) -> bool:
+    """Save user-defined gift preferences to JSON file."""
+    path = _get_user_gift_data_path()
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def _load_favor_gain_data() -> dict:
+    """Load actual favor gain data from JSON file.
+
+    Returns dict with structure: {npc_key: {item_key: [favor_gains]}}
+    where favor_gains is a list of actual favor values gained from gifting.
+    """
+    path = _get_favor_gain_data_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_favor_gain_data(data: dict) -> bool:
+    """Save actual favor gain data to JSON file."""
+    path = _get_favor_gain_data_path()
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantity: int = 1, item_value: float = 0.0, keyword_weight: float = 0.0, npc_pref: float = 0.0) -> bool:
+    """Record an actual favor gain from gifting an item to an NPC with detailed information."""
+    data = _load_favor_gain_data()
+    if npc_key not in data:
+        data[npc_key] = {}
+    if item_key not in data[npc_key]:
+        data[npc_key][item_key] = []
+
+    # Store detailed record
+    record = {
+        "favor_amount": actual_favor,
+        "quantity": quantity,
+        "favor_per_item": actual_favor / quantity,
+        "item_value": item_value,
+        "keyword_weight": keyword_weight,
+        "npc_pref": npc_pref,
+        "timestamp": datetime.now().isoformat()
+    }
+    data[npc_key][item_key].append(record)
+    return _save_favor_gain_data(data)
+
+
+def _get_average_favor_gain(npc_key: str, item_key: str) -> Optional[float]:
+    """Get the average actual favor gain for a specific NPC/item combination."""
+    data = _load_favor_gain_data()
+    if npc_key not in data or item_key not in data[npc_key]:
+        return None
+    records = data[npc_key][item_key]
+    if not records:
+        return None
+
+    # Handle both old format (list of floats) and new format (list of dicts)
+    if isinstance(records[0], dict):
+        # New format: extract favor_per_item
+        favor_values = [r.get("favor_per_item", r.get("favor_amount", 0)) for r in records]
+    else:
+        # Old format: list of floats
+        favor_values = records
+
+    return sum(favor_values) / len(favor_values)
+
+
+def _get_favor_gift_multiplier(character_name: str) -> float:
+    """Get the character's 'Favor Earned From Gifts' multiplier from their report file."""
+    pg_base = getattr(config, "PG_BASE", None)
+    
+    # If PG_BASE not set, try common Project Gorgon locations
+    if not pg_base:
+        possible_locations = [
+            Path.home() / ".config" / "unity3d" / "Elder Game" / "Project Gorgon",
+            Path.home() / "Library" / "Application Support" / "unity.Elder Game.Project Gorgon",
+        ]
+        for loc in possible_locations:
+            if loc.exists():
+                pg_base = str(loc)
+                break
+    
+    if not pg_base:
+        return 1.0
+
+    reports_dir = Path(pg_base) / "Reports"
+    if not reports_dir.exists():
+        return 1.0
+
+    # Handle character names that might include server info like "Name (Server)"
+    clean_name = character_name.split(" (")[0] if " (" in character_name else character_name
+    
+    # Find the character's report file
+    char_files = list(reports_dir.glob(f"Character_{clean_name}_*.json"))
+    if not char_files:
+        return 1.0
+
+    try:
+        with char_files[0].open("r", encoding="utf-8") as f:
+            char_data = json.load(f)
+    except Exception as e:
+        return 1.0
+
+    # Get the NPC_MOD_FAVORFROMGIFTS stat from CurrentStats
+    current_stats = char_data.get("CurrentStats", {})
+    multiplier = current_stats.get("NPC_MOD_FAVORFROMGIFTS", 1.0)
+    
+    try:
+        return float(multiplier)
+    except (ValueError, TypeError):
+        return 1.0
+
+
+def _get_character_favor_for_npc(character_name: str, npc_key: str) -> Optional[dict]:
+    """Get the current favor level and XP for a character with an NPC from their report file."""
+    pg_base = getattr(config, "PG_BASE", None)
+    if not pg_base:
+        return None
+
+    reports_dir = Path(pg_base) / "Reports"
+    if not reports_dir.exists():
+        return None
+
+    # Find the character's report file
+    char_files = list(reports_dir.glob(f"Character_{character_name}_*.json"))
+    if not char_files:
+        return None
+
+    try:
+        with char_files[0].open("r", encoding="utf-8") as f:
+            char_data = json.load(f)
+    except Exception as e:
+        return None
+
+    # The actual structure: NPCs -> NPC_Name -> {FavorLevel: "LikeFamily"}
+    npcs_data = char_data.get("NPCs", {})
+    if not npcs_data:
+        return None
+
+    # Try to find the NPC by key or by matching the name
+    # NPC keys in the report are like "NPC_WillemFangblade"
+    for report_key, npc_info in npcs_data.items():
+        if isinstance(npc_info, dict):
+            favor_level = npc_info.get("FavorLevel")
+            if favor_level:
+                # Check if this matches our NPC
+                # Remove "NPC_" prefix and compare
+                report_name = report_key.replace("NPC_", "").lower()
+                if report_name == npc_key.lower() or npc_key.lower() in report_name or report_name in npc_key.lower():
+                    return {
+                        "level": favor_level,
+                        "xp": 0,
+                        "xp_to_next": 0,
+                    }
+
+    return None
+
+
+def _get_npc_label_with_favor(npc: FavorNpc, character_name: str) -> str:
+    """Generate NPC label with favor level for the character."""
+    favor_data = _get_character_favor_for_npc(character_name, npc.key)
+    if favor_data:
+        level = favor_data["level"]
+        return f"{npc.name} ({level})"
+    else:
+        # Show Favor Unknown if no favor data
+        return f"{npc.name} (Favor Unknown)"
+
+
+def _merge_user_gift_preferences(npcs: List[FavorNpc]) -> List[FavorNpc]:
+    """Merge user-defined gift preferences with CDN data.
+
+    User data takes precedence and can add preferences to NPCs that have none.
+    """
+    user_data = _load_user_gift_data()
+    if not user_data:
+        return npcs
+
+    npc_map = {npc.key: npc for npc in npcs}
+
+    for npc_key, prefs_list in user_data.items():
+        if npc_key not in npc_map:
+            continue  # Skip if NPC not in current CDN data
+
+        npc = npc_map[npc_key]
+        # Parse user preferences
+        user_prefs: List[FavorPreference] = []
+        for p in prefs_list:
+            if not isinstance(p, dict):
+                continue
+            desire = str(p.get("Desire") or p.get("desire") or "").strip() or "Like"
+            keywords = p.get("Keywords") or p.get("keywords") or []
+            if not isinstance(keywords, list):
+                keywords = [str(keywords)]
+            try:
+                pref_val = float(p.get("Pref") or p.get("pref") or 1.0)
+            except Exception:
+                pref_val = 1.0
+            if keywords:
+                user_prefs.append(FavorPreference(
+                    desire=desire,
+                    keywords=[str(k) for k in keywords],
+                    pref=pref_val
+                ))
+
+        # Replace or add to existing preferences
+        if user_prefs:
+            npc.preferences = user_prefs
+
+    return list(npc_map.values())
+
 
 # Some preference keywords are extremely broad (e.g. "Loot") and should not
 # by themselves make an item look like a great gift when more specific
@@ -314,28 +611,51 @@ def _match_score(item: FavorItem, pref: FavorPreference) -> Optional[float]:
     """Return a raw favor score for item against one preference, or None.
 
     This is intentionally simple: we check if any preference keyword is
-    present in the item's Keywords list (string equality). If so, we
+    present in the item's Keywords list (case-insensitive substring match). If so, we
     estimate favor as:
 
-        score = item.value * pref.pref * desire_multiplier
+        score = keyword_weight * pref.pref * desire_multiplier
 
-    where desire_multiplier is higher for "Love" than for "Like".
+    where keyword_weight is the weight from the keyword (e.g., "bone=500") or item.value if no weight.
+    desire_multiplier is higher for "Love" than for "Like".
     This is an approximation, but it preserves the relative ordering of
     good gifts for a given NPC.
     """
     if not item.keywords:
         return None
 
-    item_kw = set(item.keywords)
+    item_kw_lower = {k.lower() for k in item.keywords}
 
-    # Prefer specific keywords over very broad ones like "Loot".
-    specific_pref_kw = [k for k in pref.keywords if k not in _GENERIC_PREF_KEYWORDS]
-    if specific_pref_kw:
-        if not any(k in item_kw for k in specific_pref_kw):
-            return None
-    else:
-        if not any(k in item_kw for k in pref.keywords):
-            return None
+    # Check if any preference keyword matches any item keyword
+    matched = False
+    matched_kw_weight = None
+    for pref_kw in pref.keywords:
+        pref_kw_lower = pref_kw.lower()
+        for item_kw in item.keywords:
+            item_kw_lower_str = item_kw.lower()
+
+            # Check if preference keyword matches item keyword (exact or substring)
+            # Also check if it matches the part before "=" in weighted keywords
+            kw_match = False
+            if "=" in item_kw_lower_str:
+                kw_name = item_kw_lower_str.split("=", 1)[0]
+                if pref_kw_lower == kw_name or pref_kw_lower in kw_name:
+                    kw_match = True
+                    try:
+                        matched_kw_weight = float(item_kw_lower_str.split("=", 1)[1])
+                    except Exception:
+                        pass
+            elif pref_kw_lower == item_kw_lower_str or pref_kw_lower in item_kw_lower_str:
+                kw_match = True
+
+            if kw_match:
+                matched = True
+                break
+        if matched:
+            break
+
+    if not matched:
+        return None
 
     desire = pref.desire.lower()
     # Use prefix match so we don't mis-classify descriptive text that happens to contain "love"/"like".
@@ -346,16 +666,26 @@ def _match_score(item: FavorItem, pref: FavorPreference) -> Optional[float]:
     else:
         desire_mult = 0.25
 
-    return max(0.0, item.value) * max(0.0, pref.pref) * desire_mult
+    # Use keyword weight if available, otherwise fall back to item value
+    base_value = matched_kw_weight if matched_kw_weight is not None else item.value
+    return max(0.0, base_value) * max(0.0, pref.pref) * desire_mult
 
 
-def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 200) -> List[Tuple[FavorItem, float, FavorPreference]]:
-    """Return a sorted list of (item, score, top_pref) for the NPC.
+def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 200, character_name: str = None) -> List[Tuple[FavorItem, float, FavorPreference, Optional[float]]]:
+    """Return a sorted list of (item, score, top_pref, actual_favor) for the NPC.
 
     Items are sorted descending by score. Only items that match at least
-    one preference are returned.
+    one preference are returned. actual_favor is the average actual favor
+    gain from gameplay data, or None if no data exists.
+    
+    If character_name is provided, applies the character's 'Favor Earned From Gifts' multiplier.
     """
-    results: List[Tuple[FavorItem, float, FavorPreference]] = []
+    # Get the character's favor gift multiplier
+    multiplier = 1.0
+    if character_name and character_name != "Any":
+        multiplier = _get_favor_gift_multiplier(character_name)
+    
+    results: List[Tuple[FavorItem, float, FavorPreference, Optional[float]]] = []
 
     for item in items.values():
         best_score = 0.0
@@ -366,9 +696,15 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
                 best_score = score
                 best_pref = pref
         if best_pref is not None and best_score > 0.0:
-            results.append((item, best_score, best_pref))
+            # Get actual favor data if available
+            actual_favor = _get_average_favor_gain(npc.key, item.key)
+            # Apply multiplier to actual favor if available
+            if actual_favor is not None:
+                actual_favor = actual_favor * multiplier
+            results.append((item, best_score, best_pref, actual_favor))
 
-    results.sort(key=lambda t: t[1], reverse=True)
+    # Sort by actual favor if available, otherwise by estimated score
+    results.sort(key=lambda t: (t[3] if t[3] is not None else t[1]), reverse=True)
     if limit and limit > 0:
         results = results[:limit]
     return results
@@ -479,7 +815,7 @@ class FavorTrackerWindow:
         self._items: Dict[str, FavorItem] = {}
         self._npcs: List[FavorNpc] = []
         # Cache for computed best gifts per NPC key to avoid recomputing on every refresh
-        self._gift_cache: Dict[str, List[Tuple[FavorItem, float, FavorPreference]]] = {}
+        self._gift_cache: Dict[str, List[Tuple[FavorItem, float, FavorPreference, Optional[float]]]] = {}
         # Cache for item locations so we only hit Itemizer once per item name
         self._location_cache: Dict[str, str] = {}
         # Tree view bookkeeping: map NPC tree node IDs to NPC objects and track which have been populated
@@ -493,12 +829,14 @@ class FavorTrackerWindow:
         self.area_search_var = tk.StringVar()
         self.character_var = tk.StringVar(value="Any")
         self.character_search_var = tk.StringVar()
-        # When enabled, use current area + character from PGLOK to filter NPC list
-        self.use_current_area_var = tk.BooleanVar(value=False)
         # When enabled, restrict items to those carried by the focused character (inventory + saddle)
         self.inventory_only_var = tk.BooleanVar(value=False)
+        # When locked, disable auto-area detection from chat logs
+        self.area_lock_var = tk.BooleanVar(value=False)
 
         self._build_ui()
+        # Clear cache to ensure it uses new 4-tuple format
+        self._gift_cache.clear()
         self._load_data()
 
     # ------------------------------------------------------------------
@@ -532,6 +870,31 @@ class FavorTrackerWindow:
             style="App.Secondary.TButton",
         ).pack(side="right")
 
+        ttk.Button(
+            header,
+            text="Record Favor",
+            command=self._open_favor_recorder,
+            style="App.Secondary.TButton",
+        ).pack(side="right", padx=(0, 6))
+
+        # Training mode toggle
+        self.training_mode_var = tk.BooleanVar(value=False)
+        self.training_btn = ttk.Checkbutton(
+            header,
+            text="Training Mode",
+            variable=self.training_mode_var,
+            command=self._on_training_mode_toggled,
+            style="App.TCheckbutton",
+        )
+        self.training_btn.pack(side="right", padx=(0, 6))
+
+        ttk.Button(
+            header,
+            text="Edit Gifts",
+            command=self._open_gift_editor,
+            style="App.Secondary.TButton",
+        ).pack(side="right", padx=(0, 6))
+
         # Area filters (row 1)
         area_row = ttk.Frame(shell, style="App.Panel.TFrame")
         area_row.pack(fill="x", pady=(0, 4))
@@ -557,6 +920,32 @@ class FavorTrackerWindow:
         area_search.pack(side="left", padx=(4, 0))
         area_search.bind("<FocusIn>", lambda _e: area_search.selection_range(0, "end"))
         self.area_search_var.trace_add("write", self._on_area_search_changed)
+
+        # Lock button to disable auto-area detection (on right side of search box)
+        lock_button_frame = tk.Frame(area_row, width=24, height=24)
+        lock_button_frame.pack(side="left", padx=(4, 0))
+        lock_button_frame.pack_propagate(False)  # Prevent frame from shrinking
+        
+        self.lock_button = tk.Button(
+            lock_button_frame,
+            text="🔓",
+            command=self._toggle_area_lock,
+            font=("TkDefaultFont", 14),
+            relief="raised",
+            bd=1,
+            padx=0,
+            pady=0,
+        )
+        self.lock_button.pack(fill="both", expand=True)
+        
+        # Status label next to lock button
+        self.lock_status_label = ttk.Label(
+            area_row,
+            text="Auto-detecting area & character",
+            style="App.Muted.TLabel",
+            font=("TkDefaultFont", 8),
+        )
+        self.lock_status_label.pack(side="left", padx=(4, 0))
 
         # NPC filters (row 2)
         npc_row = ttk.Frame(shell, style="App.Panel.TFrame")
@@ -625,17 +1014,9 @@ class FavorTrackerWindow:
         search_entry.bind("<FocusIn>", lambda _e: search_entry.selection_range(0, "end"))
         self.search_var.trace_add("write", lambda *_: self._refresh_table())
 
-        # Context checkboxes row: follow PGLOK context + restrict to carried items
+        # Context checkboxes row: restrict to carried items
         context_row = ttk.Frame(shell, style="App.Panel.TFrame")
         context_row.pack(fill="x", pady=(0, 8))
-
-        ttk.Checkbutton(
-            context_row,
-            text="Use current area / character",
-            variable=self.use_current_area_var,
-            command=self._on_use_current_context_toggled,
-            style="App.TCheckbutton",
-        ).pack(side="left", padx=(0, 8))
 
         ttk.Checkbutton(
             context_row,
@@ -703,7 +1084,7 @@ class FavorTrackerWindow:
         table_frame = ttk.Frame(list_tab, style="App.Card.TFrame")
         table_frame.pack(fill="both", expand=True)
 
-        columns = ("item", "favor", "value", "location", "pref", "desire", "keywords")
+        columns = ("item", "favor", "actual_favor", "value", "location", "pref", "desire", "keywords")
         self.list_tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -714,19 +1095,21 @@ class FavorTrackerWindow:
 
         self.list_tree.heading("item", text="Item")
         self.list_tree.heading("favor", text="Est. Favor Score")
+        self.list_tree.heading("actual_favor", text="Actual Favor")
         self.list_tree.heading("value", text="Value")
         self.list_tree.heading("location", text="Location")
         self.list_tree.heading("pref", text="Match")
         self.list_tree.heading("desire", text="Desire")
         self.list_tree.heading("keywords", text="Matched Keywords")
 
-        self.list_tree.column("item", width=230, anchor="w", stretch=True)
-        self.list_tree.column("favor", width=110, anchor="center", stretch=True)
-        self.list_tree.column("value", width=80, anchor="center", stretch=True)
-        self.list_tree.column("location", width=180, anchor="center", stretch=True)
-        self.list_tree.column("pref", width=150, anchor="w")
-        self.list_tree.column("desire", width=80, anchor="w")
-        self.list_tree.column("keywords", width=260, anchor="w", stretch=True)
+        self.list_tree.column("item", width=200, anchor="w", stretch=True)
+        self.list_tree.column("favor", width=100, anchor="center", stretch=True)
+        self.list_tree.column("actual_favor", width=100, anchor="center", stretch=True)
+        self.list_tree.column("value", width=70, anchor="center", stretch=True)
+        self.list_tree.column("location", width=160, anchor="center", stretch=True)
+        self.list_tree.column("pref", width=130, anchor="w")
+        self.list_tree.column("desire", width=70, anchor="w")
+        self.list_tree.column("keywords", width=230, anchor="w", stretch=True)
 
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.list_tree.yview)
         self.list_tree.configure(yscrollcommand=vsb.set)
@@ -747,6 +1130,8 @@ class FavorTrackerWindow:
         try:
             self._items = _load_items()
             self._npcs = _load_npcs()
+            # Merge user-defined gift preferences (overrides CDN data)
+            self._npcs = _merge_user_gift_preferences(self._npcs)
             # Invalidate any cached gift computations when data changes
             self._gift_cache.clear()
             # Best-effort: mirror CDN + precomputed scores into SQLite cache.
@@ -765,10 +1150,18 @@ class FavorTrackerWindow:
             )
 
         # Populate NPC combo (All + all NPCs)
-        all_labels = [f"{n.name} ({n.area})" if n.area else n.name for n in self._npcs]
+        character_name = self.character_var.get()
+        if character_name and character_name != "Any":
+            # Extract character name from label (format: "Name (Server)")
+            char_name = character_name.split(" (")[0] if " (" in character_name else character_name
+            all_labels = [_get_npc_label_with_favor(n, char_name) for n in self._npcs]
+        else:
+            # Show Favor Unknown when no character selected
+            all_labels = [f"{n.name} (Favor Unknown)" for n in self._npcs]
         self._all_npc_labels = all_labels
         values = ["All"] + all_labels
         self.npc_combo["values"] = values
+        # Default to All
         if not self.npc_var.get() or self.npc_var.get() not in values:
             self.npc_var.set("All")
 
@@ -806,8 +1199,8 @@ class FavorTrackerWindow:
         # Remember full character list for searching
         self._all_characters = characters[:]
 
-        # If we're supposed to follow the current PGLOK context, apply it now
-        if self.use_current_area_var.get():
+        # Auto-sync with current PGLOK context (character + area) if unlocked
+        if not self.area_lock_var.get():
             self._apply_current_context_filters()
 
         self._refresh_table()
@@ -840,7 +1233,8 @@ class FavorTrackerWindow:
             # Try to select matching area in area combo
             if hasattr(self, "area_combo"):
                 for value in self.area_combo["values"]:
-                    if value.lower() == area_val.lower():
+                    # Try exact match first, then partial match
+                    if value.lower() == area_val.lower() or area_val.lower() in value.lower():
                         self.area_var.set(value)
                         break
 
@@ -852,21 +1246,371 @@ class FavorTrackerWindow:
                     self.character_var.set(value)
                     break
 
-    def _on_use_current_context_toggled(self) -> None:
-        """Handler when "Use current area / character" is toggled."""
-        if self.use_current_area_var.get():
-            # Enable context-following and immediately apply
-            self._apply_current_context_filters()
+    def _open_favor_recorder(self) -> None:
+        """Open dialog to record actual favor gain from gifting an item."""
+        if not self._npcs or not self._items:
+            messagebox.showinfo("Favor Recorder", "No NPC or item data loaded.")
+            return
+
+        # Create dialog window
+        dialog = tk.Toplevel(self.window)
+        dialog.title("Record Favor Gain")
+        dialog.geometry("400x300")
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        # NPC selection
+        ttk.Label(dialog, text="NPC:", style="App.TLabel").pack(pady=(10, 5))
+        npc_var = tk.StringVar()
+        npc_combo = ttk.Combobox(dialog, textvariable=npc_var, state="readonly", style="App.TCombobox")
+        npc_values = [f"{npc.name} ({npc.area})" if npc.area else npc.name for npc in self._npcs]
+        npc_combo["values"] = npc_values
+        npc_combo.pack(pady=(0, 10), padx=20, fill="x")
+        if npc_values:
+            npc_combo.current(0)
+
+        # Item selection
+        ttk.Label(dialog, text="Item:", style="App.TLabel").pack(pady=(5, 5))
+        item_var = tk.StringVar()
+        item_combo = ttk.Combobox(dialog, textvariable=item_var, state="readonly", style="App.TCombobox")
+        item_values = [item.name for item in self._items.values()]
+        item_combo["values"] = sorted(item_values)
+        item_combo.pack(pady=(0, 10), padx=20, fill="x")
+        if item_values:
+            item_combo.current(0)
+
+        # Favor gain input
+        ttk.Label(dialog, text="Favor Gained:", style="App.TLabel").pack(pady=(5, 5))
+        favor_var = tk.StringVar()
+        favor_entry = ttk.Entry(dialog, textvariable=favor_var, style="App.TEntry")
+        favor_entry.pack(pady=(0, 10), padx=20, fill="x")
+
+        def on_record():
+            npc_name = npc_var.get()
+            item_name = item_var.get()
+            favor_text = favor_var.get().strip()
+
+            if not npc_name or not item_name or not favor_text:
+                messagebox.showerror("Error", "Please fill in all fields.")
+                return
+
+            try:
+                favor_gain = float(favor_text)
+            except ValueError:
+                messagebox.showerror("Error", "Favor gain must be a number.")
+                return
+
+            # Find NPC key
+            npc_key = None
+            for npc in self._npcs:
+                npc_label = f"{npc.name} ({npc.area})" if npc.area else npc.name
+                if npc_label == npc_name:
+                    npc_key = npc.key
+                    break
+
+            # Find item key
+            item_key = None
+            for key, item in self._items.items():
+                if item.name == item_name:
+                    item_key = key
+                    break
+
+            if not npc_key or not item_key:
+                messagebox.showerror("Error", "Could not find NPC or item.")
+                return
+
+            # Record the favor gain
+            if _record_favor_gain(npc_key, item_key, favor_gain):
+                self.status_var.set(f"Recorded favor gain: {favor_gain} for {item_name} → {npc_name}")
+                dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to save favor gain data.")
+
+        # Buttons
+        button_frame = ttk.Frame(dialog, style="App.Panel.TFrame")
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="Record", command=on_record, style="App.Primary.TButton").pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy, style="App.Secondary.TButton").pack(side="left", padx=5)
+
+    def record_favor_gain_from_chat(self, npc_name: str, favor_amount: str) -> None:
+        """Record a favor gain parsed from chat log (without item name)."""
+        try:
+            favor_value = float(favor_amount)
+        except ValueError:
+            return
+
+        # Find NPC key by name
+        npc_key = None
+        npc_obj = None
+        for npc in self._npcs:
+            if npc.name.lower() == npc_name.lower():
+                npc_key = npc.key
+                npc_obj = npc
+                break
+
+        if not npc_key:
+            return
+
+        # If training mode is on, open popup to select item
+        if self.training_mode_var.get():
+            success = self._open_training_item_selector(npc_obj, favor_value)
+            # Only refresh if recording was successful
+            if success:
+                self._refresh_table()
         else:
-            # Turn off: restore full NPC + area list (with All)
-            if hasattr(self, "_all_npc_labels"):
-                values = ["All"] + self._all_npc_labels
-                self.npc_combo["values"] = values
-                if self.npc_var.get() not in values:
-                    self.npc_var.set("All")
-            if hasattr(self, "area_combo"):
-                self.area_var.set("All Areas")
+            # Record without item name (use "Unknown" as placeholder) with minimal data
+            _record_favor_gain(npc_key, "Unknown", favor_value, 1, 0.0, 0.0, 0.0)
+            # Refresh the table to show updated actual favor data
+            self._refresh_table()
+
+    def _on_training_mode_toggled(self) -> None:
+        """Handle training mode toggle."""
+        if self.training_mode_var.get():
+            self.status_var.set("Training mode ON - Select items when favor gains are detected")
+        else:
+            self.status_var.set("Training mode OFF")
+
+    def _open_training_item_selector(self, npc: FavorNpc, favor_amount: float) -> bool:
+        """Open a popup dialog to select the item gifted to the NPC during training.
+
+        Returns True if recording was successful, False if cancelled or failed.
+        """
+        dialog = tk.Toplevel(self.window)
+        dialog.title(f"Training Mode - {npc.name}")
+        dialog.geometry("500x600")
+        dialog.transient(self.window)
+        dialog.grab_set()
+
+        # Track whether recording was successful
+        recording_success = [False]
+
+        # Container frame
+        container = ttk.Frame(dialog, style="App.Panel.TFrame")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Header with favor info
+        header_frame = ttk.Frame(container, style="App.Panel.TFrame")
+        header_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(header_frame, text=f"Favor Gained: {favor_amount}", style="App.Header.TLabel").pack()
+        ttk.Label(header_frame, text=f"NPC: {npc.name}", style="App.TLabel").pack()
+
+        # Search/Item name entry (serves both search and custom item name)
+        search_frame = ttk.Frame(container, style="App.Panel.TFrame")
+        search_frame.pack(fill="x", pady=(0, 5))
+        ttk.Label(search_frame, text="Item name:", style="App.TLabel").pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=search_var, style="App.TEntry")
+        search_entry.pack(side="left", fill="x", expand=True, padx=5)
+
+        # Item list
+        list_frame = ttk.Frame(container, style="App.Panel.TFrame")
+        list_frame.pack(fill="both", expand=True, pady=5)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+
+        item_listbox = tk.Listbox(list_frame, height=15, yscrollcommand=scrollbar.set)
+        item_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=item_listbox.yview)
+
+        # Get items that match NPC preferences
+        results = self._get_gifts_for_npc(npc, limit=200)
+        all_items = [(item.name, item, score, pref, actual_favor) for item, score, pref, actual_favor in results]
+
+        # Populate list with all items
+        for name, _, _, _, _ in all_items:
+            item_listbox.insert(tk.END, name)
+
+        # Search filter function
+        def filter_items(*args):
+            search_text = search_var.get().lower()
+            item_listbox.delete(0, tk.END)
+            if search_text:
+                for name, _, _, _, _ in all_items:
+                    if search_text in name.lower():
+                        item_listbox.insert(tk.END, name)
+            else:
+                # Show all items when search is empty
+                for name, _, _, _, _ in all_items:
+                    item_listbox.insert(tk.END, name)
+
+        search_var.trace_add("write", filter_items)
+
+        # Bottom frame for quantity and buttons (pinned to bottom)
+        bottom_frame = ttk.Frame(dialog, style="App.Panel.TFrame")
+        bottom_frame.pack(side="bottom", fill="x", padx=10, pady=10)
+
+        # Quantity input
+        quantity_frame = ttk.Frame(bottom_frame, style="App.Panel.TFrame")
+        quantity_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(quantity_frame, text="Quantity:", style="App.TLabel").pack(side="left")
+        quantity_var = tk.StringVar(value="1")
+        quantity_entry = ttk.Entry(quantity_frame, textvariable=quantity_var, width=10, style="App.TEntry")
+        quantity_entry.pack(side="left", padx=5)
+
+        # Buttons
+        button_frame = ttk.Frame(bottom_frame, style="App.Panel.TFrame")
+        button_frame.pack(fill="x")
+        ttk.Button(button_frame, text="Record", command=lambda: self._record_training_favor(npc, favor_amount, item_listbox, quantity_var, search_var, dialog, recording_success), style="App.Primary.TButton").pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy, style="App.Secondary.TButton").pack(side="left", padx=5)
+
+        # Ensure minimum window size
+        dialog.minsize(400, 500)
+
+        dialog.wait_window()  # Wait for dialog to close before continuing
+        return recording_success[0]
+
+    def _record_training_favor(self, npc: FavorNpc, favor_amount: float, item_listbox, quantity_var, search_var, dialog, recording_success: list) -> None:
+        """Record favor gain with specific item and quantity from training mode."""
+        typed_name = search_var.get().strip()
+
+        # Use typed name if provided, otherwise use listbox selection
+        if typed_name:
+            item_name = typed_name
+        else:
+            selection = item_listbox.curselection()
+            if not selection:
+                messagebox.showerror("Error", "Please select an item or type an item name")
+                return
+            item_name = item_listbox.get(selection[0])
+
+        try:
+            quantity = int(quantity_var.get())
+            if quantity < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Quantity must be a positive integer")
+            return
+
+        # Find item key (if item exists in database)
+        item_key = None
+        for key, item in self._items.items():
+            if item.name.lower() == item_name.lower():
+                item_key = key
+                item_name = item.name  # Use correct casing from database
+                break
+
+        # If typed name was used and not found in database, show error with suggestions
+        if typed_name and not item_key:
+            # Find similar item names for suggestions
+            suggestions = []
+            item_name_lower = item_name.lower()
+            for key, item in self._items.items():
+                if item_name_lower in item.name.lower() or item.name.lower() in item_name_lower:
+                    suggestions.append(item.name)
+            suggestions = sorted(set(suggestions))[:5]  # Top 5 suggestions
+
+            error_msg = f"Item '{item_name}' not found in item database."
+            if suggestions:
+                error_msg += f"\n\nDid you mean:\n" + "\n".join(f"• {s}" for s in suggestions)
+            error_msg += "\n\nPlease select from the list or use the exact item name from the game."
+            messagebox.showerror("Item Not Found", error_msg)
+            return
+
+        # Record favor gain per item with detailed information
+        favor_per_item = favor_amount / quantity
+
+        # Get item details for analysis (if item exists in database)
+        item_value = 0.0
+        keyword_weight = 0.0
+        npc_pref_value = 0.0
+
+        if item_key:
+            item_obj = self._items.get(item_key)
+            item_value = item_obj.value if item_obj else 0.0
+
+            # Find matching preference to get pref value
+            matched_keyword_weight = None
+            for pref in npc.preferences:
+                for item_kw in item_obj.keywords if item_obj else []:
+                    if any(pref_kw.lower() in item_kw.lower() for pref_kw in pref.keywords):
+                        npc_pref_value = pref.pref
+                        # Extract keyword weight if available
+                        if "=" in item_kw:
+                            try:
+                                matched_keyword_weight = float(item_kw.split("=", 1)[1])
+                            except Exception:
+                                pass
+                        break
+                if npc_pref_value > 0:
+                    break
+
+            keyword_weight = matched_keyword_weight if matched_keyword_weight is not None else 0.0
+
+        # Use item_key if found, otherwise use custom name as key
+        record_key = item_key if item_key else item_name
+        _record_favor_gain(npc.key, record_key, favor_per_item, quantity, item_value, keyword_weight, npc_pref_value)
+
+        # Clear gift cache to force recalculation with new actual favor data
+        self._gift_cache.clear()
+
+        recording_success[0] = True
+        self.status_var.set(f"Recorded training data: {item_name} × {quantity} → {npc.name} ({favor_per_item:.1f} each)")
+        dialog.destroy()
         self._refresh_table()
+
+    def _toggle_area_lock(self) -> None:
+        """Toggle the area auto-detection lock."""
+        current = self.area_lock_var.get()
+        self.area_lock_var.set(not current)
+        locked = self.area_lock_var.get()
+
+        if locked:
+            self.lock_button.configure(text="🔒", font=("TkDefaultFont", 14))
+            self.lock_status_label.configure(text="Locked - manual selection")
+        else:
+            self.lock_button.configure(text="🔓", font=("TkDefaultFont", 14))
+            self.lock_status_label.configure(text="Auto-detecting area & character")
+            # If unlocked, immediately apply current context
+            self._apply_current_context_filters()
+
+    def update_area_from_chat(self, area_name: str) -> None:
+        """Called by parent app when chat log detects an area change.
+
+        Only updates if:
+        - area_lock is False (unlocked)
+        - area_name is different from current
+        """
+        if not area_name:
+            return
+        if self.area_lock_var.get():
+            self.status_var.set(f"Area '{area_name}' detected but lock is engaged")
+            return  # Locked, don't auto-update
+
+        # Update the area filter
+        if hasattr(self, "area_combo"):
+            for value in self.area_combo["values"]:
+                if value.lower() == area_name.lower():
+                    if self.area_var.get() != value:
+                        self.area_var.set(value)
+                        self._on_area_filter_changed()
+                        self.status_var.set(f"Area updated to: {value}")
+                    return
+            self.status_var.set(f"Area '{area_name}' not found in area list")
+
+    def update_character_from_chat(self, character_name: str) -> None:
+        """Called by parent app when chat log detects a character login.
+
+        Only updates if:
+        - area_lock is False (unlocked)
+        - character_name is different from current
+        """
+        if not character_name:
+            return
+        if self.area_lock_var.get():
+            self.status_var.set(f"Character '{character_name}' detected but lock is engaged")
+            return  # Locked, don't auto-update
+
+        # Update the character filter
+        if hasattr(self, "character_combo"):
+            for value in self.character_combo["values"]:
+                if value.lower() == character_name.lower():
+                    if self.character_var.get() != value:
+                        self.character_var.set(value)
+                        self._on_character_search_changed()
+                        self.status_var.set(f"Character updated to: {value}")
+                    return
+            self.status_var.set(f"Character '{character_name}' not found in character list")
 
     def _on_area_filter_changed(self) -> None:
         """Filter NPC list when area dropdown changes via selection."""
@@ -934,6 +1678,8 @@ class FavorTrackerWindow:
 
     def _on_character_search_changed(self, *_: object) -> None:
         """Filter the Character dropdown based on the Character search box."""
+        # Clear cache when character changes since multiplier affects results
+        self._gift_cache.clear()
         if not hasattr(self, "_all_characters"):
             return
         term = self.character_search_var.get().strip().lower()
@@ -959,9 +1705,51 @@ class FavorTrackerWindow:
             self.character_var.set(values[1])
         else:
             self.character_var.set(values[0])
-        # Character change may affect inventory-only results
+        # Character change may affect inventory-only results and NPC labels
         self._gift_cache.clear()
+        self._tree_built_for_npc.clear()  # Clear tree cache to force rebuild
+        self._refresh_npc_labels()
         self._refresh_table()
+
+    def _refresh_npc_labels(self) -> None:
+        """Refresh NPC labels with current favor levels."""
+        if not hasattr(self, "_all_npc_labels") or not self._npcs:
+            return
+
+        # Get the currently selected NPC's actual name before refresh
+        current_label = self.npc_var.get()
+        current_npc_name = None
+        if current_label and current_label != "All":
+            # Extract name from old label format
+            current_npc_name = current_label.split(" (")[0]
+
+        character_name = self.character_var.get()
+        if character_name and character_name != "Any":
+            # Extract character name from label (format: "Name (Server)")
+            char_name = character_name.split(" (")[0] if " (" in character_name else character_name
+            all_labels = [_get_npc_label_with_favor(n, char_name) for n in self._npcs]
+        else:
+            # Show Favor Unknown when no character selected
+            all_labels = [f"{n.name} (Favor Unknown)" for n in self._npcs]
+
+        self._all_npc_labels = all_labels
+
+        # Update the NPC combo values
+        values = ["All"] + all_labels
+        self.npc_combo["values"] = values
+
+        # Try to preserve the selection by matching the NPC name
+        if current_npc_name:
+            # Find the new label for this NPC
+            for label in values:
+                if label.startswith(current_npc_name + " ("):
+                    self.npc_var.set(label)
+                    return
+        # If we couldn't preserve, select the first NPC instead of All
+        if len(values) > 1:
+            self.npc_var.set(values[1])
+        else:
+            self.npc_var.set("All")
 
     def _apply_area_filter_from_text(self, text: str) -> None:
         if not hasattr(self, "_all_npc_labels"):
@@ -1070,7 +1858,8 @@ class FavorTrackerWindow:
         character is currently carrying in their personal inventory or
         saddle, using the Itemizer index.
         """
-        key = npc.key
+        character_name = self.character_var.get()
+        key = (npc.key, character_name)  # Include character in cache key
         cached = self._gift_cache.get(key)
         if cached is None:
             # Default to computing in-memory.
@@ -1123,14 +1912,14 @@ class FavorTrackerWindow:
                                 (key, int(limit)),
                             )
                             rows = cur.fetchall()
-                            tmp: List[Tuple[FavorItem, float, FavorPreference]] = []
+                            tmp: List[Tuple[FavorItem, float, FavorPreference, Optional[float]]] = []
                             for item_key, score, desire in rows:
                                 item = self._items.get(item_key)
                                 if not item:
                                     continue
                                 # Recreate a minimal FavorPreference to display desire text.
                                 pref = FavorPreference(desire=desire or "", keywords=[], pref=0.0)
-                                tmp.append((item, float(score), pref))
+                                tmp.append((item, float(score), pref, None))
                             if tmp:
                                 results = tmp
                         finally:
@@ -1140,7 +1929,8 @@ class FavorTrackerWindow:
 
             # Fallback: compute on the fly using current items view.
             if results is None:
-                results = compute_best_gifts(npc, base_items, limit=limit)
+                character_name = self.character_var.get()
+                results = compute_best_gifts(npc, base_items, limit=limit, character_name=character_name)
 
             cached = results
             self._gift_cache[key] = cached
@@ -1168,19 +1958,26 @@ class FavorTrackerWindow:
             self._refresh_tree_view()
             return
 
+        # Check if NPC has no gift preferences
+        if not npc.preferences:
+            self.status_var.set(f"⚠ No gift data available for {npc.name}.")
+            # Still refresh tree to show the NPC in the hierarchy
+            self._refresh_tree_view()
+            return
+
         results = self._get_gifts_for_npc(npc, limit=300)
         term = self.search_var.get().strip().lower()
 
         # Preload locations for any items that don't have one yet, in a single DB hit.
         try:
-            missing_items = [item for item, _score, _pref in results if not getattr(item, "location", "")]
+            missing_items = [item for item, _score, _pref, _actual_favor in results if not getattr(item, "location", "")]
         except Exception:
             missing_items = []
         if missing_items:
             self._ensure_locations_for_items(missing_items)
 
         shown = 0
-        for item, score, pref in results:
+        for item, score, pref, actual_favor in results:
             if term and term not in item.name.lower():
                 continue
 
@@ -1192,12 +1989,15 @@ class FavorTrackerWindow:
             location = getattr(item, "location", "")
 
             if hasattr(self, "list_tree"):
+                # Use actual favor in score column if available
+                display_score = f"{actual_favor:,.1f}" if actual_favor is not None else f"{score:,.1f} (est)"
                 self.list_tree.insert(
                     "",
                     "end",
                     values=(
                         item.name,
-                        f"{score:,.1f}",
+                        display_score,
+                        f"{actual_favor:,.1f}" if actual_favor is not None else "N/A",
                         f"{item.value:,.1f}",
                         location,
                         pref.name if hasattr(pref, "name") else ", ".join(pref.keywords),
@@ -1236,16 +2036,29 @@ class FavorTrackerWindow:
         root_id = self.tree_hierarchy.insert("", "end", text=char_label, open=True)
 
         # By default, only show the currently selected NPC to keep things fast.
-        # If "All" or nothing is selected, show all visible NPCs.
+        # If "All" or nothing is selected, show all visible NPCs filtered by area.
         selected_label = self.npc_var.get().strip()
         if selected_label and selected_label.lower() != "all":
             visible_labels = [selected_label]
         else:
-            visible_labels = [
-                label
-                for label in (list(self.npc_combo["values"]) if self.npc_combo is not None else [])
-                if label.strip().lower() != "all"
-            ]
+            # Get area-filtered labels using NPC area property
+            area_label = self.area_var.get().strip()
+            if area_label and area_label.lower() != "all areas":
+                # Filter by area using NPC objects
+                filtered_npcs = [npc for npc in self._npcs if npc.area and area_label.lower() in npc.area.lower()]
+                character_name = self.character_var.get()
+                if character_name and character_name != "Any":
+                    char_name = character_name.split(" (")[0] if " (" in character_name else character_name
+                    visible_labels = [_get_npc_label_with_favor(npc, char_name) for npc in filtered_npcs]
+                else:
+                    visible_labels = [f"{npc.name} (Favor Unknown)" for npc in filtered_npcs]
+            else:
+                # Show all NPCs
+                visible_labels = [
+                    label
+                    for label in (list(self.npc_combo["values"]) if self.npc_combo is not None else [])
+                    if label.strip().lower() != "all"
+                ]
         if not visible_labels:
             return
 
@@ -1258,47 +2071,65 @@ class FavorTrackerWindow:
             if npc is None:
                 continue
 
-            npc_text = f"{npc.name} ({npc.area})" if npc.area else npc.name
+            # Use favor label format with current character
+            character_name = self.character_var.get()
+            if character_name and character_name != "Any":
+                char_name = character_name.split(" (")[0] if " (" in character_name else character_name
+                npc_text = _get_npc_label_with_favor(npc, char_name)
+            else:
+                npc_text = f"{npc.name} (Favor Unknown)"
             npc_id = self.tree_hierarchy.insert(root_id, "end", text=npc_text, open=False)
 
             # Use the same cached gift computation the table uses (limit for performance)
             results = self._get_gifts_for_npc(npc, limit=120)
 
+            # If NPC has no gift preferences, show a message
+            if not npc.preferences:
+                self.tree_hierarchy.insert(npc_id, "end", text="⚠ No gift data available", open=False)
+                continue
+
             # Preload locations for any items we may show, in a single DB hit.
             try:
-                missing_items = [item for item, _score, _pref in results if not getattr(item, "location", "")]
+                missing_items = [item for item, _score, _pref, _actual_favor in results if not getattr(item, "location", "")]
             except Exception:
                 missing_items = []
             if missing_items:
                 self._ensure_locations_for_items(missing_items)
 
-            loved_id = None
-            liked_id = None
-
-            for item, score, pref in results:
+            # Group items by preference name
+            pref_groups: dict[str, list[tuple[FavorItem, float, FavorPreference, Optional[float]]]] = {}
+            for item, score, pref, actual_favor in results:
                 desire = (pref.desire or "").lower()
-                # Bucket strictly by prefix so "Like" preferences don't get caught by a stray "love" word.
-                if desire.startswith("love"):
-                    if loved_id is None:
-                        loved_id = self.tree_hierarchy.insert(npc_id, "end", text="Loved", open=False)
-                    parent_id = loved_id
-                elif desire.startswith("like"):
-                    if liked_id is None:
-                        liked_id = self.tree_hierarchy.insert(npc_id, "end", text="Liked", open=False)
-                    parent_id = liked_id
-                else:
-                    # Skip items that aren't clearly Loved/Liked to keep tree focused
+                # Only include Loved/Liked items
+                if not (desire.startswith("love") or desire.startswith("like")):
                     continue
 
-                # Use cached location if populated.
-                location = getattr(item, "location", "")
+                # Create preference label (e.g., "Loves Green Crystals", "Likes Brass Items")
+                pref_name = pref.name if hasattr(pref, "name") else ", ".join(pref.keywords)
+                if desire.startswith("love"):
+                    pref_label = f"Loves {pref_name}"
+                else:
+                    pref_label = f"Likes {pref_name}"
 
-                self.tree_hierarchy.insert(
-                    parent_id,
-                    "end",
-                    text=item.name,
-                    values=(f"{score:,.1f}", f"{item.value:,.1f}", location),
-                )
+                if pref_label not in pref_groups:
+                    pref_groups[pref_label] = []
+                pref_groups[pref_label].append((item, score, pref, actual_favor))
+
+            # Create tree nodes for each preference group
+            for pref_label, items in pref_groups.items():
+                pref_id = self.tree_hierarchy.insert(npc_id, "end", text=f"- {pref_label}", open=False)
+
+                for item, score, pref, actual_favor in items:
+                    # Display item with actual favor if available, otherwise estimated
+                    if actual_favor is not None:
+                        item_text = f"-- {item.name} ({actual_favor:,.1f} XP)"
+                    else:
+                        item_text = f"-- {item.name} ({score:,.1f} XP est)"
+                    self.tree_hierarchy.insert(
+                        pref_id,
+                        "end",
+                        text=item_text,
+                    )
 
     def _on_tree_node_open(self, _event) -> None:
         """Treeview open handler (currently unused; tree is fully built)."""
@@ -1322,3 +2153,145 @@ class FavorTrackerWindow:
     def focus(self) -> None:
         self.window.lift()
         self.window.focus_force()
+
+    def _open_gift_editor(self) -> None:
+        """Open a dialog to manually edit gift preferences for the selected NPC."""
+        npc = self._get_selected_npc()
+        if npc is None:
+            messagebox.showinfo("Edit Gifts", "Please select an NPC first.")
+            return
+
+        # Create editor window
+        editor = tk.Toplevel(self.window)
+        editor.title(f"Edit Gift Preferences - {npc.name}")
+        editor.geometry("500x400")
+        editor.transient(self.window)
+        editor.grab_set()
+        apply_theme(editor)
+
+        shell = ttk.Frame(editor, padding=10, style="App.Panel.TFrame")
+        shell.pack(fill="both", expand=True)
+
+        # Instructions
+        ttk.Label(
+            shell,
+            text=f"Enter gift keywords for {npc.name}",
+            style="App.Header.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+
+        ttk.Label(
+            shell,
+            text="Format: keyword1, keyword2, keyword3 (e.g., 'Red', 'Magic', 'Sword')",
+            font=("TkDefaultFont", 9),
+            foreground="gray",
+        ).pack(anchor="w", pady=(0, 8))
+
+        # Current preferences display
+        ttk.Label(shell, text="Current Preferences:", style="App.TLabel").pack(anchor="w", pady=(0, 4))
+
+        prefs_text = tk.Text(shell, height=6, wrap="word", state="normal")
+        prefs_text.pack(fill="both", expand=True, pady=(0, 8))
+
+        if npc.preferences:
+            for pref in npc.preferences:
+                line = f"[{pref.desire}] {', '.join(pref.keywords)}\n"
+                prefs_text.insert("end", line)
+        else:
+            prefs_text.insert("end", "(No preferences set)\n")
+        prefs_text.configure(state="disabled")
+
+        # New preference entry
+        ttk.Label(shell, text="Add New Preference:", style="App.TLabel").pack(anchor="w", pady=(0, 4))
+
+        entry_frame = ttk.Frame(shell, style="App.Panel.TFrame")
+        entry_frame.pack(fill="x", pady=(0, 8))
+
+        desire_var = tk.StringVar(value="Like")
+        ttk.Combobox(
+            entry_frame,
+            textvariable=desire_var,
+            values=["Love", "Like", "Neutral"],
+            width=10,
+            state="readonly",
+            style="App.TCombobox",
+        ).pack(side="left", padx=(0, 4))
+
+        keywords_var = tk.StringVar()
+        ttk.Entry(
+            entry_frame,
+            textvariable=keywords_var,
+            width=35,
+            style="App.TEntry",
+        ).pack(side="left", fill="x", expand=True)
+
+        def add_preference():
+            keywords = [k.strip() for k in keywords_var.get().split(",") if k.strip()]
+            if not keywords:
+                messagebox.showwarning("Edit Gifts", "Please enter at least one keyword.")
+                return
+
+            desire = desire_var.get()
+
+            # Load existing user data
+            user_data = _load_user_gift_data()
+
+            # Add or update this NPC's preferences
+            if npc.key not in user_data:
+                user_data[npc.key] = []
+
+            user_data[npc.key].append({
+                "Desire": desire,
+                "Keywords": keywords,
+                "Pref": 1.0,
+            })
+
+            # Save
+            if _save_user_gift_data(user_data):
+                messagebox.showinfo("Edit Gifts", f"Added {desire} preference for {npc.name}.")
+                keywords_var.set("")
+                # Refresh the display
+                self._load_data()
+                self._refresh_table()
+            else:
+                messagebox.showerror("Edit Gifts", "Failed to save preference.")
+
+        def clear_preferences():
+            if not messagebox.askyesno("Edit Gifts", f"Clear all custom preferences for {npc.name}?"):
+                return
+
+            user_data = _load_user_gift_data()
+            if npc.key in user_data:
+                del user_data[npc.key]
+
+            if _save_user_gift_data(user_data):
+                messagebox.showinfo("Edit Gifts", f"Cleared preferences for {npc.name}.")
+                self._load_data()
+                self._refresh_table()
+                editor.destroy()
+            else:
+                messagebox.showerror("Edit Gifts", "Failed to clear preferences.")
+
+        # Buttons
+        btn_frame = ttk.Frame(shell, style="App.Panel.TFrame")
+        btn_frame.pack(fill="x", pady=(8, 0))
+
+        ttk.Button(
+            btn_frame,
+            text="Add Preference",
+            command=add_preference,
+            style="App.Primary.TButton",
+        ).pack(side="left", padx=(0, 4))
+
+        ttk.Button(
+            btn_frame,
+            text="Clear All",
+            command=clear_preferences,
+            style="App.Secondary.TButton",
+        ).pack(side="left", padx=(0, 4))
+
+        ttk.Button(
+            btn_frame,
+            text="Close",
+            command=editor.destroy,
+            style="App.Secondary.TButton",
+        ).pack(side="right")

@@ -1,9 +1,10 @@
 from pathlib import Path
 import base64
 import io
+import json
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, simpledialog
 
 from PIL import Image
 
@@ -35,6 +36,11 @@ class MapToolsBrowser(ttk.Frame):
         self._pan_active = False
         self.zoom_var = tk.StringVar(value="100%")
         self._map_files = {}
+
+        # Marker state: canvas item id -> marker metadata (logical coords in image space)
+        self._markers = {}  # item_id -> {"x": float, "y": float}
+        self._drag_data = None  # {'item': id, 'start_x': float, 'start_y': float}
+
         self._build()
         self.refresh_maps()
 
@@ -59,6 +65,12 @@ class MapToolsBrowser(ttk.Frame):
             style="App.Primary.TButton",
         )
         self.update_button.pack(side="right", padx=(6, 0))
+        # Marker controls
+        self.add_marker_button = ttk.Button(top, text="Add Marker", command=self._add_marker_at_view_center, style="App.Secondary.TButton")
+        self.add_marker_button.pack(side="right", padx=(6, 0))
+        self.clear_markers_button = ttk.Button(top, text="Clear Markers", command=self._clear_markers, style="App.Secondary.TButton")
+        self.clear_markers_button.pack(side="right", padx=(6, 0))
+
         ttk.Button(top, text="Fit", command=self._fit_to_window, style="App.Secondary.TButton").pack(side="right", padx=(6, 0))
         ttk.Button(top, text="+", command=lambda: self._change_zoom(1.25), style="App.Secondary.TButton", width=3).pack(
             side="right", padx=(6, 0)
@@ -97,6 +109,17 @@ class MapToolsBrowser(ttk.Frame):
         self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<B1-Motion>", self._on_pan_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
+        # double-click to place marker
+        self.canvas.bind("<Double-1>", self._on_canvas_double_click)
+        # shift+drag to create marker by dragging
+        self.canvas.bind("<Shift-ButtonPress-1>", self._on_canvas_shift_press)
+        self.canvas.bind("<Shift-B1-Motion>", self._on_canvas_shift_motion)
+        self.canvas.bind("<Shift-ButtonRelease-1>", self._on_canvas_shift_release)
+        # marker editor panel on the right
+        try:
+            self._build_marker_panel(display_wrap)
+        except Exception:
+            pass
 
     def _set_status(self, message: str):
         if self.status_callback is not None:
@@ -149,6 +172,13 @@ class MapToolsBrowser(ttk.Frame):
             self._fit_mode = True
             self._render_current_image()
             self._set_status(f"Loaded map: {name}")
+            # load saved markers for this map (if any)
+            try:
+                self._load_markers()
+                # ensure marker positions match current zoom
+                self._refresh_marker_positions()
+            except Exception:
+                pass
         except Exception as exc:
             self._clear_canvas()
             self._set_status(f"Error loading map '{name}': {exc}")
@@ -310,6 +340,11 @@ class MapToolsBrowser(ttk.Frame):
         self.canvas.configure(scrollregion=(0, 0, target_w, target_h))
         self._rendered_size = (target_w, target_h)
         self.zoom_var.set(f"{int(round(self._zoom_factor * 100))}%")
+        # reposition any markers after the image changes
+        try:
+            self._refresh_marker_positions()
+        except Exception:
+            pass
 
     def _clear_canvas(self):
         if self._render_after_id is not None:
@@ -333,10 +368,460 @@ class MapToolsBrowser(ttk.Frame):
         self._pending_old_zoom = None
         self._image_cache = {}
         self.zoom_var.set("100%")
+        # Clear markers
+        try:
+            for item in list(self._markers.keys()):
+                try:
+                    self.canvas.delete(item)
+                except Exception:
+                    pass
+            self._markers = {}
+        except Exception:
+            pass
+
         if self.canvas is not None and self._image_id is not None:
             self.canvas.itemconfigure(self._image_id, image="")
             self.canvas.configure(scrollregion=(0, 0, 0, 0))
             self.canvas.configure(cursor="")
+
+    # --- Marker management -------------------------------------------------
+    def _icon_path_for_map(self, map_name: str) -> Path:
+        icons = self.maps_dir / "icons"
+        return icons / (Path(map_name).stem + ".png")
+
+    def _overlay_path_for_map(self, map_name: str) -> Path:
+        overlays = self.maps_dir / "overlays"
+        return overlays / (Path(map_name).stem + ".json")
+
+    def _ensure_icon_for_map(self, map_name: str):
+        # copy from /tmp/pg_maps_icons if present, otherwise do nothing
+        dst = self._icon_path_for_map(map_name)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = Path('/tmp/pg_maps_icons') / (Path(map_name).stem + '.png')
+            if tmp.exists() and not dst.exists():
+                try:
+                    dst.write_bytes(tmp.read_bytes())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _load_markers(self):
+        # remove existing visuals
+        if self.canvas is None:
+            return
+        for item in list(self._markers.keys()):
+            try:
+                # delete both marker and possible label
+                meta = self._markers.get(item, {})
+                lbl = meta.get('label_item')
+                if lbl:
+                    try:
+                        self.canvas.delete(lbl)
+                    except Exception:
+                        pass
+                self.canvas.delete(item)
+            except Exception:
+                pass
+        self._markers = {}
+
+        name = self.selected_map_var.get().strip()
+        if not name:
+            return
+        path = self._overlay_path_for_map(name)
+        # ensure icon exists in project folder if available
+        try:
+            self._ensure_icon_for_map(name)
+        except Exception:
+            pass
+
+        if not path.exists():
+            # refresh panel to empty
+            try:
+                self._refresh_marker_panel()
+            except Exception:
+                pass
+            return
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+            for m in data.get('markers', []):
+                x = float(m.get('x', 0.0))
+                y = float(m.get('y', 0.0))
+                label = m.get('label')
+                note = m.get('note')
+                self._create_marker_visual(x, y, label=label, note=note)
+            # update panel listing
+            try:
+                self._refresh_marker_panel()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _save_markers(self):
+        name = self.selected_map_var.get().strip()
+        if not name:
+            return
+        overlays_dir = self.maps_dir / "overlays"
+        try:
+            overlays_dir.mkdir(parents=True, exist_ok=True)
+            data = {"markers": []}
+            for meta in self._markers.values():
+                data["markers"].append({
+                    "x": float(meta.get("x", 0.0)),
+                    "y": float(meta.get("y", 0.0)),
+                    "label": meta.get('label'),
+                    "note": meta.get('note'),
+                })
+            self._overlay_path_for_map(name).write_text(json.dumps(data, indent=2), encoding='utf-8')
+        except Exception:
+            pass
+
+    def _add_marker_at_view_center(self):
+        if self._source_image is None or self.canvas is None:
+            return
+        # center of visible area
+        cw = max(1, int(self.canvas.winfo_width()))
+        ch = max(1, int(self.canvas.winfo_height()))
+        cx = (self.canvas.canvasx(cw // 2))
+        cy = (self.canvas.canvasy(ch // 2))
+        logical_x = cx / max(0.0001, self._zoom_factor)
+        logical_y = cy / max(0.0001, self._zoom_factor)
+        self._create_marker_visual(logical_x, logical_y)
+        self._save_markers()
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+
+    def _on_canvas_double_click(self, event):
+        # add marker at clicked logical position
+        if self.canvas is None:
+            return
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        logical_x = cx / max(0.0001, self._zoom_factor)
+        logical_y = cy / max(0.0001, self._zoom_factor)
+        self._create_marker_visual(logical_x, logical_y)
+        self._save_markers()
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+
+    # shift+drag create flow
+    def _on_canvas_shift_press(self, event):
+        if self.canvas is None:
+            return
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        logical_x = cx / max(0.0001, self._zoom_factor)
+        logical_y = cy / max(0.0001, self._zoom_factor)
+        # create a temporary marker and mark as creating
+        item = self._create_marker_visual(logical_x, logical_y)
+        if item:
+            self._drag_data = {'creating': True, 'item': item, 'start_x': cx, 'start_y': cy}
+
+    def _on_canvas_shift_motion(self, event):
+        if not self._drag_data or not self._drag_data.get('creating'):
+            return
+        item = self._drag_data['item']
+        new_x = self.canvas.canvasx(event.x)
+        new_y = self.canvas.canvasy(event.y)
+        dx = new_x - self._drag_data['start_x']
+        dy = new_y - self._drag_data['start_y']
+        try:
+            self.canvas.move(item, dx, dy)
+            meta = self._markers.get(item)
+            if meta is not None:
+                bbox = self.canvas.bbox(item)
+                if bbox:
+                    cx = (bbox[0] + bbox[2]) / 2.0
+                    cy = (bbox[1] + bbox[3]) / 2.0
+                    meta['x'] = cx / max(0.0001, self._zoom_factor)
+                    meta['y'] = cy / max(0.0001, self._zoom_factor)
+        except Exception:
+            pass
+        self._drag_data['start_x'] = new_x
+        self._drag_data['start_y'] = new_y
+
+    def _on_canvas_shift_release(self, event):
+        if not self._drag_data or not self._drag_data.get('creating'):
+            self._drag_data = None
+            return
+        self._drag_data = None
+        self._save_markers()
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+
+    def _get_default_marker_icon(self):
+        # create and cache a small beige triangular marker similar to in-game marker
+        if hasattr(self, '_default_marker_icon') and self._default_marker_icon is not None:
+            return self._default_marker_icon
+        try:
+            size = (28, 28)
+            from PIL import ImageDraw
+            img = Image.new('RGBA', size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            w, h = size
+            # triangle pointing up (beige)
+            tri = [(w*0.5, h*0.15), (w*0.85, h*0.85), (w*0.15, h*0.85)]
+            fill = (230, 215, 165, 255)  # beige-ish
+            outline = (120, 100, 60, 255)
+            draw.polygon(tri, fill=fill, outline=outline)
+            # subtle inner smaller triangle for contrast
+            tri2 = [(w*0.5, h*0.28), (w*0.78, h*0.78), (w*0.22, h*0.78)]
+            draw.polygon(tri2, fill=(245, 240, 220, 255))
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+            self._default_marker_icon = tk.PhotoImage(data=b64)
+            return self._default_marker_icon
+        except Exception:
+            return None
+
+    def _create_marker_visual(self, logical_x: float, logical_y: float, label: str = None, note: str = None):
+        # convert logical to canvas coords
+        if self.canvas is None:
+            return None
+        cx = logical_x * self._zoom_factor
+        cy = logical_y * self._zoom_factor
+        name = self.selected_map_var.get().strip()
+        icon = None
+        try:
+            icon_path = self._icon_path_for_map(name)
+            if icon_path.exists():
+                icon = tk.PhotoImage(file=str(icon_path))
+        except Exception:
+            icon = None
+
+        if icon is None:
+            # fallback to generated triangle marker to match map's style
+            icon = self._get_default_marker_icon()
+
+        if icon is not None:
+            item = self.canvas.create_image(cx, cy, image=icon, anchor='center', tags=('marker',))
+            self._markers[item] = {"x": logical_x, "y": logical_y, "thumb": icon, 'label': label, 'note': note}
+        else:
+            r = 10
+            item = self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill='#ff5555', outline='#aa0000', tags=('marker',))
+            self._markers[item] = {"x": logical_x, "y": logical_y, 'label': label, 'note': note}
+
+        # create label text
+        if label:
+            try:
+                lbl = self.canvas.create_text(cx, cy + 16, text=label, anchor='n', fill='#ffffff', font=('TkDefaultFont', 9), tags=('marker_label',))
+                self._markers[item]['label_item'] = lbl
+            except Exception:
+                pass
+
+        # bind events for the marker
+        try:
+            self.canvas.tag_bind(item, '<ButtonPress-1>', self._on_marker_press)
+            self.canvas.tag_bind(item, '<B1-Motion>', self._on_marker_move)
+            self.canvas.tag_bind(item, '<ButtonRelease-1>', self._on_marker_release)
+            # right click to delete
+            self.canvas.tag_bind(item, '<Button-3>', self._on_marker_right_click)
+            # double click to edit label/note
+            self.canvas.tag_bind(item, '<Double-1>', self._on_marker_double_click)
+        except Exception:
+            pass
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+        return item
+
+    def _on_marker_press(self, event):
+        try:
+            item = int(self.canvas.find_withtag('current')[0])
+        except Exception:
+            return
+        # if this marker was being created, do not treat as drag of existing
+        self._drag_data = {
+            'item': item,
+            'start_x': self.canvas.canvasx(event.x),
+            'start_y': self.canvas.canvasy(event.y),
+            'creating': False,
+        }
+        try:
+            self.canvas.configure(cursor='fleur')
+        except Exception:
+            pass
+
+    def _on_marker_move(self, event):
+        if not self._drag_data:
+            return
+        item = self._drag_data['item']
+        if item not in self._markers:
+            return
+        new_x = self.canvas.canvasx(event.x)
+        new_y = self.canvas.canvasy(event.y)
+        dx = new_x - self._drag_data['start_x']
+        dy = new_y - self._drag_data['start_y']
+        try:
+            self.canvas.move(item, dx, dy)
+            # move label if present
+            meta = self._markers.get(item)
+            lbl = meta.get('label_item')
+            if lbl:
+                self.canvas.move(lbl, dx, dy)
+        except Exception:
+            pass
+        # update start for continuous motion
+        self._drag_data['start_x'] = new_x
+        self._drag_data['start_y'] = new_y
+        # update logical coords
+        bbox = self.canvas.bbox(item)
+        if bbox:
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            self._markers[item]['x'] = cx / max(0.0001, self._zoom_factor)
+            self._markers[item]['y'] = cy / max(0.0001, self._zoom_factor)
+
+    def _on_marker_release(self, _event=None):
+        self._drag_data = None
+        try:
+            self.canvas.configure(cursor='')
+        except Exception:
+            pass
+        self._save_markers()
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+
+    def _on_marker_double_click(self, event):
+        # edit label and note
+        try:
+            item = int(self.canvas.find_withtag('current')[0])
+        except Exception:
+            return
+        meta = self._markers.get(item, {})
+        current_label = meta.get('label') or ''
+        current_note = meta.get('note') or ''
+        try:
+            new_label = simpledialog.askstring('Marker Label', 'Label:', initialvalue=current_label)
+            if new_label is None:
+                new_label = current_label
+            # use multi-line note editor
+            new_note = self._edit_note_dialog(item, current_note)
+            if new_note is None:
+                new_note = current_note
+            meta['label'] = new_label
+            meta['note'] = new_note
+            # update label visual
+            lbl = meta.get('label_item')
+            bbox = self.canvas.bbox(item)
+            if lbl:
+                try:
+                    if new_label:
+                        self.canvas.itemconfigure(lbl, text=new_label)
+                    else:
+                        self.canvas.delete(lbl)
+                        meta['label_item'] = None
+                except Exception:
+                    pass
+            else:
+                if new_label and bbox:
+                    try:
+                        cx = (bbox[0] + bbox[2]) / 2.0
+                        cy = (bbox[1] + bbox[3]) / 2.0
+                        lbl = self.canvas.create_text(cx, cy + 16, text=new_label, anchor='n', fill='#ffffff', font=('TkDefaultFont', 9), tags=('marker_label',))
+                        meta['label_item'] = lbl
+                    except Exception:
+                        pass
+            self._save_markers()
+            try:
+                self._refresh_marker_panel()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _on_marker_right_click(self, event):
+        try:
+            item = int(self.canvas.find_withtag('current')[0])
+        except Exception:
+            return
+        try:
+            meta = self._markers.get(item, {})
+            lbl = meta.get('label_item')
+            if lbl:
+                try:
+                    self.canvas.delete(lbl)
+                except Exception:
+                    pass
+            self.canvas.delete(item)
+        except Exception:
+            pass
+        try:
+            if item in self._markers:
+                del self._markers[item]
+        except Exception:
+            pass
+        self._save_markers()
+        try:
+            self._refresh_marker_panel()
+        except Exception:
+            pass
+
+    def _clear_markers(self):
+        try:
+            for item in list(self._markers.keys()):
+                try:
+                    self.canvas.delete(item)
+                except Exception:
+                    pass
+            self._markers = {}
+            # remove overlay file
+            name = self.selected_map_var.get().strip()
+            if name:
+                p = self._overlay_path_for_map(name)
+                try:
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+            try:
+                self._refresh_marker_panel()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _refresh_marker_positions(self):
+        # Reposition markers after zoom/resize
+        if self.canvas is None:
+            return
+        for item, meta in list(self._markers.items()):
+            try:
+                lx = meta.get('x', 0.0)
+                ly = meta.get('y', 0.0)
+                cx = lx * self._zoom_factor
+                cy = ly * self._zoom_factor
+                bbox = self.canvas.bbox(item)
+                if bbox and 'thumb' in meta:
+                    # image: set coords
+                    self.canvas.coords(item, cx, cy)
+                    lbl = meta.get('label_item')
+                    if lbl:
+                        self.canvas.coords(lbl, cx, cy + 16)
+                elif bbox:
+                    # oval: compute half size
+                    w = (bbox[2] - bbox[0]) / 2.0
+                    h = (bbox[3] - bbox[1]) / 2.0
+                    self.canvas.coords(item, cx - w, cy - h, cx + w, cy + h)
+                    lbl = meta.get('label_item')
+                    if lbl:
+                        self.canvas.coords(lbl, cx, cy + 16)
+            except Exception:
+                pass
+
+    # --- end marker management --------------------------------------------
 
     def _update_wiki_maps_async(self):
         if self.update_button is not None:

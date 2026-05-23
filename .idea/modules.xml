@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/../BamBam/.idea/BamBam.iml" filepath="$PROJECT_DIR$/../BamBam/.idea/BamBam.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/PGLOK.iml" filepath="$PROJECT_DIR$/.idea/PGLOK.iml" />
+      <module fileurl="file://$USER_HOME$/clok-addon/.idea/clok-addon.iml" filepath="$USER_HOME$/clok-addon/.idea/clok-addon.iml" />
     </modules>
   </component>
 </project>
