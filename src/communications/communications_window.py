@@ -8,9 +8,11 @@ from tkinter import ttk, scrolledtext, simpledialog, messagebox
 import threading
 import time
 import re
+import json
 from datetime import datetime
 
 import src.config.mqtt_config as mqtt_config
+from src.config import config
 from src.config.ui_theme import apply_theme, UI_COLORS
 from src.config.window_state import setup_window
 from .mqtt_client import MqttClient
@@ -356,6 +358,12 @@ class CommunicationsWindow:
 
             self._update_status_safe("Connected")
 
+            # Flush any pending publishes queued while disconnected
+            try:
+                self._flush_pending_publishes()
+            except Exception:
+                pass
+
             # Start heartbeat
             self._start_heartbeat()
         except Exception as e:
@@ -517,6 +525,53 @@ class CommunicationsWindow:
             except Exception:
                 pass
     
+    def _flush_pending_publishes(self):
+        """Attempt to publish any queued publishes saved while disconnected."""
+        try:
+            pending_path = config.DATA_DIR / "pending_publishes.json"
+            if not pending_path.exists():
+                return
+            try:
+                with pending_path.open("r", encoding="utf-8") as pf:
+                    pending = json.load(pf)
+            except Exception:
+                pending = []
+            if not pending:
+                try:
+                    pending_path.unlink()
+                except Exception:
+                    pass
+                return
+
+            remaining = []
+            for entry in pending:
+                favor_data = entry.get("favor_data") or entry.get("data") or entry
+                try:
+                    if self.publisher and self.publisher.publish_data_to_channel("pglok-data", "favor", favor_data):
+                        # Inform the channel UI that we flushed a queued publish
+                        try:
+                            self._add_channel_message("pglok-data", "System", f"Flushed pending favor publish for {favor_data.get('npc', favor_data.get('npc_key','?'))}", "gray")
+                        except Exception:
+                            pass
+                    else:
+                        remaining.append(entry)
+                except Exception:
+                    remaining.append(entry)
+
+            try:
+                if remaining:
+                    with pending_path.open("w", encoding="utf-8") as pf:
+                        json.dump(remaining, pf, indent=2, ensure_ascii=False)
+                else:
+                    try:
+                        pending_path.unlink()
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Error updating pending publishes file: {e}")
+        except Exception as e:
+            print(f"Failed to flush pending publishes: {e}")
+
     def close(self):
         """Close the communications window."""
         self._cleanup_mqtt()
