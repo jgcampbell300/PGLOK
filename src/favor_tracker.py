@@ -432,6 +432,28 @@ def _get_estimates_path() -> Path:
     return DATA_DIR / "favor_item_estimates.json"
 
 
+# ------------------------------------------------------------------
+# Publishing diagnostics and logging
+# ------------------------------------------------------------------
+def _get_publish_log_path() -> Path:
+    return DATA_DIR / "communications_publish.log"
+
+
+def _log_publish_event(message: str, level: str = "INFO") -> None:
+    """Append a timestamped publish diagnostic to the log file.
+
+    This is best-effort and will not raise on failure.
+    """
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = _get_publish_log_path()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} [{level}] {message}\n")
+    except Exception:
+        # Avoid noisy failures — logging must never crash the app
+        pass
+
+
 def _load_estimates() -> dict:
     path = _get_estimates_path()
     if not path.exists():
@@ -660,10 +682,13 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                 # Primary path: use communications_window.publish_instance_data when available
                 try:
                     if getattr(app, 'communications_window', None):
-                        published = app.communications_window.publish_instance_data("favor", favor_data)
-                        print(f"Favor publish attempt via communications_window: {published}")
+                        try:
+                            published = app.communications_window.publish_instance_data("favor", favor_data)
+                            _log_publish_event(f"Attempt via communications_window -> {published}")
+                        except Exception as e:
+                            _log_publish_event(f"Error via communications_window -> {e}", level="ERROR")
                 except Exception as e:
-                    print(f"Favor publish via communications_window error: {e}")
+                    _log_publish_event(f"Favor publish via communications_window error: {e}", level="ERROR")
 
                 # Fallback: if communications window exists but no publisher, try creating a DataPublisher
                 if not published:
@@ -673,9 +698,9 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                             from src.communications.data_publisher import DataPublisher
                             dp = DataPublisher(comm.mqtt_client)
                             published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
-                            print(f"Favor publish attempt via DataPublisher (existing mqtt_client): {published}")
+                            _log_publish_event(f"Attempt via DataPublisher (existing mqtt_client) -> {published}")
                     except Exception as e:
-                        print(f"Favor fallback publish error (existing mqtt_client): {e}")
+                        _log_publish_event(f"Favor fallback publish error (existing mqtt_client): {e}", level="ERROR")
 
                 # Final fallback: attempt a transient publish (non-blocking) if MQTT enabled
                 if not published:
@@ -690,20 +715,45 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                             if ok_conn:
                                 dp = DataPublisher(temp_client)
                                 published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
-                                print(f"Favor publish via transient client: {published}")
+                                _log_publish_event(f"Attempt via transient client -> {published}")
                                 try:
                                     temp_client.disconnect()
                                 except Exception:
                                     pass
                     except Exception as e:
-                        print(f"Favor transient publish error: {e}")
+                        _log_publish_event(f"Favor transient publish error: {e}", level="ERROR")
 
                 if not published:
-                    print("Favor publish failed or communications unavailable")
+                    _log_publish_event("Favor publish failed or communications unavailable", level="WARN")
+                    # On-screen notification for non-technical users
+                    try:
+                        # Try to notify via Favor Tracker status bar when available
+                        ftw = getattr(app, 'favor_tracker_window', None)
+                        prev = None
+                        if ftw and getattr(ftw, 'status_var', None):
+                            try:
+                                prev = ftw.status_var.get()
+                                ftw.status_var.set("Failed to publish favor data to communications")
+                                try:
+                                    if getattr(ftw, 'window', None):
+                                        ftw.window.after(5000, lambda: ftw.status_var.set(prev))
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                        # Also show a modal warning to make it obvious
+                        try:
+                            from tkinter import messagebox
+                            parent = getattr(ftw, 'window', None) if ftw and getattr(ftw, 'window', None) else None
+                            messagebox.showwarning("Communications", "Failed to publish favor data to pglok-data. Check Communications window or logs.", parent=parent)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             except Exception as e:
-                print(f"Error preparing favor publish: {e}")
+                _log_publish_event(f"Error preparing favor publish: {e}", level="ERROR")
     except Exception as e:
-        print(f"Favor publish top-level error: {e}")
+        _log_publish_event(f"Favor publish top-level error: {e}", level="ERROR")
 
     return ok
 
