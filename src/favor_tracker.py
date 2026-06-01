@@ -1515,6 +1515,13 @@ class FavorTrackerWindow:
 
         # Training mode toggle
         self.training_mode_var = tk.BooleanVar(value=False)
+        # Restore persisted training mode if parent supports UI prefs
+        if hasattr(self.parent, "_get_ui_pref"):
+            try:
+                saved_training = bool(self.parent._get_ui_pref("favor_tracker_training_mode", False))
+            except Exception:
+                saved_training = False
+            self.training_mode_var.set(saved_training)
         self.training_btn = ttk.Checkbutton(
             header,
             text="Training Mode",
@@ -2255,11 +2262,20 @@ class FavorTrackerWindow:
         self._refresh_table()
 
     def _on_training_mode_toggled(self) -> None:
-        """Handle training mode toggle."""
+        """Handle training mode toggle and persist setting."""
         if self.training_mode_var.get():
             self.status_var.set("Training mode ON - Select items when favor gains are detected")
         else:
             self.status_var.set("Training mode OFF")
+        # Persist the user's preference so it survives restarts and reopen
+        try:
+            if hasattr(self.parent, "_set_ui_pref"):
+                try:
+                    self.parent._set_ui_pref("favor_tracker_training_mode", bool(self.training_mode_var.get()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _open_training_item_selector(self, npc: FavorNpc, favor_amount: float) -> bool:
         """Open a popup dialog to select the item gifted to the NPC during training.
