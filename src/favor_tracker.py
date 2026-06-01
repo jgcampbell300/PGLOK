@@ -16,6 +16,7 @@ import sqlite3
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -707,15 +708,24 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                     try:
                         import src.config.mqtt_config as mqtt_config
                         if mqtt_config.MQTT_ENABLED and mqtt_config.MQTT_DATA_SHARING_ENABLED:
-                            # Create a temporary client, connect, publish, then disconnect
+                            # Create a temporary client, connect, publish, then disconnect.
+                            # Wait briefly for connection establishment because connect() starts loop asynchronously.
                             from src.communications.mqtt_client import MqttClient
                             from src.communications.data_publisher import DataPublisher
                             temp_client = MqttClient(favor_data.get('npc_key', 'pglok'))
                             ok_conn = temp_client.connect()
                             if ok_conn:
+                                # Wait up to 5 seconds for the on_connect callback to set connected=True
+                                waited = 0.0
+                                while not getattr(temp_client, 'connected', False) and waited < 5.0:
+                                    time.sleep(0.1)
+                                    waited += 0.1
                                 dp = DataPublisher(temp_client)
-                                published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
-                                _log_publish_event(f"Attempt via transient client -> {published}")
+                                if getattr(temp_client, 'connected', False):
+                                    published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
+                                    _log_publish_event(f"Attempt via transient client -> {published}")
+                                else:
+                                    _log_publish_event("Transient MQTT client failed to establish connection in time", level="WARN")
                                 try:
                                     temp_client.disconnect()
                                 except Exception:
@@ -725,6 +735,31 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
 
                 if not published:
                     _log_publish_event("Favor publish failed or communications unavailable", level="WARN")
+                    # Persist the failed publish so it can be retried later
+                    try:
+                        pending_path = DATA_DIR / "pending_publishes.json"
+                        pending = []
+                        if pending_path.exists():
+                            try:
+                                with pending_path.open("r", encoding="utf-8") as pf:
+                                    pending = json.load(pf)
+                            except Exception:
+                                pending = []
+                        entry = {
+                            "favor_data": favor_data,
+                            "queued_at": datetime.now().isoformat()
+                        }
+                        pending.append(entry)
+                        try:
+                            DATA_DIR.mkdir(parents=True, exist_ok=True)
+                            with pending_path.open("w", encoding="utf-8") as pf:
+                                json.dump(pending, pf, indent=2, ensure_ascii=False)
+                            _log_publish_event(f"Queued favor publish for retry (pending_count={len(pending)})")
+                        except Exception as e:
+                            _log_publish_event(f"Failed to queue pending publish: {e}", level="ERROR")
+                    except Exception:
+                        pass
+
                     # On-screen notification for non-technical users
                     try:
                         # Try to notify via Favor Tracker status bar when available
