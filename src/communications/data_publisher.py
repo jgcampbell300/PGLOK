@@ -103,3 +103,55 @@ class DataPublisher:
             "area": area
         }
         return self.client.publish(mqtt_config.MQTT_TOPIC_PRESENCE, data, rate_limit_key="presence")
+    
+    def publish_channel_message(self, channel: str, message: str, msg_type: str = "chat") -> bool:
+        """
+        Publish message to a specific channel.
+        
+        Args:
+            channel: Channel name (e.g., "general", "pglok-data")
+            message: Message content
+            msg_type: Type of message (chat, data, etc.)
+            
+        Returns:
+            True if publish successful
+        """
+        if not mqtt_config.MQTT_CHAT_ENABLED and msg_type == "chat":
+            return False
+            
+        # Truncate if too long
+        if len(message) > mqtt_config.MQTT_MAX_CHAT_LENGTH:
+            message = message[:mqtt_config.MQTT_MAX_CHAT_LENGTH]
+            
+        topic = f"{mqtt_config.MQTT_TOPIC_CHANNELS}/{channel}"
+        data = {
+            "type": msg_type,
+            "channel": channel,
+            "message": message
+        }
+        rate_limit_key = f"channel_{channel}"
+        return self.client.publish(topic, data, rate_limit_key=rate_limit_key)
+    
+    def publish_data_to_channel(self, channel: str, data_type: str, data_dict: dict) -> bool:
+        """
+        Publish structured data to a specific channel.
+        
+        Args:
+            channel: Channel name (e.g., "pglok-data")
+            data_type: Type of data (e.g., "position", "inventory", "status")
+            data_dict: Dictionary of data to publish
+            
+        Returns:
+            True if publish successful
+        """
+        if not mqtt_config.MQTT_DATA_SHARING_ENABLED:
+            return False
+            
+        topic = f"{mqtt_config.MQTT_TOPIC_CHANNELS}/{channel}"
+        data = {
+            "type": data_type,
+            "channel": channel,
+            "data": data_dict
+        }
+        rate_limit_key = f"channel_data_{channel}_{data_type}"
+        return self.client.publish(topic, data, rate_limit_key=rate_limit_key)

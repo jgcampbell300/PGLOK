@@ -960,6 +960,13 @@ def _merge_user_gift_preferences(npcs: List[FavorNpc]) -> List[FavorNpc]:
 # keywords are available on the same preference.
 _GENERIC_PREF_KEYWORDS = {"Loot"}
 
+# Keywords that commonly indicate metadata, skill/recipe/book entries, or
+# structured descriptors rather than actual item categories. When an item's
+# keyword contains these markers we treat it as 'metadata' and avoid matching
+# it from broad preference keywords unless the preference explicitly targets
+# that metadata.
+_METADATA_KEYWORDS = {":", "skill", "recipe", "book", "tome", "text", "manual", "guide", "scroll"}
+
 
 def _desire_multiplier(desire: str) -> float:
     """Return numeric multiplier for a preference desire string."""
@@ -976,21 +983,13 @@ def _desire_multiplier(desire: str) -> float:
 def _match_score(item: FavorItem, pref: FavorPreference) -> Optional[float]:
     """Return a raw favor score for item against one preference, or None.
 
-    This is intentionally simple: we check if any preference keyword is
-    present in the item's Keywords list (case-insensitive substring match). If so, we
-    estimate favor as:
-
-        score = keyword_weight * pref.pref * desire_multiplier
-
-    where keyword_weight is the weight from the keyword (e.g., "bone=500") or item.value if no weight.
-    desire_multiplier is higher for "Love" than for "Like".
-    This is an approximation, but it preserves the relative ordering of
-    good gifts for a given NPC.
+    Matching rules updated to avoid false-positives from structured metadata
+    keywords (e.g. "sword: parry 8" in books/recipes). Metadata-like item
+    keywords are ignored for broad preference keywords unless the preference
+    explicitly references the same metadata token.
     """
     if not item.keywords:
         return None
-
-    item_kw_lower = {k.lower() for k in item.keywords}
 
     # Check if any preference keyword matches any item keyword
     matched = False
@@ -1000,19 +999,44 @@ def _match_score(item: FavorItem, pref: FavorPreference) -> Optional[float]:
         for item_kw in item.keywords:
             item_kw_lower_str = item_kw.lower()
 
-            # Check if preference keyword matches item keyword (exact or substring)
-            # Also check if it matches the part before "=" in weighted keywords
+            # Treat weighted keywords (keyword=value) specially: match on the
+            # left-hand side as before and capture weight.
             kw_match = False
             if "=" in item_kw_lower_str:
                 kw_name = item_kw_lower_str.split("=", 1)[0]
+                # If item keyword appears metadata-like (contains ':' or metadata words)
+                # avoid matching by substring; require exact or left-token match.
+                if any(mk in kw_name for mk in _METADATA_KEYWORDS) and \
+                   ":" not in pref_kw_lower and not any(mk in pref_kw_lower for mk in _METADATA_KEYWORDS):
+                    # Skip metadata-like keyword for broad prefs
+                    continue
                 if pref_kw_lower == kw_name or pref_kw_lower in kw_name:
                     kw_match = True
                     try:
                         matched_kw_weight = float(item_kw_lower_str.split("=", 1)[1])
                     except Exception:
                         pass
-            elif pref_kw_lower == item_kw_lower_str or pref_kw_lower in item_kw_lower_str:
-                kw_match = True
+
+            else:
+                # If item keyword looks like structured metadata (contains ':' or metadata words)
+                # and the preference does not explicitly target metadata, skip loose substring matching.
+                if (":" in item_kw_lower_str or any(mk in item_kw_lower_str for mk in _METADATA_KEYWORDS)) and \
+                   (":" not in pref_kw_lower and not any(mk in pref_kw_lower for mk in _METADATA_KEYWORDS)):
+                    # Only allow a match if the preference exactly equals the token before ':'
+                    if ":" in item_kw_lower_str:
+                        left = item_kw_lower_str.split(":", 1)[0]
+                        if pref_kw_lower == left:
+                            kw_match = True
+                    # Otherwise skip
+                else:
+                    # Use whole-word matching where reasonable to avoid substring hits
+                    try:
+                        if pref_kw_lower == item_kw_lower_str or re.search(r"\\b" + re.escape(pref_kw_lower) + r"\\b", item_kw_lower_str):
+                            kw_match = True
+                    except re.error:
+                        # Fallback to simple substring if regex fails
+                        if pref_kw_lower == item_kw_lower_str or pref_kw_lower in item_kw_lower_str:
+                            kw_match = True
 
             if kw_match:
                 matched = True

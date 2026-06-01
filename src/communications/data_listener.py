@@ -26,17 +26,24 @@ class DataListener:
         self.price_updates: list = []
         self.favor_updates: list = []
         
+        # Channel messages storage
+        self.channel_messages: Dict[str, list] = {}
+        for channel in mqtt_config.DEFAULT_CHANNELS:
+            self.channel_messages[channel] = []
+        
         # Register callbacks
         self.client.subscribe(mqtt_config.MQTT_TOPIC_CHAT, self._on_chat_message)
         self.client.subscribe(mqtt_config.MQTT_TOPIC_PRICES, self._on_price_update)
         self.client.subscribe(mqtt_config.MQTT_TOPIC_FAVOR, self._on_favor_update)
         self.client.subscribe(mqtt_config.MQTT_TOPIC_PRESENCE, self._on_presence)
+        self.client.subscribe(f"{mqtt_config.MQTT_TOPIC_CHANNELS}/#", self._on_channel_message)
         
         # Custom callbacks
         self.chat_callback: Optional[Callable] = None
         self.price_callback: Optional[Callable] = None
         self.favor_callback: Optional[Callable] = None
         self.presence_callback: Optional[Callable] = None
+        self.channel_callback: Optional[Callable] = None
     
     def _on_chat_message(self, topic: str, data: Dict[str, Any]) -> None:
         """Handle incoming chat message."""
@@ -156,3 +163,59 @@ class DataListener:
     def set_presence_callback(self, callback: Callable) -> None:
         """Set callback function for presence updates."""
         self.presence_callback = callback
+    
+    def _on_channel_message(self, topic: str, data: Dict[str, Any]) -> None:
+        """Handle incoming channel message."""
+        channel = data.get("channel", "")
+        if not channel:
+            return
+        
+        # Initialize channel list if not exists
+        if channel not in self.channel_messages:
+            self.channel_messages[channel] = []
+        
+        self.channel_messages[channel].append(data)
+        # Keep only last 100 messages per channel
+        if len(self.channel_messages[channel]) > 100:
+            self.channel_messages[channel].pop(0)
+        
+        if self.channel_callback:
+            self.channel_callback(channel, data)
+    
+    def get_channel_messages(self, channel: str, limit: int = 50) -> list:
+        """
+        Get recent messages from a specific channel.
+        
+        Args:
+            channel: Channel name
+            limit: Maximum number of messages to return
+            
+        Returns:
+            List of channel message dictionaries
+        """
+        if channel not in self.channel_messages:
+            return []
+        return self.channel_messages[channel][-limit:]
+    
+    def get_active_channels(self) -> list:
+        """
+        Get list of channels with messages.
+        
+        Returns:
+            List of channel names
+        """
+        return list(self.channel_messages.keys())
+    
+    def add_channel(self, channel: str) -> None:
+        """
+        Add a new channel to track.
+        
+        Args:
+            channel: Channel name
+        """
+        if channel not in self.channel_messages:
+            self.channel_messages[channel] = []
+    
+    def set_channel_callback(self, callback: Callable) -> None:
+        """Set callback function for channel messages."""
+        self.channel_callback = callback

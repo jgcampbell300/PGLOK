@@ -23,90 +23,81 @@ class PlayerLogMonitor:
     """Monitors the player.log for position and other player data."""
 
     def __init__(self, log_dir: Optional[Path] = None, pattern: str = PLAYER_LOG_PATTERN):
-        self.log_dir = Path(log_dir) if log_dir else self._default_log_dir()
+        # Don't search for file during initialization - lazy load it
+        self.log_dir = Path(log_dir) if log_dir else None
         self.pattern = pattern
         self.current_file: Optional[Path] = None
         self._position = 0
         self._last_position: Optional[Position] = None
+        self._file_checked = False  # Cache whether we've checked for the file
 
-    @staticmethod
-    def _default_log_dir() -> Path:
-        """Find the default player.log directory."""
-        home = Path.home()
-        
-        possible_paths = [
-            # Unity standard location on Linux
-            home / ".config" / "unity3d" / "Elder Game" / "Project Gorgon",
-            home / ".config" / "unity3d" / "ElderGame" / "Project Gorgon",
-            # Other common locations
-            home / "Project Gorgon",
-            home / "Documents" / "Project Gorgon",
-            home / "My Games" / "Project Gorgon",
-            home / "AppData" / "Local" / "Project Gorgon",
-            home / "Library" / "Application Support" / "Project Gorgon",  # macOS
-            Path("C:/") / "Program Files (x86)" / "Steam" / "steamapps" / "common" / "Project Gorgon",
-            Path("C:/") / "Program Files" / "Steam" / "steamapps" / "common" / "Project Gorgon",
-        ]
-        
-        # Check config for PG_BASE
-        if hasattr(config, 'PG_BASE') and config.PG_BASE:
-            possible_paths.insert(0, Path(config.PG_BASE))
-        
-        for path in possible_paths:
-            if path.exists():
-                # Check for Player.log (Unity uses capital P)
-                player_log = path / "Player.log"
-                if player_log.exists():
-                    return path
-                # Also check lowercase
-                player_log_lower = path / "player.log"
-                if player_log_lower.exists():
-                    return path
-                # Check Logs subdirectory
-                logs_dir = path / "Logs"
-                if logs_dir.exists() and (logs_dir / "player.log").exists():
-                    return logs_dir
-        
-        # Fallback - return first possible path and let it fail gracefully
-        return possible_paths[0] if possible_paths else home / "Project Gorgon"
-
-    def find_log_file(self) -> Optional[Path]:
-        """Find the player.log file."""
-        if not self.log_dir.exists():
+    def _find_log_file_quick(self) -> Optional[Path]:
+        """Quickly find the player.log file with minimal filesystem checks."""
+        # If log_dir is provided, just check there
+        if self.log_dir is not None:
+            # Check for Player.log (capital P)
+            player_log = self.log_dir / "Player.log"
+            if player_log.exists():
+                return player_log
+            # Check lowercase
+            player_log_lower = self.log_dir / "player.log"
+            if player_log_lower.exists():
+                return player_log_lower
             return None
-        
-        # Check for Player.log (Unity standard with capital P)
-        player_log = self.log_dir / "Player.log"
+
+        # If no log_dir provided, try PG_BASE first (fastest)
+        if hasattr(config, 'PG_BASE') and config.PG_BASE:
+            pg_base = Path(config.PG_BASE)
+            player_log = pg_base / "Player.log"
+            if player_log.exists():
+                return player_log
+            player_log_lower = pg_base / "player.log"
+            if player_log_lower.exists():
+                return player_log_lower
+
+        # Fallback to default location only if needed
+        home = Path.home()
+        default_path = home / ".config" / "unity3d" / "Elder Game" / "Project Gorgon"
+        player_log = default_path / "Player.log"
         if player_log.exists():
             return player_log
-        
-        # Also check lowercase variant
-        player_log_lower = self.log_dir / "player.log"
-        if player_log_lower.exists():
-            return player_log_lower
-        
-        # Check parent directory for both cases
-        parent_log = self.log_dir.parent / "Player.log"
-        if parent_log.exists():
-            return parent_log
-        
-        parent_log_lower = self.log_dir.parent / "player.log"
-        if parent_log_lower.exists():
-            return parent_log_lower
-        
+
         return None
 
     def _switch_to_newest_if_needed(self) -> bool:
-        """Check if we need to switch to a newer log file."""
-        newest = self.find_log_file()
-        if newest is None:
+        """Ensure self.current_file points to an existing log file.
+
+        This will try to discover the log file when absent and handle
+        replacement/rotation by switching and resetting the read position.
+        Returns True if the current file changed or was found.
+        """
+        # If we don't yet have a file, try to find one now (keep retrying)
+        if self.current_file is None or not self.current_file.exists():
+            new_file = self._find_log_file_quick()
+            if new_file is None:
+                # still not found
+                return False
+            # If file changed (or first time), switch and reset position
+            if self.current_file is None or new_file.resolve() != self.current_file.resolve():
+                self.current_file = new_file
+                try:
+                    # Start tailing at EOF so we don't enqueue the entire historical log
+                    self._position = int(new_file.stat().st_size)
+                except Exception:
+                    self._position = 0
+                return True
             return False
 
-        if self.current_file is None or newest != self.current_file:
-            self.current_file = newest
-            self._position = 0
-            return True
-
+        # If we have a current file that no longer exists, attempt to find replacement
+        if not self.current_file.exists():
+            new_file = self._find_log_file_quick()
+            if new_file and new_file.resolve() != (self.current_file.resolve() if self.current_file else None):
+                self.current_file = new_file
+                try:
+                    self._position = int(new_file.stat().st_size)
+                except Exception:
+                    self._position = 0
+                return True
         return False
 
     def read_new_lines(self) -> list[str]:
@@ -115,12 +106,16 @@ class PlayerLogMonitor:
         if self.current_file is None:
             return []
 
-        with self.current_file.open("r", encoding="utf-8", errors="replace") as f:
-            f.seek(self._position)
-            lines = f.readlines()
-            self._position = f.tell()
+        try:
+            with self.current_file.open("r", encoding="utf-8", errors="replace") as f:
+                f.seek(self._position)
+                lines = f.readlines()
+                self._position = f.tell()
 
-        return [line.rstrip("\n") for line in lines]
+            return [line.rstrip("\n") for line in lines]
+        except Exception:
+            # If file read fails, return empty list
+            return []
 
     def parse_position(self, line: str) -> Optional[Position]:
         """Parse position coordinates from a log line.

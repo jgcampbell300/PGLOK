@@ -24,6 +24,9 @@ from src.maptools import MapToolsBrowser
 from src.utils.spellcheck import EntrySpellcheckBinder
 from src.updater import perform_auto_update
 import sys
+import queue
+import os
+import time
 
 # Import database manager
 from src.database.database_manager import get_database_manager
@@ -125,21 +128,48 @@ class PGLOKApp:
         self.character_json_text = None
         self.character_entries = []
         self.chat_monitor = None
+        # Player log monitor for player.log file
+        self.player_log_monitor = None
+        self.player_log_polling = False
+        self.player_log_after_id = None
+        self.player_log_lines_seen = 0
         # Active Favor Tracker window (if open), used for chat-based item watching
         self.favor_tracker_window = None
         self.chat_polling = False
         self.chat_after_id = None
         self.chat_text = None
+        # Chat notebook for integrated chat page
         self.chat_notebook = None
+        # Chat tab text widgets for integrated chat page
         self.chat_tab_text = {}
+        # Chat notebook for standalone chat window (separate from integrated page)
+        self.chat_window_notebook = None
+        # Chat tab text widgets for standalone chat window
+        self.chat_window_tab_text = {}
         self.chat_info_var = tk.StringVar(value="Lines: 0    Date: --    Time: --    File: None")
         self.chat_lines_seen = 0
         # Comma-separated list of watch terms for the PGLok chat channel
         self.chat_watch_terms_var = tk.StringVar(value=str(self._get_ui_pref("chat_watch_terms", "")))
+        # Player log filter (regex or substring) and highlighting settings
+        self.player_log_filter_var = tk.StringVar(value=str(self._get_ui_pref("player_log_filter", "")))
+        self.player_log_highlight_terms_var = tk.StringVar(value=str(self._get_ui_pref("player_log_highlight_terms", "")))
+        self.player_log_highlight_var = tk.BooleanVar(value=self._get_ui_pref("player_log_highlight", True))
+        # Persist UI prefs when changed
+        try:
+            self.player_log_filter_var.trace_add("write", lambda *_: self._set_ui_pref("player_log_filter", self.player_log_filter_var.get()))
+            self.player_log_highlight_terms_var.trace_add("write", lambda *_: self._set_ui_pref("player_log_highlight_terms", self.player_log_highlight_terms_var.get()))
+            self.player_log_highlight_var.trace_add("write", lambda *_: self._set_ui_pref("player_log_highlight", bool(self.player_log_highlight_var.get())))
+        except Exception:
+            pass
+
         # Character and game info tracking
         self.current_character = tk.StringVar(value="Unknown")
         self.current_area = tk.StringVar(value="Unknown")
         self.current_guild = tk.StringVar(value="None")
+        # Track last gifted item for favor tracking
+        self.last_gifted_item = None
+        self.last_gifted_npc = None
+        self.last_gifted_time = None
         
         # Add trace to update map when area changes
         self.current_area.trace_add("write", self._on_area_change)
@@ -191,6 +221,8 @@ class PGLOKApp:
         self.show_page("chat")
         self._refresh_character_cache()
         self._restore_open_windows()
+        # Ensure chat page is shown after window restoration
+        self.root.after(200, lambda: self.show_page("chat"))
         self.root.after(150, self._raise_main_window_default)
         self._check_for_upgrade_async()
         if config.PG_BASE is None:
@@ -961,6 +993,11 @@ class PGLOKApp:
             
             # Bind close event
             window.window.protocol("WM_DELETE_WINDOW", self._on_close_communications_window)
+            # Persist open state so restore logic can reopen this window
+            try:
+                self._set_window_open_state("communications", True)
+            except Exception:
+                pass
             self.status_var.set("Communications opened")
         except Exception as e:
             self.status_var.set(f"Error opening Communications: {e}")
@@ -973,6 +1010,10 @@ class PGLOKApp:
             self.communications_window._cleanup_mqtt()
             self.communications_window.window.destroy()
         self.communications_window = None
+        try:
+            self._set_window_open_state("communications", False)
+        except Exception:
+            pass
     
     
     def _save_timer_settings(self):
@@ -1181,12 +1222,15 @@ class PGLOKApp:
 
         output_wrap = ttk.Frame(shell, style="App.Card.TFrame", padding=8)
         output_wrap.pack(fill="both", expand=True)
-        self.chat_notebook = ttk.Notebook(output_wrap)
-        self.chat_notebook.pack(fill="both", expand=True)
-        self.chat_tab_text = {}
-        self._ensure_chat_tab("All")
-        self._ensure_chat_tab("Other")
-        self._ensure_chat_tab("Info")
+        self.chat_window_notebook = ttk.Notebook(output_wrap)
+        self.chat_window_notebook.pack(fill="both", expand=True)
+        self.chat_window_tab_text = {}
+
+        # Create tabs using standalone window's notebook and tab_text
+        self._ensure_chat_tab("All", notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
+        self._ensure_chat_tab("Other", notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
+        self._ensure_chat_tab("Info", notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
+        self._ensure_chat_tab("Player Log", notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
 
         self.chat_window.update_idletasks()
         req_w = max(920, self.chat_window.winfo_reqwidth())
@@ -1210,8 +1254,8 @@ class PGLOKApp:
         self._set_window_open_state("chat_monitor", False)
         self.chat_window = None
         self.chat_text = None
-        self.chat_notebook = None
-        self.chat_tab_text = {}
+        self.chat_window_notebook = None
+        self.chat_window_tab_text = {}
 
     def _start_chat_monitor(self):
         if self.chat_polling:
@@ -1228,6 +1272,13 @@ class PGLOKApp:
         self.status_var.set("Chat monitor running.")
         self._chat_poll_tick()
 
+        # Start player log monitor (background, non-blocking)
+        try:
+            self._start_player_log_monitor()
+        except Exception:
+            # Do not let player log monitor failures stop chat monitoring
+            pass
+
     def _stop_chat_monitor(self):
         self.chat_polling = False
         if self.chat_after_id is not None:
@@ -1237,6 +1288,163 @@ class PGLOKApp:
                 pass
             self.chat_after_id = None
         self.status_var.set("Chat monitor stopped.")
+
+        # Stop player log monitoring
+        self._stop_player_log_monitor()
+
+    def _start_player_log_monitor(self):
+        """Start monitoring the player.log file using a background thread and queue.
+
+        This avoids blocking the Tk mainloop when reading the file or processing many lines.
+        """
+        # Already running?
+        if getattr(self, "_player_log_thread", None) and self._player_log_thread.is_alive():
+            return
+
+        try:
+            from src.player.monitor import PlayerLogMonitor
+            # Pass PG_BASE directory if available
+            log_dir = config.PG_BASE if hasattr(config, 'PG_BASE') and config.PG_BASE else None
+            monitor = PlayerLogMonitor(log_dir=log_dir)
+            self.player_log_monitor = monitor
+
+            # Queue + thread + stop event
+            self._player_log_queue = queue.Queue()
+            self._player_log_stop = threading.Event()
+            self._player_log_thread = threading.Thread(
+                target=self._player_log_tail_thread,
+                args=(monitor,),
+                daemon=True,
+            )
+            self._player_log_thread.start()
+
+            self.player_log_polling = True
+            self.player_log_lines_seen = 0
+            # Schedule UI-side poll loop
+            self.player_log_after_id = self.root.after(500, self._player_log_poll_tick)
+        except Exception as exc:
+            # Display error message in the Player Log tab
+            print(f"Error starting player log monitor: {exc}")
+
+    def _player_log_tail_thread(self, monitor):
+        """Background tail: poll monitor.read_new_lines() and enqueue lines.
+
+        Uses the provided PlayerLogMonitor which handles file discovery and offset tracking.
+        """
+        stop_evt = getattr(self, "_player_log_stop", None)
+        if stop_evt is None:
+            return
+        try:
+            while not stop_evt.is_set():
+                try:
+                    lines = monitor.read_new_lines()
+                    if lines:
+                        for ln in lines:
+                            try:
+                                self._player_log_queue.put(ln)
+                            except Exception:
+                                # If queue put fails, drop the line
+                                pass
+                        # small sleep to yield
+                        time.sleep(0)
+                    else:
+                        time.sleep(0.2)
+                except Exception:
+                    # On transient errors, wait a moment and continue
+                    time.sleep(1.0)
+        finally:
+            return
+
+    def _stop_player_log_monitor(self):
+        """Stop monitoring the player.log file and clean up background thread."""
+        self.player_log_polling = False
+        # Signal background thread to stop
+        if getattr(self, "_player_log_stop", None) is not None:
+            try:
+                self._player_log_stop.set()
+            except Exception:
+                pass
+        # Join thread (short wait)
+        if getattr(self, "_player_log_thread", None) is not None:
+            try:
+                self._player_log_thread.join(timeout=1.0)
+            except Exception:
+                pass
+            self._player_log_thread = None
+
+        # Cancel UI after() if scheduled
+        if self.player_log_after_id is not None:
+            try:
+                self.root.after_cancel(self.player_log_after_id)
+            except tk.TclError:
+                pass
+            self.player_log_after_id = None
+
+    def _player_log_poll_tick(self):
+        """Drains queued lines on the Tk main thread and appends to UI widgets.
+
+        Runs frequently via root.after; keeps all Tk calls on the main thread.
+        """
+        if not getattr(self, "player_log_polling", False):
+            return
+        q = getattr(self, "_player_log_queue", None)
+        if q:
+            # Drain up to a modest batch to avoid hogging the UI
+            drained = 0
+            try:
+                # Prepare filter and highlight regexes
+                filter_pat = self.player_log_filter_var.get().strip()
+                filter_re = None
+                if filter_pat:
+                    try:
+                        filter_re = re.compile(filter_pat, re.IGNORECASE)
+                    except Exception:
+                        filter_re = None
+                highlight_enabled = bool(self.player_log_highlight_var.get())
+                highlight_terms = self.player_log_highlight_terms_var.get().strip()
+                highlight_re = None
+                if highlight_terms:
+                    # treat comma-separated terms as alternation
+                    try:
+                        parts = [re.escape(p.strip()) for p in highlight_terms.split(",") if p.strip()]
+                        if parts:
+                            highlight_re = re.compile("(" + "|".join(parts) + ")", re.IGNORECASE)
+                    except Exception:
+                        highlight_re = None
+
+                while drained < 200:
+                    line = q.get_nowait()
+                    # Parse gift-related events from player log
+                    self._parse_player_log_for_gifts(line)
+                    # Apply filter if present
+                    if filter_re:
+                        if not filter_re.search(line):
+                            continue
+                    # Determine highlight
+                    should_highlight = False
+                    if highlight_enabled and highlight_re and highlight_re.search(line):
+                        should_highlight = True
+                    if self.chat_notebook is not None:
+                        self._append_chat_line("Player Log", line, notebook=self.chat_notebook, tab_text_dict=self.chat_tab_text, highlight=should_highlight)
+                    if self.chat_window_notebook is not None:
+                        self._append_chat_line("Player Log", line, notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text, highlight=should_highlight)
+                    drained += 1
+                    self.player_log_lines_seen += 1
+            except Exception as exc:
+                # queue.Empty expected when drained; import locally to avoid global dependency issues
+                try:
+                    import queue as _q
+                    if not isinstance(exc, _q.Empty):
+                        print(f"Player log poll error: {exc}")
+                except Exception:
+                    pass
+
+        # Reschedule
+        try:
+            self.player_log_after_id = self.root.after(500, self._player_log_poll_tick)
+        except Exception:
+            # If scheduling fails, stop polling
+            self.player_log_polling = False
 
     def _try_start_chat_monitor(self):
         """Try to auto-start chat monitor if PG_BASE is available."""
@@ -1256,10 +1464,20 @@ class PGLOKApp:
 
     def _clear_chat_output(self):
         self.chat_lines_seen = 0
+        self.player_log_lines_seen = 0
+
+        # Clear integrated chat page tabs
         for widget in self.chat_tab_text.values():
             widget.configure(state="normal")
             widget.delete("1.0", tk.END)
             widget.configure(state="disabled")
+
+        # Clear standalone chat window tabs if they exist
+        for widget in self.chat_window_tab_text.values():
+            widget.configure(state="normal")
+            widget.delete("1.0", tk.END)
+            widget.configure(state="disabled")
+
         current_file = self.chat_monitor.current_file.name if self.chat_monitor and self.chat_monitor.current_file else "None"
         self._update_chat_info(current_file)
 
@@ -1273,27 +1491,44 @@ class PGLOKApp:
         try:
             lines = self.chat_monitor.read_new_lines()
             current_file = self.chat_monitor.current_file.name if self.chat_monitor.current_file else "None"
-            if lines and self.chat_notebook is not None:
-                for line in lines:
-                    channel = self._extract_chat_channel(line)
+            if lines:
+                # Append to integrated chat page if it exists
+                if self.chat_notebook is not None:
+                    for line in lines:
+                        channel = self._extract_chat_channel(line)
 
-                    # Parse game info from chat lines
-                    self._parse_game_info(line)
+                        # Parse game info from chat lines
+                        self._parse_game_info(line)
 
-                    # Parse favor gain messages
-                    self._parse_favor_gain(line)
+                        # Parse favor gain messages
+                        self._parse_favor_gain(line)
 
-                    # Handle PGLok channel commands / watch terms
-                    self._handle_pglok_watch_terms(line, channel)
+                        # Handle PGLok channel commands / watch terms
+                        self._handle_pglok_watch_terms(line, channel)
 
-                    # Combine Status and Error channels into System tab
-                    if channel in ["Status", "Error"]:
-                        combined_channel = "System"
-                    else:
-                        combined_channel = channel
+                        # Combine Status and Error channels into System tab
+                        if channel in ["Status", "Error"]:
+                            combined_channel = "System"
+                        else:
+                            combined_channel = channel
 
-                    self._append_chat_line("All", line)
-                    self._append_chat_line(combined_channel, line)
+                        self._append_chat_line("All", line, notebook=self.chat_notebook, tab_text_dict=self.chat_tab_text)
+                        self._append_chat_line(combined_channel, line, notebook=self.chat_notebook, tab_text_dict=self.chat_tab_text)
+
+                # Append to standalone chat window if it exists
+                if self.chat_window_notebook is not None:
+                    for line in lines:
+                        channel = self._extract_chat_channel(line)
+
+                        # Combine Status and Error channels into System tab
+                        if channel in ["Status", "Error"]:
+                            combined_channel = "System"
+                        else:
+                            combined_channel = channel
+
+                        self._append_chat_line("All", line, notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
+                        self._append_chat_line(combined_channel, line, notebook=self.chat_window_notebook, tab_text_dict=self.chat_window_tab_text)
+
                 self.chat_lines_seen += len(lines)
                 self._update_info_tab()
             self._update_chat_info(current_file)
@@ -1361,24 +1596,112 @@ class PGLOKApp:
                         except Exception:
                             pass
 
+    def _parse_player_log_for_gifts(self, line):
+        """Parse player log for gift-related events to track which items are being gifted."""
+        import re
+        from datetime import datetime
+        
+        # Pattern for ProcessPromptForItem event which indicates gift dialog
+        # Example: LocalPlayer: ProcessPromptForItem(14974, "Give Gift", "A gift? For me?", "Choose gift", null, [...], System.String[], -1301, "", Error, 0, ForNpc, "NPC_EvelineRastin")
+        match = re.search(r'ProcessPromptForItem\([^,]+,\s*"Give Gift"[^)]*"ForNpc",\s*"([^"]+)"', line)
+        if match:
+            npc_key = match.group(1)
+            # Clear the last gifted item when a new gift dialog opens
+            self.last_gifted_item = None
+            self.last_gifted_npc = npc_key
+            self.last_gifted_time = datetime.now()
+            return
+
+        # Try to detect explicit "You gave X to Y" style lines so we can remember the item
+        # Example: "You gave Blood Mushroom to Mandibles" or similar variants.
+        try:
+            m = re.search(r"you gave (.+?) to (.+)", line, re.IGNORECASE)
+            if not m:
+                m = re.search(r"gave (.+?) to (.+)", line, re.IGNORECASE)
+            if m:
+                item_name = m.group(1).strip()
+                npc_part = m.group(2).strip()
+                # Store the last gifted item and the recipient (display name or key fragment)
+                self.last_gifted_item = item_name
+                self.last_gifted_npc = npc_part
+                self.last_gifted_time = datetime.now()
+                return
+        except Exception:
+            # Don't let parsing errors interrupt the player log processing
+            pass
+
+        # Pattern for inventory item removal (might indicate gifting)
+        # This is a fallback - the game doesn't always send removal messages for gifts
+        # We'll rely on the favor gain message to trigger the actual recording
+
     def _parse_favor_gain(self, line):
         """Parse favor gain messages from chat logs and automatically record them."""
         import re
         lower = line.lower()
 
-        # Pattern: "You gained X favor with NPC Name"
+        # Pattern 1: "You gained X favor with NPC Name for giving them Item Name"
+        # Example: "You gained 5.5 favor with Willem Fangblade for giving them Bone"
+        match = re.search(r"you gained ([\d.]+) favor with (.+?) for giving them (.+)", line, re.IGNORECASE)
+        if match:
+            favor_amount = match.group(1)
+            npc_name = match.group(2).strip()
+            item_name = match.group(3).strip()
+
+            # Try to record the favor gain in the favor tracker with item name
+            if self.favor_tracker_window is not None:
+                try:
+                    if self.favor_tracker_window.window.winfo_exists():
+                        if hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat_with_item'):
+                            self.favor_tracker_window.record_favor_gain_from_chat_with_item(npc_name, favor_amount, item_name)
+                        elif hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat'):
+                            # Fallback to method without item name
+                            self.favor_tracker_window.record_favor_gain_from_chat(npc_name, favor_amount)
+                except Exception:
+                    pass
+            return
+
+        # Pattern 2: "You gained X favor with NPC Name" (fallback without item)
         # Example: "You gained 5.5 favor with Willem Fangblade"
         match = re.search(r"you gained ([\d.]+) favor with (.+)", line, re.IGNORECASE)
         if match:
             favor_amount = match.group(1)
             npc_name = match.group(2).strip()
 
-            # Try to record the favor gain in the favor tracker
+            # If we recently detected an explicit "You gave X to Y" line, use the remembered item
+            try:
+                from datetime import datetime
+                if self.last_gifted_item and self.last_gifted_time:
+                    delta = datetime.now() - self.last_gifted_time
+                    # Only trust recent detections (e.g., within 10 seconds)
+                    if delta.total_seconds() <= 10:
+                        if self.last_gifted_npc and (self.last_gifted_npc.lower() in npc_name.lower() or npc_name.lower() in self.last_gifted_npc.lower()):
+                            item_name = self.last_gifted_item
+                            # Record with the inferred item name
+                            if self.favor_tracker_window is not None:
+                                try:
+                                    if self.favor_tracker_window.window.winfo_exists():
+                                        if hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat_with_item'):
+                                            self.favor_tracker_window.record_favor_gain_from_chat_with_item(npc_name, favor_amount, item_name)
+                                        elif hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat'):
+                                            # Fallback: record without explicit item
+                                            self.favor_tracker_window.record_favor_gain_from_chat(npc_name, favor_amount)
+                                except Exception:
+                                    pass
+                            # Clear remembered gift to avoid double-using it
+                            self.last_gifted_item = None
+                            self.last_gifted_npc = None
+                            self.last_gifted_time = None
+                            return
+            except Exception:
+                pass
+
+            # Try to record the favor gain in the favor tracker (no item detected or inference failed)
             if self.favor_tracker_window is not None:
                 try:
                     if self.favor_tracker_window.window.winfo_exists():
                         if hasattr(self.favor_tracker_window, 'record_favor_gain_from_chat'):
                             # Record without item name since it's not in the message
+                            # The favor tracker will handle training mode if enabled
                             self.favor_tracker_window.record_favor_gain_from_chat(npc_name, favor_amount)
                 except Exception:
                     pass
@@ -1533,13 +1856,17 @@ class PGLOKApp:
             return "Emotes"
         return channel
 
-    def _ensure_chat_tab(self, name):
-        if self.chat_notebook is None:
-            return None
-        if name in self.chat_tab_text:
-            return self.chat_tab_text[name]
+    def _ensure_chat_tab(self, name, notebook=None, tab_text_dict=None):
+        """Ensure a chat tab exists. Optionally use a specific notebook and tab text dict."""
+        target_notebook = notebook if notebook is not None else self.chat_notebook
+        target_tab_text = tab_text_dict if tab_text_dict is not None else self.chat_tab_text
 
-        tab_frame = ttk.Frame(self.chat_notebook, style="App.Card.TFrame")
+        if target_notebook is None:
+            return None
+        if name in target_tab_text:
+            return target_tab_text[name]
+
+        tab_frame = ttk.Frame(target_notebook, style="App.Card.TFrame")
         scroll = ttk.Scrollbar(tab_frame, orient="vertical", style="App.Vertical.TScrollbar")
         scroll.pack(side="right", fill="y")
         text = tk.Text(
@@ -1562,16 +1889,31 @@ class PGLOKApp:
         text.bind("<Key>", lambda e: "break" if e.state == 0 and len(e.char) == 1 else None)
         text.bind("<Control-c>", lambda e: None)  # let default copy through
         text.bind("<Control-a>", lambda e: (text.tag_add("sel", "1.0", "end"), "break"))
-        self.chat_notebook.add(tab_frame, text=name)
-        self.chat_tab_text[name] = text
+        target_notebook.add(tab_frame, text=name)
+        target_tab_text[name] = text
         return text
 
-    def _append_chat_line(self, tab_name, line):
-        text = self._ensure_chat_tab(tab_name)
+    def _append_chat_line(self, tab_name, line, notebook=None, tab_text_dict=None, highlight=False):
+        """Append a line to a chat tab. Optionally highlight the inserted line."""
+        target_notebook = notebook if notebook is not None else self.chat_notebook
+        target_tab_text = tab_text_dict if tab_text_dict is not None else self.chat_tab_text
+
+        text = self._ensure_chat_tab(tab_name, notebook=target_notebook, tab_text_dict=target_tab_text)
         if text is None:
             return
         text.configure(state="normal")
-        text.insert(tk.END, line + "\n")
+        # Insert with optional tag for highlighting whole line
+        if highlight:
+            tag_name = f"player_log_highlight"
+            try:
+                # Configure tag appearance once per widget
+                if tag_name not in text.tag_names():
+                    text.tag_configure(tag_name, background=UI_COLORS.get("accent", "yellow"))
+            except Exception:
+                pass
+            text.insert(tk.END, line + "\n", (tag_name,))
+        else:
+            text.insert(tk.END, line + "\n")
         text.see(tk.END)
         self._trim_chat_widget(text)
         text.configure(state="disabled")
@@ -1609,10 +1951,10 @@ class PGLOKApp:
         header = ttk.Frame(self.chat_page, style="App.Panel.TFrame")
         header.pack(fill="x", pady=(0, 8))
         ttk.Label(header, text="Chat Monitor", style="App.Header.TLabel").pack(side="left")
-        
+
         control_frame = ttk.Frame(header, style="App.Panel.TFrame")
         control_frame.pack(side="right")
-        
+
         ttk.Button(control_frame, text="Start", command=self._start_chat_monitor, style="App.Primary.TButton").pack(
             side="left", padx=(0, 6)
         )
@@ -1620,6 +1962,17 @@ class PGLOKApp:
             side="left", padx=(0, 6)
         )
         ttk.Button(control_frame, text="Clear", command=self._clear_chat_output, style="App.Secondary.TButton").pack(side="left")
+
+        # Player log filter and highlight controls
+        try:
+            ttk.Label(control_frame, text="Filter", style="App.TLabel").pack(side="left", padx=(18, 4))
+            ttk.Entry(control_frame, textvariable=self.player_log_filter_var, width=20, style="App.TEntry").pack(side="left")
+            ttk.Label(control_frame, text="Highlight Terms", style="App.TLabel").pack(side="left", padx=(8, 4))
+            ttk.Entry(control_frame, textvariable=self.player_log_highlight_terms_var, width=20, style="App.TEntry").pack(side="left")
+            ttk.Checkbutton(control_frame, text="Highlight", variable=self.player_log_highlight_var, style="App.TCheckbutton").pack(side="left", padx=(6, 0))
+        except Exception:
+            # UI can fail in unusual environments; ignore
+            pass
 
         # Info bar
         info = ttk.Frame(self.chat_page, style="App.Card.TFrame", padding=8)
@@ -1631,11 +1984,12 @@ class PGLOKApp:
         output_wrap.pack(fill="both", expand=True)
         self.chat_notebook = ttk.Notebook(output_wrap)
         self.chat_notebook.pack(fill="both", expand=True)
-        
+
         # Create tabs
         self._ensure_chat_tab("All")
         self._ensure_chat_tab("Other")
         self._ensure_chat_tab("Info")
+        self._ensure_chat_tab("Player Log")
 
     def _on_home_pane_resize(self, _event=None):
         self._save_home_split()
@@ -4032,7 +4386,7 @@ class PGLOKApp:
         # Hide all pages
         self.home_page.pack_forget()
         self.chat_page.pack_forget()
-        
+
         # Show requested page
         if page_name == "home":
             self.home_page.pack(fill="both", expand=True)
@@ -4127,6 +4481,12 @@ class PGLOKApp:
             self._open_survey_helper()
         if self._is_window_marked_open("favor_tracker"):
             self._open_favor_tracker()
+        if self._is_window_marked_open("communications"):
+            # Open communications window if it was open previously
+            try:
+                self._open_communications_window()
+            except Exception:
+                pass
 
     def _raise_main_window_default(self):
         try:
@@ -4195,6 +4555,20 @@ class PGLOKApp:
         self._save_window_geometry("main", self.root)
 
     def _on_close(self):
+        # Stop chat monitoring
+        self._stop_chat_monitor()
+        
+        # Stop player log monitoring
+        self._stop_player_log_monitor()
+        
+        # Stop player position monitoring
+        if self._player_pos_after_id is not None:
+            try:
+                self.root.after_cancel(self._player_pos_after_id)
+            except tk.TclError:
+                pass
+            self._player_pos_after_id = None
+        
         if self._data_search_after_id is not None:
             try:
                 self.root.after_cancel(self._data_search_after_id)
