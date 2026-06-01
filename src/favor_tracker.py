@@ -1292,6 +1292,13 @@ class FavorTrackerWindow:
         self.area_search_var = tk.StringVar()
         self.character_var = tk.StringVar(value="Any")
         self.character_search_var = tk.StringVar()
+        # Display favor bonus percent for selected character
+        self.favor_bonus_var = tk.StringVar(value="Bonus: 0%")
+        # Update bonus display when character selection changes
+        try:
+            self.character_var.trace_add("write", lambda *_: self._update_favor_bonus_display())
+        except Exception:
+            pass
         # When enabled, restrict items to those carried by the focused character (inventory + saddle)
         self.inventory_only_var = tk.BooleanVar(value=False)
         # When locked, disable auto-area detection from chat logs
@@ -1475,6 +1482,15 @@ class FavorTrackerWindow:
             style="App.TCombobox",
         )
         self.character_combo.pack(side="left", padx=(0, 4))
+        # Show favor bonus for selected character
+        try:
+            self.character_combo.bind("<<ComboboxSelected>>", lambda _e: (self._on_character_selected(), self._refresh_table()))
+        except Exception:
+            pass
+        try:
+            ttk.Label(char_row, textvariable=self.favor_bonus_var, style="App.Muted.TLabel").pack(side="left", padx=(6, 0))
+        except Exception:
+            pass
 
         char_search = ttk.Entry(
             char_row,
@@ -1758,6 +1774,40 @@ class FavorTrackerWindow:
                 if value.lower().startswith(char_val.lower()):
                     self.character_var.set(value)
                     break
+
+    def _on_character_selected(self) -> None:
+        """Called when user selects a character in the combo. Updates bonus display."""
+        try:
+            self._update_favor_bonus_display()
+        except Exception:
+            pass
+
+    def _update_favor_bonus_display(self) -> None:
+        """Update the displayed favor bonus percent for the currently selected character."""
+        try:
+            name = self.character_var.get() if getattr(self, 'character_var', None) else None
+            if not name or name == "Any":
+                self.favor_bonus_var.set("Bonus: 0% (x1.0)")
+                return
+            # Extract clean name
+            clean_name = name.split(" (")[0] if " (" in name else name
+            mult = _get_favor_gift_multiplier(clean_name)
+            try:
+                pct = (float(mult) - 1.0) * 100.0
+            except Exception:
+                pct = 0.0
+            # Show with no decimals if integer, otherwise one decimal
+            if abs(pct - round(pct)) < 0.05:
+                pct_str = f"{int(round(pct))}%"
+            else:
+                pct_str = f"{pct:.1f}%"
+            self.favor_bonus_var.set(f"Bonus: +{pct_str} (x{mult:.2f})")
+        except Exception:
+            try:
+                self.favor_bonus_var.set("Bonus: 0% (x1.0)")
+            except Exception:
+                pass
+
 
     def _on_parent_area_changed(self) -> None:
         """Handler for parent.current_area trace to keep Favor Tracker in sync.
