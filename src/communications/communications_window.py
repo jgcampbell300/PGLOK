@@ -589,6 +589,24 @@ class CommunicationsWindow:
         Returns:
             True if publish successful, False otherwise
         """
+        # Log outgoing publish payload for diagnostics
+        try:
+            log_path = config.DATA_DIR / "communications_publish.log"
+            entry = {
+                "ts": datetime.now().isoformat(),
+                "topic": f"{mqtt_config.MQTT_TOPIC_CHANNELS}/pglok-data",
+                "type": data_type,
+                "data": data_dict
+            }
+            try:
+                config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as lf:
+                    lf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         if self.publisher:
             return self.publisher.publish_data_to_channel("pglok-data", data_type, data_dict)
         return False
