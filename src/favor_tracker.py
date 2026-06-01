@@ -2827,18 +2827,21 @@ class FavorTrackerWindow:
             actual_favor_items: list[tuple[FavorItem, float, FavorPreference, Optional[float]]] = []
             
             for item, score, pref, actual_favor in results:
-                desire = (pref.desire or "").lower()
-                
+                # Guard against None preferences (supplemented high-value items)
+                desire = (pref.desire or "").lower() if pref is not None else ""
+
                 # If item has actual favor data, add to actual_favor_items
                 if actual_favor is not None:
                     actual_favor_items.append((item, score, pref, actual_favor))
-                
+
                 # Only include Loved/Liked items in preference groups
+                if not pref:
+                    continue
                 if not (desire.startswith("love") or desire.startswith("like")):
                     continue
 
                 # Create preference label (e.g., "Loves Green Crystals", "Likes Brass Items")
-                pref_name = pref.name if hasattr(pref, "name") else ", ".join(pref.keywords)
+                pref_name = pref.name if getattr(pref, "name", None) else ", ".join(getattr(pref, "keywords", []))
                 if desire.startswith("love"):
                     pref_label = f"Loves {pref_name}"
                 else:
