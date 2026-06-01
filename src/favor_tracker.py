@@ -624,7 +624,7 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
         except Exception:
             _root = None
         app = getattr(_root, 'app', None) if _root is not None else None
-        if app and getattr(app, 'communications_window', None):
+        if app:
             try:
                 favor_data = {
                     "npc_key": npc_key,
@@ -637,16 +637,17 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                     "stored_as": stored_as,
                     "timestamp": record.get("timestamp")
                 }
-                # Also include npc/item display names if available from CDN
+                # Also include npc/item display names if available from CDN cache on the app
                 try:
-                    # Lazy-load items/npcs if possible without causing heavy work
-                    items = getattr(app, 'favor_tracker_window', None)._items if getattr(app, 'favor_tracker_window', None) else None
+                    ftw = getattr(app, 'favor_tracker_window', None)
+                    items = ftw._items if ftw and getattr(ftw, '_items', None) else None
                     if items and isinstance(items, dict) and item_key in items:
                         favor_data["item"] = items[item_key].name
                 except Exception:
                     pass
                 try:
-                    npcs = getattr(app, 'favor_tracker_window', None)._npcs if getattr(app, 'favor_tracker_window', None) else None
+                    ftw = getattr(app, 'favor_tracker_window', None)
+                    npcs = ftw._npcs if ftw and getattr(ftw, '_npcs', None) else None
                     if npcs and isinstance(npcs, list):
                         for n in npcs:
                             if getattr(n, 'key', None) == npc_key:
@@ -655,11 +656,54 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                 except Exception:
                     pass
 
-                app.communications_window.publish_instance_data("favor", favor_data)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                published = False
+                # Primary path: use communications_window.publish_instance_data when available
+                try:
+                    if getattr(app, 'communications_window', None):
+                        published = app.communications_window.publish_instance_data("favor", favor_data)
+                        print(f"Favor publish attempt via communications_window: {published}")
+                except Exception as e:
+                    print(f"Favor publish via communications_window error: {e}")
+
+                # Fallback: if communications window exists but no publisher, try creating a DataPublisher
+                if not published:
+                    try:
+                        comm = getattr(app, 'communications_window', None)
+                        if comm and getattr(comm, 'mqtt_client', None) and getattr(comm.mqtt_client, 'connected', False):
+                            from src.communications.data_publisher import DataPublisher
+                            dp = DataPublisher(comm.mqtt_client)
+                            published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
+                            print(f"Favor publish attempt via DataPublisher (existing mqtt_client): {published}")
+                    except Exception as e:
+                        print(f"Favor fallback publish error (existing mqtt_client): {e}")
+
+                # Final fallback: attempt a transient publish (non-blocking) if MQTT enabled
+                if not published:
+                    try:
+                        import src.config.mqtt_config as mqtt_config
+                        if mqtt_config.MQTT_ENABLED and mqtt_config.MQTT_DATA_SHARING_ENABLED:
+                            # Create a temporary client, connect, publish, then disconnect
+                            from src.communications.mqtt_client import MqttClient
+                            from src.communications.data_publisher import DataPublisher
+                            temp_client = MqttClient(favor_data.get('npc_key', 'pglok'))
+                            ok_conn = temp_client.connect()
+                            if ok_conn:
+                                dp = DataPublisher(temp_client)
+                                published = dp.publish_data_to_channel("pglok-data", "favor", favor_data)
+                                print(f"Favor publish via transient client: {published}")
+                                try:
+                                    temp_client.disconnect()
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        print(f"Favor transient publish error: {e}")
+
+                if not published:
+                    print("Favor publish failed or communications unavailable")
+            except Exception as e:
+                print(f"Error preparing favor publish: {e}")
+    except Exception as e:
+        print(f"Favor publish top-level error: {e}")
 
     return ok
 
