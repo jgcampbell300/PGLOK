@@ -446,7 +446,7 @@ def _save_custom_preferences(data: dict) -> bool:
         return False
 
 
-def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantity: int = 1, item_value: float = 0.0, keyword_weight: float = 0.0, npc_pref: float = 0.0) -> bool:
+def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantity: int = 1, item_value: float = 0.0, keyword_weight: float = 0.0, npc_pref: float = 0.0, stored_as: str = "actual") -> bool:
     """Record an actual favor gain from gifting an item to an NPC with detailed information."""
     data = _load_favor_gain_data()
     if npc_key not in data:
@@ -462,6 +462,7 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
         "item_value": item_value,
         "keyword_weight": keyword_weight,
         "npc_pref": npc_pref,
+        "stored_as": stored_as,
         "timestamp": datetime.now().isoformat()
     }
     data[npc_key][item_key].append(record)
@@ -780,12 +781,29 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
             avg_favor = None
             try:
                 if isinstance(records, list) and records:
+                    # Compute per-record actual favor taking into account whether the
+                    # stored value is 'base' (needs multiplier) or already 'actual'.
                     if isinstance(records[0], dict):
-                        favor_values = [r.get("favor_per_item", r.get("favor_amount", 0)) for r in records]
+                        vals = []
+                        for r in records:
+                            per = r.get("favor_per_item", r.get("favor_amount", 0))
+                            stored_as = r.get("stored_as")
+                            try:
+                                per_f = float(per)
+                            except Exception:
+                                continue
+                            if stored_as == "base":
+                                vals.append(per_f * multiplier)
+                            else:
+                                # Treat missing stored_as as 'actual' for backward
+                                # compatibility with older records
+                                vals.append(per_f)
+                        favor_values = vals
                     else:
+                        # Old format: list of floats assumed to be actual favor
                         favor_values = records
                     if favor_values:
-                        avg_favor = sum(favor_values) / len(favor_values) * multiplier
+                        avg_favor = sum(favor_values) / len(favor_values)
             except Exception:
                 continue
             if avg_favor is not None:
@@ -829,11 +847,25 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
         if records:
             try:
                 if isinstance(records[0], dict):
-                    favor_values = [r.get("favor_per_item", r.get("favor_amount", 0)) for r in records]
+                    vals = []
+                    for r in records:
+                        per = r.get("favor_per_item", r.get("favor_amount", 0))
+                        stored_as = r.get("stored_as")
+                        try:
+                            per_f = float(per)
+                        except Exception:
+                            continue
+                        if stored_as == "base":
+                            vals.append(per_f * multiplier)
+                        else:
+                            # Missing stored_as treated as 'actual' for backward compatibility
+                            vals.append(per_f)
+                    favor_values = vals
                 else:
+                    # Old format: list of floats assumed to be actual favor
                     favor_values = records
                 if favor_values:
-                    actual_favor = (sum(favor_values) / len(favor_values)) * multiplier
+                    actual_favor = (sum(favor_values) / len(favor_values))
             except Exception:
                 actual_favor = None
 
@@ -849,11 +881,23 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
         avg_favor = None
         try:
             if isinstance(records[0], dict):
-                favor_values = [r.get("favor_per_item", r.get("favor_amount", 0)) for r in records]
+                vals = []
+                for r in records:
+                    per = r.get("favor_per_item", r.get("favor_amount", 0))
+                    stored_as = r.get("stored_as")
+                    try:
+                        per_f = float(per)
+                    except Exception:
+                        continue
+                    if stored_as == "base":
+                        vals.append(per_f * multiplier)
+                    else:
+                        vals.append(per_f)
+                favor_values = vals
             else:
                 favor_values = records
             if favor_values:
-                avg_favor = (sum(favor_values) / len(favor_values)) * multiplier
+                avg_favor = (sum(favor_values) / len(favor_values))
         except Exception:
             continue
         if avg_favor is not None:
@@ -1717,7 +1761,7 @@ class FavorTrackerWindow:
         record_key = item_key if item_key else item_name
         
         # Record the favor gain with item information
-        if _record_favor_gain(npc_key, record_key, base_favor, 1, item_value, keyword_weight, npc_pref_value):
+        if _record_favor_gain(npc_key, record_key, base_favor, 1, item_value, keyword_weight, npc_pref_value, stored_as="base"):
             # Publish to pglok-data channel if available
             try:
                 app = getattr(self.parent, 'app', None)
@@ -1906,7 +1950,7 @@ class FavorTrackerWindow:
 
         # Use item_key if found, otherwise use custom name as key
         record_key = item_key if item_key else item_name
-        result = _record_favor_gain(npc.key, record_key, favor_per_item, quantity, item_value, keyword_weight, npc_pref_value)
+        result = _record_favor_gain(npc.key, record_key, favor_per_item, quantity, item_value, keyword_weight, npc_pref_value, stored_as="base")
         if result:
             # Publish to pglok-data channel if available
             try:
