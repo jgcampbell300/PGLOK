@@ -1487,10 +1487,6 @@ class FavorTrackerWindow:
             self.character_combo.bind("<<ComboboxSelected>>", lambda _e: (self._on_character_selected(), self._refresh_table()))
         except Exception:
             pass
-        try:
-            ttk.Label(char_row, textvariable=self.favor_bonus_var, style="App.Muted.TLabel").pack(side="left", padx=(6, 0))
-        except Exception:
-            pass
 
         char_search = ttk.Entry(
             char_row,
@@ -1518,6 +1514,11 @@ class FavorTrackerWindow:
         search_entry.pack(side="left", padx=(4, 0))
         search_entry.bind("<FocusIn>", lambda _e: search_entry.selection_range(0, "end"))
         self.search_var.trace_add("write", lambda *_: self._refresh_table())
+        # Place favor bonus label to the right of the search box
+        try:
+            ttk.Label(filter_row, textvariable=self.favor_bonus_var, style="App.Muted.TLabel").pack(side="left", padx=(8, 0))
+        except Exception:
+            pass
 
         # Context checkboxes row: restrict to carried items
         context_row = ttk.Frame(shell, style="App.Panel.TFrame")
@@ -1626,6 +1627,11 @@ class FavorTrackerWindow:
         self.list_tree.configure(yscrollcommand=vsb.set)
 
         self.list_tree.pack(side="left", fill="both", expand=True)
+        # Configure highlight tag for items with recorded/actual favor
+        try:
+            self.list_tree.tag_configure("favored", background=UI_COLORS.get("rarity_uncommon", "#163f2c"), foreground=UI_COLORS.get("text", "#e6eef6"))
+        except Exception:
+            pass
         vsb.pack(side="right", fill="y")
 
         # Status label pinned to the bottom of the window
@@ -3065,6 +3071,10 @@ class FavorTrackerWindow:
             if hasattr(self, "list_tree"):
                 # Use actual favor in score column if available
                 display_score = f"{actual_favor:,.1f}" if actual_favor is not None else f"{score:,.1f} (est)"
+                tags = ()
+                # Highlight rows that have actual recorded favor
+                if actual_favor is not None:
+                    tags = ("favored",)
                 self.list_tree.insert(
                     "",
                     "end",
@@ -3078,6 +3088,7 @@ class FavorTrackerWindow:
                         pref.desire,
                         matched_text,
                     ),
+                    tags=tags,
                 )
                 shown += 1
 
