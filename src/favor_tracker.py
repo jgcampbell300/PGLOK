@@ -614,6 +614,53 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
                 pass
     except Exception:
         pass
+
+    # Publish new favor record to communications pglok-data channel if available
+    try:
+        # Try to locate main app via Tk default root (root.app set in pglok)
+        try:
+            import tkinter as _tk
+            _root = getattr(_tk, '_default_root', None)
+        except Exception:
+            _root = None
+        app = getattr(_root, 'app', None) if _root is not None else None
+        if app and getattr(app, 'communications_window', None):
+            try:
+                favor_data = {
+                    "npc_key": npc_key,
+                    "item_key": item_key,
+                    "favor_amount": float(record.get("favor_per_item", record.get("favor_amount", 0.0))),
+                    "quantity": int(record.get("quantity", 1)),
+                    "item_value": float(record.get("item_value", 0.0)),
+                    "keyword_weight": float(record.get("keyword_weight", 0.0)),
+                    "npc_pref": float(record.get("npc_pref", 0.0)),
+                    "stored_as": stored_as,
+                    "timestamp": record.get("timestamp")
+                }
+                # Also include npc/item display names if available from CDN
+                try:
+                    # Lazy-load items/npcs if possible without causing heavy work
+                    items = getattr(app, 'favor_tracker_window', None)._items if getattr(app, 'favor_tracker_window', None) else None
+                    if items and isinstance(items, dict) and item_key in items:
+                        favor_data["item"] = items[item_key].name
+                except Exception:
+                    pass
+                try:
+                    npcs = getattr(app, 'favor_tracker_window', None)._npcs if getattr(app, 'favor_tracker_window', None) else None
+                    if npcs and isinstance(npcs, list):
+                        for n in npcs:
+                            if getattr(n, 'key', None) == npc_key:
+                                favor_data["npc"] = getattr(n, 'name', npc_key)
+                                break
+                except Exception:
+                    pass
+
+                app.communications_window.publish_instance_data("favor", favor_data)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return ok
 
 
