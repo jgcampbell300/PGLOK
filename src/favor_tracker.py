@@ -422,6 +422,144 @@ def _get_custom_preferences_path() -> Path:
     return DATA_DIR / "custom_gift_preferences.json"
 
 
+# ------------------------------------------------------------------
+# Simple persistent estimates derived from recorded base favor gains.
+# These are updated when the app records new base-format entries and
+# used to improve scoring for items with little keyword data.
+# ------------------------------------------------------------------
+
+def _get_estimates_path() -> Path:
+    return DATA_DIR / "favor_item_estimates.json"
+
+
+def _load_estimates() -> dict:
+    path = _get_estimates_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_estimates(data: dict) -> bool:
+    path = _get_estimates_path()
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def _update_item_estimate(npc_key: str, item_key: str) -> None:
+    """Update persistent base-favor estimate for npc/item using EMA.
+
+    Uses the latest recorded sample with stored_as=='base' and applies an
+    exponential moving average (EMA) to the previously-stored estimate.
+    The smoothing factor alpha may be configured via config.FAVOR_ESTIMATE_ALPHA
+    (default 0.2). If no previous estimate exists, the sample becomes the
+    initial estimate.
+    """
+    try:
+        data = _load_favor_gain_data()
+        npc_records = data.get(npc_key, {}) if isinstance(data, dict) else {}
+        records = npc_records.get(item_key) or []
+        if not records:
+            return
+
+        # Find the most recent 'base' record (we only use the latest sample
+        # for incremental EMA updates).
+        sample = None
+        for r in reversed(records):
+            if isinstance(r, dict) and r.get("stored_as") == "base":
+                try:
+                    sample = float(r.get("favor_per_item", r.get("favor_amount", 0)))
+                    break
+                except Exception:
+                    continue
+        if sample is None:
+            return
+
+        # Load existing estimates and existing value for this npc/item
+        estimates = _load_estimates()
+        old_val = None
+        if isinstance(estimates.get(npc_key), dict):
+            old_val = estimates[npc_key].get(item_key)
+
+        # Get alpha from config or default; clamp to [0,1]
+        try:
+            alpha = float(getattr(config, "FAVOR_ESTIMATE_ALPHA", 0.2))
+        except Exception:
+            alpha = 0.2
+        alpha = max(0.0, min(1.0, alpha))
+
+        # Compute new estimate via EMA
+        if old_val is None:
+            new_est = sample
+        else:
+            try:
+                old_f = float(old_val)
+                new_est = alpha * sample + (1.0 - alpha) * old_f
+            except Exception:
+                new_est = sample
+
+        if npc_key not in estimates or not isinstance(estimates[npc_key], dict):
+            estimates[npc_key] = {}
+        estimates[npc_key][item_key] = new_est
+        _save_estimates(estimates)
+    except Exception:
+        return
+
+
+def _recalculate_all_estimates(self) -> None:
+    """Recompute estimates from all stored 'base' favor records and persist them."""
+    try:
+        data = _load_favor_gain_data()
+        if not isinstance(data, dict):
+            return
+        estimates = {}
+        for npc_key, items in data.items():
+            if not isinstance(items, dict):
+                continue
+            for item_key, records in items.items():
+                if not isinstance(records, list):
+                    continue
+                base_vals = []
+                for r in records:
+                    if isinstance(r, dict) and r.get("stored_as") == "base":
+                        try:
+                            per = float(r.get("favor_per_item", r.get("favor_amount", 0)))
+                            base_vals.append(per)
+                        except Exception:
+                            continue
+                if base_vals:
+                    estimates.setdefault(npc_key, {})[item_key] = sum(base_vals) / len(base_vals)
+        _save_estimates(estimates)
+        # Clear gift cache and refresh UI if window exists
+        try:
+            self._gift_cache.clear()
+            self._refresh_table()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'status_var', None):
+                self.status_var.set(f"Recalculated estimates for {sum(len(v) for v in estimates.values())} items")
+        except Exception:
+            pass
+        try:
+            messagebox.showinfo("Recalculate Estimates", "Recalculation complete.")
+        except Exception:
+            pass
+    except Exception:
+        try:
+            messagebox.showerror("Recalculate Estimates", "Failed to recalculate estimates")
+        except Exception:
+            pass
+
+
 def _load_custom_preferences() -> dict:
     """Load custom gift preferences from JSON file."""
     path = _get_custom_preferences_path()
@@ -466,7 +604,17 @@ def _record_favor_gain(npc_key: str, item_key: str, actual_favor: float, quantit
         "timestamp": datetime.now().isoformat()
     }
     data[npc_key][item_key].append(record)
-    return _save_favor_gain_data(data)
+    ok = _save_favor_gain_data(data)
+    # If we stored a 'base' record, update persistent estimates for this item
+    try:
+        if ok and stored_as == "base":
+            try:
+                _update_item_estimate(npc_key, item_key)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ok
 
 
 def _get_average_favor_gain(npc_key: str, item_key: str) -> Optional[float]:
@@ -672,6 +820,18 @@ def _merge_user_gift_preferences(npcs: List[FavorNpc]) -> List[FavorNpc]:
 _GENERIC_PREF_KEYWORDS = {"Loot"}
 
 
+def _desire_multiplier(desire: str) -> float:
+    """Return numeric multiplier for a preference desire string."""
+    if not desire:
+        return 0.25
+    d = desire.lower()
+    if d.startswith("love"):
+        return 1.0
+    if d.startswith("like"):
+        return 0.5
+    return 0.25
+
+
 def _match_score(item: FavorItem, pref: FavorPreference) -> Optional[float]:
     """Return a raw favor score for item against one preference, or None.
 
@@ -833,6 +993,10 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
                         candidate_items[itm.key] = itm
 
     # Evaluate candidates
+    # Load per-item base estimates for this NPC (if any)
+    estimates = _load_estimates()
+    npc_estimates = estimates.get(npc.key, {}) if isinstance(estimates, dict) else {}
+
     for item in candidate_items.values():
         best_score = 0.0
         best_pref: Optional[FavorPreference] = None
@@ -841,6 +1005,24 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
             if score is not None and score > best_score:
                 best_score = score
                 best_pref = pref
+        # If we have an empirically observed base favor estimate for this item,
+        # use it to produce an alternate score that reflects real-world results
+        try:
+            est_base = None
+            if item.key in npc_estimates:
+                try:
+                    est_base = float(npc_estimates[item.key])
+                except Exception:
+                    est_base = None
+            if est_base is not None and best_pref is not None:
+                # Compute desire multiplier like _match_score does
+                desire_mult = _desire_multiplier(best_pref.desire)
+                # Estimate-based score uses avg base favor * pref weight * desire multiplier
+                est_score = max(0.0, est_base) * max(0.0, best_pref.pref) * desire_mult
+                if est_score > best_score:
+                    best_score = est_score
+        except Exception:
+            pass
         # Compute actual favor if available
         actual_favor = None
         records = npc_favor_records.get(item.key)
@@ -1193,6 +1375,19 @@ class FavorTrackerWindow:
             font=("TkDefaultFont", 8),
         )
         self.lock_status_label.pack(side="left", padx=(4, 0))
+
+        # Recalculate base estimates button (manual trigger)
+        try:
+            self.recalc_estimates_btn = ttk.Button(
+                area_row,
+                text="Recalculate Base Estimates",
+                command=self._recalculate_all_estimates,
+                style="App.Secondary.TButton",
+            )
+            # Place to the right of the status label
+            self.recalc_estimates_btn.pack(side="left", padx=(8, 0))
+        except Exception:
+            pass
 
         # NPC filters (row 2)
         npc_row = ttk.Frame(shell, style="App.Panel.TFrame")
@@ -1694,14 +1889,27 @@ class FavorTrackerWindow:
         # so divide by it to get the base favor for storage
         base_favor = favor_value / multiplier if multiplier > 0 else favor_value
 
-        # Always open training item selector when item name is missing from chat message
-        # This ensures we can track which item was actually gifted
-        success = self._open_training_item_selector(npc_obj, base_favor)
-        # Only refresh if recording was successful
-        if success:
-            # Clear cache to ensure new favor data is reflected
-            self._gift_cache.clear()
-            self._refresh_table()
+        # If training mode is enabled, open the training item selector when item name is missing.
+        # Otherwise, do not pop up the dialog — respect user's training mode setting.
+        try:
+            training_enabled = bool(getattr(self, 'training_mode_var', None) and self.training_mode_var.get())
+        except Exception:
+            training_enabled = False
+
+        if training_enabled:
+            success = self._open_training_item_selector(npc_obj, base_favor)
+            # Only refresh if recording was successful
+            if success:
+                # Clear cache to ensure new favor data is reflected
+                self._gift_cache.clear()
+                self._refresh_table()
+        else:
+            # Training mode is off: do not show the popup. Optionally update status.
+            try:
+                if getattr(self, 'status_var', None):
+                    self.status_var.set("Training mode OFF - favor detected but no item recorded")
+            except Exception:
+                pass
     
     def record_favor_gain_from_chat_with_item(self, npc_name: str, favor_amount: str, item_name: str) -> None:
         """Record a favor gain parsed from chat log with item name included."""
