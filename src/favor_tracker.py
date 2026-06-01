@@ -862,8 +862,33 @@ def compute_best_gifts(npc: FavorNpc, items: Dict[str, FavorItem], limit: int = 
                 item = FavorItem(key=item_key, name=item_key, value=0.0, keywords=[], keyword_weights={}, location="")
             results.append((item, 0.0, None, avg_favor))
 
-    # Sort by actual favor if available, otherwise by estimated score
-    results.sort(key=lambda t: (t[3] if t[3] is not None else t[1]), reverse=True)
+    # If too few candidate results, supplement with highest-value items so the
+    # user sees a more complete list (e.g., many cooking ingredients). Aim to
+    # show at least DESIRED_MIN_ITEMS entries when possible.
+    DESIRED_MIN_ITEMS = 25
+    try:
+        desired_min = DESIRED_MIN_ITEMS if (not limit or limit <= 0) else min(DESIRED_MIN_ITEMS, limit)
+    except Exception:
+        desired_min = DESIRED_MIN_ITEMS
+
+    if len(results) < desired_min:
+        present = {item.key for item, _, _, _ in results}
+        # Get remaining items sorted by value descending
+        remaining = sorted((itm for itm in items.values() if itm.key not in present), key=lambda it: getattr(it, 'value', 0.0), reverse=True)
+        for itm in remaining[: max(0, desired_min - len(results))]:
+            results.append((itm, 0.0, None, None))
+
+    # Sort by actual favor if available, otherwise by estimated score; if neither,
+    # fall back to item.value so high-value gifts appear.
+    def _sort_key(t):
+        item, score, pref, actual = t
+        if actual is not None:
+            return actual
+        if score is not None and score > 0.0:
+            return score
+        return getattr(item, 'value', 0.0)
+
+    results.sort(key=_sort_key, reverse=True)
     if limit and limit > 0:
         results = results[:limit]
     return results
