@@ -80,6 +80,7 @@ class PGLOKApp:
         self.map_tools_browser = None
         self.survey_helper_window = None
         self.communications_window = None
+        self.timer_window = None
         self.home_paned = None
         self.itemizer_paned = None
         self.itemizer_bottom_paned = None
@@ -905,20 +906,29 @@ class PGLOKApp:
     def _open_timer(self):
         """Open the timer window."""
         try:
+            if self.timer_window is not None:
+                try:
+                    if self.timer_window.window.winfo_exists():
+                        self.timer_window.window.deiconify()
+                        self.timer_window.window.lift()
+                        self.timer_window.window.focus_force()
+                        self.status_var.set("Timer window opened")
+                        return
+                except Exception:
+                    self.timer_window = None
+
             from src.timer_window import TimerWindow
             from pathlib import Path
-            
-            # Get chat directory if available
+
             chat_dir = None
             if config.PG_BASE is not None:
                 chat_dir = Path(config.PG_BASE) / "ChatLogs"
-                if chat_dir.exists():
-                    chat_dir = chat_dir
-            
-            # Create and show timer window
-            timer_window = TimerWindow(self, config.DATA_DIR, chat_dir)
+                if not chat_dir.exists():
+                    chat_dir = None
+
+            self.timer_window = TimerWindow(self, config.DATA_DIR, chat_dir)
             self.status_var.set("Timer window opened")
-            
+
         except Exception as e:
             self.status_var.set(f"Error opening timer: {e}")
             import traceback
@@ -4606,6 +4616,7 @@ class PGLOKApp:
         )
         self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
         self._set_window_open_state("survey_helper", self.survey_helper_window is not None and self.survey_helper_window.winfo_exists())
+        self._set_window_open_state("timer", self.timer_window is not None and self.timer_window.window.winfo_exists())
         # Track favor tracker window open state if present
         try:
             is_favor_open = self.favor_tracker_window is not None and self.favor_tracker_window.window.winfo_exists()
@@ -4630,6 +4641,16 @@ class PGLOKApp:
         self._set_ui_pref("itemizer_offset", int(self.itemizer_offset))
         self._save_window_geometry("character_browser", self.character_browser_window)
         self._save_window_geometry("map_tools", self.map_tools_window)
+        if self.timer_window is not None:
+            try:
+                self.timer_window._on_close()
+            except Exception:
+                try:
+                    if self.timer_window.window.winfo_exists():
+                        self.timer_window.window.destroy()
+                except Exception:
+                    pass
+            self.timer_window = None
         self._stop_chat_monitor()
         self.root.destroy()
 

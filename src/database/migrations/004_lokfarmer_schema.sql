@@ -1,7 +1,7 @@
--- LokFarmer Addon Database Schema
+-- Farming Addon Database Schema
 -- Extends the unified PGLOK database with farming-specific tables
 
--- LokFarmer addon settings
+-- Farming addon settings
 CREATE TABLE IF NOT EXISTS lokfarmer_settings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

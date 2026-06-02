@@ -20,6 +20,7 @@ dist/
 
 # Development tools and backups
 .ai/
+.venv/
 .venv_tools/
 backups/
 build_env/

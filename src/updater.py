@@ -127,6 +127,22 @@ def download_update(url: str, dest_path: Path) -> bool:
         return False
 
 
+def resolve_extracted_source_dir(temp_dir: Path) -> Optional[Path]:
+    extracted_items = list(temp_dir.iterdir())
+    if not extracted_items:
+        return None
+
+    # If the archive expands into mixed top-level files and folders, copy from the
+    # archive root so all files are preserved. Only collapse into a single child
+    # directory when the archive truly wraps everything in one folder.
+    top_level_files = [item for item in extracted_items if item.is_file()]
+    top_level_dirs = [item for item in extracted_items if item.is_dir()]
+    if top_level_files or len(top_level_dirs) != 1:
+        return temp_dir
+
+    return top_level_dirs[0]
+
+
 def should_skip_update_path(relative_path: Path) -> bool:
     rel = relative_path.as_posix()
     if rel in SKIP_UPDATE_FILES:
@@ -183,12 +199,11 @@ def install_update_windows(zip_path: Path) -> bool:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(temp_dir)
 
-            extracted_dirs = [d for d in Path(temp_dir).iterdir() if d.is_dir()]
-            if not extracted_dirs:
-                print("No directories found in extracted zip")
+            source_dir = resolve_extracted_source_dir(Path(temp_dir))
+            if source_dir is None:
+                print("No items found in extracted zip")
                 return False
 
-            source_dir = extracted_dirs[0]
             print(f"Source directory for update: {source_dir}")
             return copy_update_tree(source_dir, current_dir)
     except Exception as e:
@@ -218,26 +233,13 @@ def install_update_linux(tar_path: Path) -> bool:
                     with tarfile.open(tar_path, "r") as tar_ref:
                         tar_ref.extractall(temp_dir)
 
-            extracted_items = list(Path(temp_dir).iterdir())
-            if not extracted_items:
+            source_dir = resolve_extracted_source_dir(Path(temp_dir))
+            if source_dir is None:
                 print("No items found in extracted archive")
                 return False
 
-            source_dir = None
-            for item in extracted_items:
-                if item.is_dir():
-                    source_dir = item
-                    break
-                if item.is_file() and item.name in ["test.txt", "README.md"]:
-                    source_dir = Path(temp_dir)
-                    break
-
-            if source_dir is None:
-                print("No suitable source directory found in extracted archive")
-                return False
-
             print(f"Source directory for update: {source_dir}")
-            return copy_update_tree(Path(source_dir), current_dir)
+            return copy_update_tree(source_dir, current_dir)
     except Exception as e:
         print(f"Linux update failed: {e}")
         import traceback

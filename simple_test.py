@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Simple test for farming addon
+Simple smoke test for the current PGLOK repository layout.
+
+This repository does not include an addons/ package in this checkout, so the
+previous addon-specific test was invalid here. This smoke test verifies that the
+core app modules import cleanly in the active environment.
 """
 
 import sys
@@ -9,35 +13,25 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-try:
-    print("Testing import...")
-    from addons.farming_automation.addon import FarmingAutomationAddon
-    print("Import successful")
-    
-    print("Testing instantiation...")
-    # Create a simple mock
-    class MockApp:
-        def __init__(self):
-            self.db_manager = None
-            self.current_user_id = 1
-            self.root = None
-            
-        def apply_theme_to_window(self, window):
-            return {}, {}
-    
-    app = MockApp()
-    print("Mock app created")
-    
-    # This should fail gracefully since db_manager is None
+
+def main() -> int:
+    print("Testing core imports...")
+
     try:
-        addon = FarmingAutomationAddon(app)
-        print("Addon created successfully")
-    except Exception as e:
-        print(f"Addon creation failed: {e}")
-        import traceback
-        traceback.print_exc()
-    
-except Exception as e:
-    print(f"Import failed: {e}")
-    import traceback
-    traceback.print_exc()
+        import src.pglok  # noqa: F401
+        import src.timer_window  # noqa: F401
+        import src.chat_monitor  # noqa: F401
+        print("Core imports successful")
+    except Exception as exc:
+        print(f"Core import failed: {exc}")
+        raise
+
+    print("Checking virtual environment...")
+    print(f"Python executable: {sys.executable}")
+
+    print("Smoke test passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

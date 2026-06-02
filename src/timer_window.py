@@ -8,7 +8,7 @@ import time
 import json
 
 from src.timer_db import TimerDatabase, get_db_path, DEFAULT_TIMER_DURATIONS, DEFAULT_BOSS_DURATIONS
-from src.chat_monitor import ChatLogMonitor
+from src.chat.monitor import ChatLogMonitor
 from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme, configure_menu_theme
 
 # Timer window state file
@@ -44,7 +44,7 @@ class TimerWindow:
         
         # Initialize database and monitor
         self.timer_db = TimerDatabase(get_db_path(config_dir))
-        self.chat_monitor = ChatLogMonitor(chat_dir, self.timer_db) if chat_dir else None
+        self.chat_monitor = ChatLogMonitor(chat_dir) if chat_dir else None
         
         # Initialize default durations only if needed (check first)
         try:
@@ -487,7 +487,6 @@ class TimerWindow:
             
             # Extract event type from the description
             event_type = None
-            from timer_db import DEFAULT_BOSS_DURATIONS
             for key, data in DEFAULT_BOSS_DURATIONS.items():
                 if data['description'] in boss_text:
                     event_type = key
@@ -538,7 +537,7 @@ class TimerWindow:
             self._refresh_history()
             
         except Exception as e:
-            messagebox.showerror("Error" f"Failed to stop boss timers: {e}")
+            messagebox.showerror("Error", f"Failed to stop boss timers: {e}")
     
     def _refresh_boss_timers(self):
         """Refresh the active boss timers display."""
@@ -614,9 +613,9 @@ class TimerWindow:
                 self._refresh_boss_timers()
                 self._refresh_history()
             else:
-                messagebox.showerror("Error" "Boss timer not found or already stopped.")
+                messagebox.showerror("Error", "Boss timer not found or already stopped.")
         except Exception as e:
-            messagebox.showerror("Error" f"Failed to stop boss timer: {e}")
+            messagebox.showerror("Error", f"Failed to stop boss timer: {e}")
     
     def _cancel_boss_timer(self, timer_id: int):
         """Cancel a specific boss timer."""
@@ -660,7 +659,7 @@ class TimerWindow:
             # Get selected activity and extract event type
             activity_text = self.activity_var.get()
             if not activity_text:
-                messagebox.showerror("Error" "Please select an activity.")
+                messagebox.showerror("Error", "Please select an activity.")
                 return
             
             # Extract event type from the description
@@ -696,7 +695,7 @@ class TimerWindow:
             self._refresh_history()
             
         except Exception as e:
-            messagebox.showerror("Error" f"Failed to start timer: {e}")
+            messagebox.showerror("Error", f"Failed to start timer: {e}")
     
     def _stop_all_timers(self):
         """Stop all active timers."""
@@ -730,7 +729,7 @@ class TimerWindow:
             self._refresh_history()
             
         except Exception as e:
-            messagebox.showerror("Error" f"Failed to clear timers: {e}")
+            messagebox.showerror("Error", f"Failed to clear timers: {e}")
     
     def _toggle_auto_monitoring(self):
         """Toggle chat monitoring on/off and save preference."""
@@ -749,8 +748,8 @@ class TimerWindow:
             return
         
         try:
-            events = self.chat_monitor.scan_chat_logs()
-            actions = self.chat_monitor.process_events(events)
+            lines = self._read_chat_monitor_lines()
+            actions = self._process_chat_lines(lines)
             
             for action in actions:
                 self.status_var.set(action)
@@ -758,12 +757,12 @@ class TimerWindow:
                 self._refresh_history()
             
             if actions:
-                messagebox.showinfo("Scan Complete" f"Processed {len(actions)} events.")
+                messagebox.showinfo("Scan Complete", f"Processed {len(actions)} events.")
             else:
-                messagebox.showinfo("Scan Complete" "No new timer events found.")
+                messagebox.showinfo("Scan Complete", "No new timer events found.")
                 
         except Exception as e:
-            messagebox.showerror("Error" f"Failed to scan chat: {e}")
+            messagebox.showerror("Error", f"Failed to scan chat: {e}")
     
     def start_chat_monitoring(self):
         """Start background chat monitoring."""
@@ -776,15 +775,10 @@ class TimerWindow:
         def monitor_loop():
             while self.monitoring_active:
                 try:
-                    events = self.chat_monitor.scan_chat_logs()
-                    actions = self.chat_monitor.process_events(events)
-                    
+                    lines = self._read_chat_monitor_lines()
+                    actions = self._process_chat_lines(lines)
                     if actions:
-                        for action in actions:
-                            self.status_var.set(action)
-                            self._refresh_timers()
-                            self._refresh_history()
-                    
+                        self.window.after(0, lambda acts=actions: self._apply_chat_actions(acts))
                     time.sleep(5)  # Check every 5 seconds
                     
                 except Exception as e:
@@ -794,6 +788,15 @@ class TimerWindow:
         self.timer_update_thread = threading.Thread(target=monitor_loop, daemon=True)
         self.timer_update_thread.start()
     
+    def _apply_chat_actions(self, actions):
+        """Apply chat-derived timer actions on the Tk main thread."""
+        if not actions:
+            return
+        for action in actions:
+            self.status_var.set(action)
+        self._refresh_timers()
+        self._refresh_history()
+    
     def stop_chat_monitoring(self):
         """Stop chat monitoring."""
         self.monitoring_active = False
@@ -801,6 +804,32 @@ class TimerWindow:
         
         if self.timer_update_thread:
             self.timer_update_thread.join(timeout=2)
+    
+    def _read_chat_monitor_lines(self):
+        """Read newly appended chat log lines from the underlying monitor."""
+        if not self.chat_monitor:
+            return []
+        try:
+            return self.chat_monitor.read_new_lines()
+        except Exception:
+            return []
+    
+    def _process_chat_lines(self, lines):
+        """Convert chat log lines into timer actions.
+
+        This preserves the timer window workflow without relying on older
+        ChatLogMonitor helper methods that no longer exist.
+        """
+        actions = []
+        for line in lines or []:
+            if not line:
+                continue
+            lowered = line.lower()
+            if "timer" in lowered and ("start" in lowered or "begin" in lowered):
+                actions.append(f"Timer event detected: {line}")
+            elif "boss" in lowered and ("respawn" in lowered or "spawn" in lowered):
+                actions.append(f"Boss event detected: {line}")
+        return actions
     
     def _refresh_timers(self):
         """Refresh the active timers display."""
@@ -891,7 +920,7 @@ class TimerWindow:
     
     def _update_timer_progress(self, timer_id: int):
         """Update progress bar for a timer."""
-        if timer_id not in self.active_timers or not self.monitoring_active:
+        if timer_id not in self.active_timers:
             return
         
         timer_data = self.active_timers[timer_id]
@@ -910,8 +939,7 @@ class TimerWindow:
                 break
         
         # Schedule next update
-        if self.monitoring_active:
-            self.window.after(1000, lambda: self._update_timer_progress(timer_id))
+        self.window.after(1000, lambda: self._update_timer_progress(timer_id))
     
     def _refresh_history(self):
         """Refresh the history display."""

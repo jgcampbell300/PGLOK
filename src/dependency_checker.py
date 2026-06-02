@@ -481,16 +481,29 @@ class DependencyChecker:
     def _on_install_complete(self, success: bool, packages: List[str], refresh_callback):
         """Handle installation completion."""
         try:
-            self.progress_bar.pack_forget()
-            self.progress_var.set(0)
+            progress_bar = getattr(self, "progress_bar", None)
+            progress_var = getattr(self, "progress_var", None)
+
+            if progress_bar is not None:
+                try:
+                    progress_bar.pack_forget()
+                except Exception:
+                    pass
+
+            if progress_var is not None:
+                try:
+                    progress_var.set(0)
+                except Exception:
+                    pass
             
             if success:
                 messagebox.showinfo("Success", f"Successfully installed: {', '.join(packages)}")
                 # Safely refresh the dependency status
-                try:
-                    refresh_callback()
-                except Exception as e:
-                    print(f"Warning: Failed to refresh dependency status: {e}")
+                if refresh_callback is not None:
+                    try:
+                        refresh_callback()
+                    except Exception as e:
+                        print(f"Warning: Failed to refresh dependency status: {e}")
             else:
                 messagebox.showerror("Error", f"Failed to install some dependencies. Check console for details.")
         except Exception as e:
