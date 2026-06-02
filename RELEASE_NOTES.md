@@ -1,4 +1,4 @@
-# PGLOK v0.2.0 Release
+# PGLOK v0.2.3 Release
 
 ## Highlights
 
@@ -23,13 +23,13 @@
 ## Installation
 
 ```bash
-curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.2.0.tar.gz -o PGLOK.tar.gz
+curl -L https://github.com/jgcampbell300/PGLOK/releases/latest/download/PGLOK-Linux-v0.2.3.tar.gz -o PGLOK.tar.gz
 tar -xzf PGLOK.tar.gz
-cd PGLOK-Linux-v0.2.0
+cd PGLOK-Linux-v0.2.3
 ./install.sh
 ```
 
 ## Assets
 
-- `PGLOK-Linux-v0.2.0.tar.gz`
-- `PGLOK-v0.2.0-source.tar.gz`
+- `PGLOK-Linux-v0.2.3.tar.gz`
+- `PGLOK-v0.2.3-source.tar.gz`
