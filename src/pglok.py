@@ -11,16 +11,22 @@ from tkinter import messagebox, ttk
 from pathlib import Path
 from datetime import datetime
 
+import sys
+from pathlib import Path as _Path
+
+if __package__ in (None, ""):
+    _project_root = str(_Path(__file__).resolve().parent.parent)
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
 import src.config.config as config
 from src import __version__
 from src.chat.monitor import ChatLogMonitor
 from src.config.ui_theme import UI_ATTRS, UI_TEXT, UI_COLORS, apply_theme, configure_menu_theme
-from src.data_acquisition import main as run_data_acquisition
 from src.data_index import fetch_rows, get_db_path, index_data_dir, list_indexed_files
 from src.itemizer import get_filter_values as itemizer_get_filter_values
 from src.itemizer import index_item_reports, search_item_totals, search_items
 from src.locate_PG import initialize_pg_base
-from src.maptools import MapToolsBrowser
 from src.utils.spellcheck import EntrySpellcheckBinder
 from src.updater import perform_auto_update
 import sys
@@ -62,12 +68,46 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/jgcampbell300/PGLOK/releases/
 GITHUB_TAGS_API = "https://api.github.com/repos/jgcampbell300/PGLOK/tags?per_page=1"
 
 
+class _DebugStreamTee:
+    """Mirror stdout/stderr into PGLOK's debug tab without breaking the console."""
+
+    def __init__(self, app, stream, label):
+        self.app = app
+        self.stream = stream
+        self.label = label
+        self._buffer = ""
+
+    def write(self, text):
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except Exception:
+            pass
+        if not text:
+            return
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                self.app._debug_log(line.rstrip(), source=self.label)
+
+    def flush(self):
+        if self._buffer.strip():
+            self.app._debug_log(self._buffer.rstrip(), source=self.label)
+            self._buffer = ""
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+
+
 class PGLOKApp:
     def __init__(self, root):
         self.root = root
         self._resize_after_id = None
         self._data_browser_resize_after_id = None
         self._itemizer_resize_after_id = None
+        self._clock_after_id = None
         self._window_state_ready = False
         self.settings_window = None
         self.data_browser_window = None
@@ -175,6 +215,8 @@ class PGLOKApp:
         # Add trace to update map when area changes
         self.current_area.trace_add("write", self._on_area_change)
         self.character_count_var = tk.StringVar(value="Characters Loaded: 0")
+        self.clock_var = tk.StringVar(value="")
+        self.game_clock_var = tk.StringVar(value="")
         self.path_vars = {label: tk.StringVar() for label in UI_TEXT["path_labels"]}
         self.status_var = tk.StringVar(value=UI_TEXT["status_ready"])
         self.global_search_var = tk.StringVar(value=str(self._get_ui_pref("global_search_query", "")))
@@ -202,6 +244,20 @@ class PGLOKApp:
         self.player_monitor = None
         self.player_position_var = tk.StringVar(value="")
         self._player_pos_after_id = None
+        self._debug_lock = threading.Lock()
+        self._debug_buffer = []
+        self._debug_flush_after_id = None
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+        self._stdout_tee = _DebugStreamTee(self, self._orig_stdout, "stdout")
+        self._stderr_tee = _DebugStreamTee(self, self._orig_stderr, "stderr")
+        sys.stdout = self._stdout_tee
+        sys.stderr = self._stderr_tee
+        try:
+            self.status_var.trace_add("write", lambda *_: self._debug_log(self.status_var.get(), source="status"))
+        except Exception:
+            pass
+        self._debug_log("PGLOK startup initialized")
 
         apply_theme(self.root)
         self.root.title(UI_ATTRS["window_title"])
@@ -213,6 +269,7 @@ class PGLOKApp:
 
         self._build_layout()
         self._build_menu_bar()
+        self.root.after(250, self._poll_debug_buffer)
         self._apply_startup_geometry()
         self.root.bind("<Configure>", self._on_window_configure)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -220,18 +277,18 @@ class PGLOKApp:
         self.refresh_config_view()
         self._restore_always_on_top_state()
         self.show_page("chat")
-        self._refresh_character_cache()
-        self._restore_open_windows()
-        # Ensure chat page is shown after window restoration
-        self.root.after(200, lambda: self.show_page("chat"))
-        self.root.after(150, self._raise_main_window_default)
-        self._check_for_upgrade_async()
-        if config.PG_BASE is None:
-            self.locate_pg()
-        
-        # Start player position monitoring
-        self._start_player_monitor()
-        
+        self._update_clock()
+
+        # Enable main-window persistence only after startup layout settles.
+        self.root.after(1000, self._enable_main_window_state_persistence)
+
+        # Defer heavier startup tasks so the window appears faster.
+        self.root.after(250, self._refresh_character_cache)
+        self.root.after(750, self._start_deferred_startup_tasks)
+
+        # Restore any windows that were open when the app last closed.
+        self.root.after(1000, self._restore_open_windows)
+
         # Auto-start chat monitor if enabled
         if self.chat_auto_start_var.get():
             self.root.after(500, self._try_start_chat_monitor)
@@ -321,10 +378,14 @@ class PGLOKApp:
         # Update center status with character info
         self._update_center_status()
         
-        # Right status - character count
+        # Right status - character count and clocks
         right_status = ttk.Frame(status_row, style="App.Panel.TFrame")
         right_status.grid(row=0, column=2, sticky="e")
         ttk.Label(right_status, textvariable=self.character_count_var, style="App.Status.TLabel").pack(side="left")
+        ttk.Label(right_status, text="   ", style="App.Status.TLabel").pack(side="left")
+        ttk.Label(right_status, textvariable=self.clock_var, style="App.Status.TLabel").pack(side="left")
+        ttk.Label(right_status, text="   ", style="App.Status.TLabel").pack(side="left")
+        ttk.Label(right_status, textvariable=self.game_clock_var, style="App.Status.TLabel").pack(side="left")
         
         # Progress bar (hidden by default, shown below status when needed)
         self.progress_var = tk.DoubleVar()
@@ -368,7 +429,95 @@ class PGLOKApp:
                 self.set_center_status(f"👤 {char}  📍 {area}")
         else:
             self.set_center_status("")
+
+    def _get_estimated_game_time(self, now=None):
+        """Estimate in-game time from real time using a 12x speed ratio.
+
+        PGLOK currently does not have a trusted in-game clock source in logs,
+        so this provides a readable approximation based on the 1 hour game =
+        5 minutes real rule.
+        """
+        current = now or datetime.now()
+        real_seconds = (current.hour * 3600) + (current.minute * 60) + current.second
+        game_seconds = (real_seconds * 12) % 86400
+        hours_24 = game_seconds // 3600
+        minutes = (game_seconds % 3600) // 60
+        am_pm = "AM" if hours_24 < 12 else "PM"
+        hours_12 = hours_24 % 12
+        if hours_12 == 0:
+            hours_12 = 12
+        return f"🎮 Est. Game {hours_12}:{minutes:02d} {am_pm}"
+
+    def _update_clock(self):
+        """Update the visible real-world clock and estimated game clock."""
+        now = datetime.now()
+        try:
+            self.clock_var.set(now.strftime("🕒 %I:%M:%S %p").lstrip("0"))
+            self.game_clock_var.set(self._get_estimated_game_time(now))
+        except Exception:
+            pass
+        try:
+            self._clock_after_id = self.root.after(1000, self._update_clock)
+        except Exception:
+            self._clock_after_id = None
+
+    def _flush_debug_buffer(self):
+        if not getattr(self, "_debug_buffer", None):
+            return
+        with self._debug_lock:
+            pending = self._debug_buffer[:]
+            self._debug_buffer.clear()
+            self._debug_flush_after_id = None
+        for message, source in pending:
+            self._append_chat_line("Debug", f"[{source}] {message}", notebook=self.chat_notebook, tab_text_dict=self.chat_tab_text)
+
+    def _schedule_debug_flush(self):
+        if threading.current_thread() is not threading.main_thread():
+            return
+        if self._debug_flush_after_id is not None:
+            return
+        try:
+            self._debug_flush_after_id = self.root.after(250, self._poll_debug_buffer)
+        except Exception:
+            self._debug_flush_after_id = None
+
+    def _poll_debug_buffer(self):
+        self._debug_flush_after_id = None
+        self._flush_debug_buffer()
+        try:
+            self._debug_flush_after_id = self.root.after(250, self._poll_debug_buffer)
+        except tk.TclError:
+            self._debug_flush_after_id = None
+
+    def _debug_log(self, message, source="debug"):
+        text = str(message).strip()
+        if not text:
+            return
+        if threading.current_thread() is not threading.main_thread() or self.chat_notebook is None:
+            with self._debug_lock:
+                self._debug_buffer.append((text, source))
+            self._schedule_debug_flush()
+            return
+        self._append_chat_line("Debug", f"[{source}] {text}", notebook=self.chat_notebook, tab_text_dict=self.chat_tab_text)
     
+    def _start_deferred_startup_tasks(self):
+        """Run heavier startup tasks after the UI is visible."""
+        try:
+            if config.PG_BASE is None:
+                self.locate_pg()
+        except Exception as exc:
+            print(f"Deferred locate failed: {exc}")
+
+        try:
+            self._check_for_upgrade_async()
+        except Exception as exc:
+            print(f"Deferred update check failed: {exc}")
+
+        try:
+            self._start_player_monitor()
+        except Exception as exc:
+            print(f"Deferred player monitor failed: {exc}")
+
     def _start_player_monitor(self):
         """Initialize and start the player position monitor."""
         try:
@@ -498,161 +647,199 @@ class PGLOKApp:
 
     def _check_for_updates_manual(self):
         """Manual update check with progress dialog."""
-        from tkinter import messagebox
-        import threading
-        
-        # Create progress dialog
+        event_queue = queue.Queue()
+
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Checking for Updates")
         progress_window.geometry("500x300")
         progress_window.resizable(False, False)
-        progress_window.transient(self.root)
-        progress_window.grab_set()
-        
-        # Center the dialog
+
         progress_window.update_idletasks()
-        x = (progress_window.winfo_screenwidth() // 2) - (500 // 2)
-        y = (progress_window.winfo_screenheight() // 2) - (300 // 2)
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width() or self.root.winfo_reqwidth()
+        root_h = self.root.winfo_height() or self.root.winfo_reqheight()
+        x = root_x + max(0, (root_w - 500) // 2)
+        y = root_y + max(0, (root_h - 300) // 2)
         progress_window.geometry(f"500x300+{x}+{y}")
-        
-        # Apply theme
+
         main_frame = ttk.Frame(progress_window, style="App.Card.TFrame", padding=20)
         main_frame.pack(fill="both", expand=True)
-        
-        # Title
-        title_label = ttk.Label(main_frame, text="PGLOK Update", style="App.Title.TLabel")
-        title_label.pack(pady=(0, 15))
-        
-        # Status text
+
+        ttk.Label(main_frame, text="PGLOK Update", style="App.Title.TLabel").pack(pady=(0, 15))
+
         status_var = tk.StringVar(value="Checking for updates...")
-        status_label = ttk.Label(main_frame, textvariable=status_var, style="App.Status.TLabel")
-        status_label.pack(pady=10, anchor="w")
-        
-        # Progress bar
+        ttk.Label(main_frame, textvariable=status_var, style="App.Status.TLabel").pack(pady=10, anchor="w")
+
         progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(main_frame, variable=progress_var, mode="indeterminate", style="App.Horizontal.TProgressbar")
+        progress_bar = ttk.Progressbar(
+            main_frame,
+            variable=progress_var,
+            mode="indeterminate",
+            style="App.Horizontal.TProgressbar",
+        )
         progress_bar.pack(fill="x", pady=10)
         progress_bar.start(10)
-        
-        # Details text
-        details_text = tk.Text(main_frame, height=8, wrap="word", bg=UI_COLORS["entry_bg"], fg=UI_COLORS["text"], 
-                              borderwidth=1, relief="solid", highlightthickness=1,
-                              highlightbackground=UI_COLORS["entry_border"], highlightcolor=UI_COLORS["accent"])
-        details_scroll = ttk.Scrollbar(main_frame, orient="vertical", command=details_text.yview, style="App.Vertical.TScrollbar")
-        details_text.configure(yscrollcommand=details_scroll.set)
-        
+
         details_frame = ttk.Frame(main_frame)
         details_frame.pack(fill="both", expand=True, pady=10)
+
+        details_text = tk.Text(
+            details_frame,
+            height=8,
+            wrap="word",
+            bg=UI_COLORS["entry_bg"],
+            fg=UI_COLORS["text"],
+            borderwidth=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=UI_COLORS["entry_border"],
+            highlightcolor=UI_COLORS["accent"],
+        )
+        details_scroll = ttk.Scrollbar(details_frame, orient="vertical", command=details_text.yview, style="App.Vertical.TScrollbar")
+        details_text.configure(yscrollcommand=details_scroll.set)
         details_text.pack(side="left", fill="both", expand=True)
         details_scroll.pack(side="right", fill="y")
-        
-        # Close button (initially disabled)
-        close_var = tk.BooleanVar(value=False)
-        close_button = ttk.Button(main_frame, text="Close", command=progress_window.destroy, state="disabled", style="App.Primary.TButton")
+
+        close_button = ttk.Button(main_frame, text="Close", command=progress_window.destroy, state="normal", style="App.Primary.TButton")
         close_button.pack(pady=(10, 0))
-        
-        def update_status(message):
-            """Update status message and details."""
-            status_var.set(message)
-            details_text.insert(tk.END, f"[{self._get_timestamp()}] {message}\n")
-            details_text.see(tk.END)
-            progress_window.update_idletasks()
-        
-        def update_progress(value):
-            """Update progress bar."""
-            progress_var.set(value)
-            progress_window.update_idletasks()
-        
-        def enable_close():
-            """Enable close button and stop progress."""
-            progress_bar.stop()
-            close_button.configure(state="normal")
-            close_var.set(True)
-        
-        def worker():
-            """Update worker thread."""
+
+        def enqueue(kind, payload=None):
+            event_queue.put((kind, payload))
+
+        def poll_events():
+            if not progress_window.winfo_exists():
+                return
+
             try:
-                update_status("Checking for updates...")
-                update_progress(10)
-                
-                from src.updater import fetch_latest_repo_version, parse_version_key
-                
-                latest_version, assets = fetch_latest_repo_version()
-                update_progress(30)
-                
-                if not latest_version:
-                    update_status("Unable to check for updates")
-                    details_text.insert(tk.END, "\nCould not connect to GitHub to check for updates.\n")
-                    details_text.insert(tk.END, "Please check your internet connection and try again.\n")
-                    enable_close()
+                while True:
+                    kind, payload = event_queue.get_nowait()
+                    if kind == "status":
+                        text = str(payload)
+                        status_var.set(text)
+                        details_text.insert(tk.END, f"[{self._get_timestamp()}] {text}\n")
+                        details_text.see(tk.END)
+                    elif kind == "details":
+                        details_text.insert(tk.END, str(payload))
+                        details_text.see(tk.END)
+                    elif kind == "progress":
+                        progress_var.set(float(payload))
+                    elif kind == "enable_close":
+                        progress_bar.stop()
+                        close_button.configure(state="normal")
+                    elif kind == "restart":
+                        delay = int(payload or 0)
+
+                        def restart_after_delay():
+                            try:
+                                progress_window.destroy()
+                            except tk.TclError:
+                                pass
+                            self._restart_application()
+
+                        progress_window.after(delay, restart_after_delay)
+                    elif kind == "set_status":
+                        status_var.set(str(payload))
+                    elif kind == "error":
+                        progress_bar.stop()
+                        close_button.configure(state="normal")
+                        text = str(payload)
+                        status_var.set(f"Update check failed: {text}")
+                        details_text.insert(tk.END, f"\n❌ Error: {text}\n")
+                        details_text.insert(tk.END, "Please try again or check your internet connection.\n")
+                        details_text.see(tk.END)
+            except queue.Empty:
+                pass
+            except tk.TclError:
+                return
+
+            if progress_window.winfo_exists():
+                try:
+                    progress_window.after(100, poll_events)
+                except tk.TclError:
                     return
-                
+
+        def worker():
+            try:
+                enqueue("status", "Checking for updates...")
+                enqueue("progress", 10)
+
+                from src.updater import fetch_latest_repo_version, parse_version_key
+
+                latest_version, assets = fetch_latest_repo_version()
+                enqueue("progress", 30)
+
+                if not latest_version:
+                    enqueue("status", "Unable to check for updates")
+                    enqueue("details", "\nCould not connect to GitHub to check for updates.\n")
+                    enqueue("details", "Please check your internet connection and try again.\n")
+                    enqueue("enable_close")
+                    return
+
                 current_key = parse_version_key(__version__)
                 latest_key = parse_version_key(latest_version)
-                
-                update_progress(50)
-                update_status(f"Current version: {__version__}")
-                update_status(f"Latest version: {latest_version}")
-                
+
+                enqueue("progress", 50)
+                enqueue("status", f"Current version: {__version__}")
+                enqueue("status", f"Latest version: {latest_version}")
+
                 if current_key is None or latest_key is None or latest_key <= current_key:
-                    update_status("PGLOK is up to date!")
-                    details_text.insert(tk.END, f"\nYou are running the latest version ({__version__}).\n")
-                    update_progress(100)
-                    enable_close()
+                    enqueue("status", "PGLOK is up to date!")
+                    enqueue("details", f"\nYou are running the latest version ({__version__}).\n")
+                    enqueue("status", "Refreshing CDN data files...")
+                    try:
+                        from src.data_acquisition import main as run_data_acquisition
+                        run_data_acquisition()
+                        enqueue("details", "\n✅ CDN data refresh completed.\n")
+                    except Exception as data_exc:
+                        enqueue("details", f"\n⚠ CDN data refresh failed: {data_exc}\n")
+                    enqueue("details", "\nYou can continue using PGLOK while this window stays open, or close it now.\n")
+                    enqueue("progress", 100)
+                    enqueue("enable_close")
                     return
-                
-                update_status(f"Update available: {__version__} → {latest_version}")
-                update_progress(70)
-                
-                # Count assets
+
+                enqueue("status", f"Update available: {__version__} → {latest_version}")
+                enqueue("progress", 70)
+
                 if assets:
-                    details_text.insert(tk.END, f"\nAvailable release assets:\n")
+                    enqueue("details", "\nAvailable release assets:\n")
                     for i, asset in enumerate(assets, 1):
-                        size_mb = asset.get('size', 0) / (1024*1024)
-                        details_text.insert(tk.END, f"  {i}. {asset['name']} ({size_mb:.1f}MB)\n")
-                
-                update_status("Downloading update...")
-                update_progress(80)
-                
+                        size_mb = asset.get("size", 0) / (1024 * 1024)
+                        enqueue("details", f"  {i}. {asset['name']} ({size_mb:.1f}MB)\n")
+
+                enqueue("status", "Downloading update...")
+                enqueue("progress", 80)
+
                 from src.updater import perform_auto_update
                 update_success = perform_auto_update(__version__)
-                
-                update_progress(90)
-                
+
+                enqueue("progress", 90)
+
                 if update_success:
-                    update_status("Update completed successfully!")
-                    details_text.insert(tk.END, "\n✅ Update has been installed successfully.\n")
-                    details_text.insert(tk.END, "The application will restart to apply the update.\n")
-                    update_progress(100)
-                    enable_close()
-                    
-                    def restart_after_delay():
-                        progress_window.destroy()
-                        self._restart_application()
-                    
-                    progress_window.after(3000, restart_after_delay)
+                    enqueue("status", "Update completed successfully!")
+                    enqueue("details", "\n✅ Update has been installed successfully.\n")
+                    enqueue("details", "The application will restart to apply the update.\n")
+                    enqueue("progress", 100)
+                    enqueue("enable_close")
+                    enqueue("restart", 3000)
                 else:
-                    update_status("Update failed")
-                    details_text.insert(tk.END, "\n❌ Automatic update failed.\n")
-                    details_text.insert(tk.END, "You can download the update manually from:\n")
-                    details_text.insert(tk.END, "https://github.com/jgcampbell300/PGLOK/releases/latest\n")
-                    enable_close()
-                
+                    enqueue("status", "Update failed")
+                    enqueue("details", "\n❌ Automatic update failed.\n")
+                    enqueue("details", "You can download the update manually from:\n")
+                    enqueue("details", "https://github.com/jgcampbell300/PGLOK/releases/latest\n")
+                    enqueue("enable_close")
             except Exception as exc:
-                update_status(f"Update check failed: {exc}")
-                details_text.insert(tk.END, f"\n❌ Error: {exc}\n")
-                details_text.insert(tk.END, "Please try again or check your internet connection.\n")
-                enable_close()
-        
-        # Start update check in background thread
-        threading.Thread(target=worker, daemon=True).start()
-        
-        # Handle window close
+                enqueue("error", exc)
+
         def on_close():
-            if close_var.get():
+            try:
                 progress_window.destroy()
-        
+            except tk.TclError:
+                pass
+
         progress_window.protocol("WM_DELETE_WINDOW", on_close)
+        poll_events()
+        threading.Thread(target=worker, daemon=True).start()
     
     def _get_timestamp(self):
         """Get current timestamp for log entries."""
@@ -680,68 +867,76 @@ class PGLOKApp:
 
     def _check_for_upgrade_async(self):
         """Check for updates and automatically install if available."""
+        event_queue = queue.Queue()
+
+        def poll_events():
+            if not self.root.winfo_exists():
+                return
+
+            try:
+                while True:
+                    kind, payload = event_queue.get_nowait()
+                    if kind == "success":
+                        messagebox.showinfo(
+                            "Update Complete",
+                            "PGLOK has been updated successfully!\n\nThe application will restart to apply the update.",
+                        )
+                        self.root.after(1000, self._restart_application)
+                    elif kind == "available":
+                        latest_version = str(payload)
+                        if self.alpha_button is not None:
+                            self.alpha_button.configure(
+                                text="Update Available!",
+                                command=lambda: webbrowser.open(RELEASES_URL),
+                            )
+                        self.status_var.set(f"Update available: {__version__} → {latest_version}")
+                    elif kind == "up_to_date":
+                        self.status_var.set("PGLOK is up to date")
+                    elif kind == "unable_to_check":
+                        self.status_var.set("Unable to check for updates")
+                    elif kind == "error":
+                        self.status_var.set(f"Update check failed: {payload}")
+                    elif kind == "done":
+                        return
+            except queue.Empty:
+                pass
+            except tk.TclError:
+                return
+
+            try:
+                self.root.after(100, poll_events)
+            except tk.TclError:
+                pass
+
         def worker():
             try:
-                # Perform automatic update
+                from src.updater import fetch_latest_repo_version, parse_version_key
+
+                latest_version, _ = fetch_latest_repo_version()
+                if not latest_version:
+                    event_queue.put(("unable_to_check", None))
+                    event_queue.put(("done", None))
+                    return
+
+                current_key = parse_version_key(__version__)
+                latest_key = parse_version_key(latest_version)
+
+                if current_key is None or latest_key is None or latest_key <= current_key:
+                    event_queue.put(("up_to_date", None))
+                    event_queue.put(("done", None))
+                    return
+
                 update_success = perform_auto_update(__version__)
-                
-                def apply_result():
-                    try:
-                        if update_success:
-                            # Show success message and restart
-                            messagebox.showinfo(
-                                "Update Complete", 
-                                f"PGLOK has been updated successfully!\n\nThe application will restart to apply the update."
-                            )
-                            self.root.after(1000, self._restart_application)
-                        else:
-                            # Check if update is available but auto-install failed
-                            from src.updater import fetch_latest_repo_version, parse_version_key
-                            
-                            latest_version, _ = fetch_latest_repo_version()
-                            if latest_version:
-                                current_key = parse_version_key(__version__)
-                                latest_key = parse_version_key(latest_version)
-                                
-                                if current_key and latest_key and latest_key > current_key:
-                                    def apply_upgrade_state():
-                                        if self.alpha_button is None:
-                                            return
-                                        self.alpha_button.configure(
-                                            text="Update Available!", 
-                                            command=lambda: webbrowser.open(RELEASES_URL)
-                                        )
-                                        self.status_var.set(f"Update available: {__version__} → {latest_version}")
-                                    
-                                    self.root.after(0, apply_upgrade_state)
-                                else:
-                                    self.status_var.set("PGLOK is up to date")
-                            else:
-                                self.status_var.set("Unable to check for updates")
-                    except RuntimeError:
-                        # Main thread is not in main loop (window closed)
-                        pass
-                    except Exception as e:
-                        print(f"Update check result error: {e}")
-
-                try:
-                    self.root.after(0, apply_result)
-                except RuntimeError:
-                    # Main thread is not in main loop (window closed)
-                    pass
-                
+                if update_success:
+                    event_queue.put(("success", None))
+                else:
+                    event_queue.put(("available", latest_version))
+                event_queue.put(("done", None))
             except Exception as exc:
-                def show_error():
-                    try:
-                        self.status_var.set(f"Update check failed: {exc}")
-                    except RuntimeError:
-                        pass
-                try:
-                    self.root.after(0, show_error)
-                except RuntimeError:
-                    # Main thread is not in main loop (window closed)
-                    pass
+                event_queue.put(("error", str(exc)))
+                event_queue.put(("done", None))
 
+        poll_events()
         threading.Thread(target=worker, daemon=True).start()
     
     def _restart_application(self):
@@ -765,118 +960,64 @@ class PGLOKApp:
     def _menu_not_implemented(self):
         self.status_var.set("Menu action not implemented yet.")
 
-    def _open_config_folder(self):
-        """Open the PGLOK config folder."""
+    def _open_folder_in_system(self, folder_path, success_label: str, error_label: str, create: bool = False):
+        """Open a folder in the operating system file browser."""
         try:
-            import subprocess
             import platform
-            system = platform.system()
-            folder_path = str(config.CONFIG_DIR)
-            
-            if system == "Windows":
-                subprocess.run(["explorer", folder_path])
-            elif system == "Darwin":  # macOS
-                subprocess.run(["open", folder_path])
-            else:  # Linux
-                subprocess.run(["xdg-open", folder_path])
-            
-            self.status_var.set(f"Opened config folder: {folder_path}")
-        except Exception as e:
-            self.status_var.set(f"Error opening config folder: {e}")
+            import subprocess
 
-    def _open_data_folder(self):
-        """Open the PGLOK data folder."""
-        try:
-            import subprocess
-            import platform
             system = platform.system()
-            folder_path = str(config.DATA_DIR)
-            
-            if system == "Windows":
-                subprocess.run(["explorer", folder_path])
-            elif system == "Darwin":  # macOS
-                subprocess.run(["open", folder_path])
-            else:  # Linux
-                subprocess.run(["xdg-open", folder_path])
-            
-            self.status_var.set(f"Opened data folder: {folder_path}")
-        except Exception as e:
-            self.status_var.set(f"Error opening data folder: {e}")
-
-    def _open_maps_folder(self):
-        """Open the PGLOK maps folder."""
-        try:
-            import subprocess
-            import platform
-            system = platform.system()
-            folder_path = config.DATA_DIR / "maps"  # Keep as Path object
-            
-            # Create maps folder if it doesn't exist
-            if not folder_path.exists():
+            if create and not folder_path.exists():
                 folder_path.mkdir(parents=True, exist_ok=True)
-            
-            folder_path_str = str(folder_path)  # Convert to string only for subprocess
-            
+
+            folder_path_str = str(folder_path)
+
             if system == "Windows":
                 subprocess.run(["explorer", folder_path_str])
             elif system == "Darwin":  # macOS
                 subprocess.run(["open", folder_path_str])
             else:  # Linux
                 subprocess.run(["xdg-open", folder_path_str])
-            
-            self.status_var.set(f"Opened maps folder: {folder_path_str}")
+
+            self.status_var.set(f"Opened {success_label}: {folder_path_str}")
         except Exception as e:
-            self.status_var.set(f"Error opening maps folder: {e}")
+            self.status_var.set(f"Error opening {error_label}: {e}")
+
+    def _open_config_folder(self):
+        """Open the PGLOK config folder."""
+        self._open_folder_in_system(config.CONFIG_DIR, "config folder", "config folder")
+
+    def _open_data_folder(self):
+        """Open the PGLOK data folder."""
+        self._open_folder_in_system(config.DATA_DIR, "data folder", "data folder")
+
+    def _open_maps_folder(self):
+        """Open the PGLOK maps folder."""
+        self._open_folder_in_system(config.DATA_DIR / "maps", "maps folder", "maps folder", create=True)
 
     def _open_chat_logs_folder(self):
         """Open the PGLOK chat logs folder."""
         try:
-            import subprocess
-            import platform
-            system = platform.system()
-            
             if config.PG_BASE is None:
                 initialize_pg_base(force=True)
-            
+
             if config.PG_BASE is None:
                 self.status_var.set("Project Gorgon not located - cannot open chat logs")
                 return
-            
-            folder_path = str(config.CHAT_DIR)
-            
-            if system == "Windows":
-                subprocess.run(["explorer", folder_path])
-            elif system == "Darwin":  # macOS
-                subprocess.run(["open", folder_path])
-            else:  # Linux
-                subprocess.run(["xdg-open", folder_path])
-            
-            self.status_var.set(f"Opened chat logs folder: {folder_path}")
+
+            self._open_folder_in_system(config.CHAT_DIR, "chat logs folder", "chat logs folder")
         except Exception as e:
             self.status_var.set(f"Error opening chat logs folder: {e}")
 
     def _open_reports_folder(self):
         """Open the PGLOK reports folder."""
         try:
-            import subprocess
-            import platform
-            system = platform.system()
-            
             reports_dir = self._get_reports_dir()
             if reports_dir is None:
                 self.status_var.set("Project Gorgon not located - cannot open reports")
                 return
-            
-            folder_path = str(reports_dir)
-            
-            if system == "Windows":
-                subprocess.run(["explorer", folder_path])
-            elif system == "Darwin":  # macOS
-                subprocess.run(["open", folder_path])
-            else:  # Linux
-                subprocess.run(["xdg-open", folder_path])
-            
-            self.status_var.set(f"Opened reports folder: {folder_path}")
+
+            self._open_folder_in_system(reports_dir, "reports folder", "reports folder")
         except Exception as e:
             self.status_var.set(f"Error opening reports folder: {e}")
 
@@ -1085,7 +1226,7 @@ class PGLOKApp:
         try:
             from src.config.window_state import setup_window
             # Provide reasonable minimums — callers may override
-            setup_window(win, name, min_w=760, min_h=480, on_close=on_close)
+            setup_window(win, name, min_w=760, min_h=480, on_close=on_close, parent_window=self.root)
         except Exception:
             # Fallback: apply theme directly and set protocol
             try:
@@ -1141,6 +1282,8 @@ class PGLOKApp:
             self.map_tools_window.lift()
             self.map_tools_window.focus_force()
             return
+
+        from src.maptools.browser import MapToolsBrowser
 
         self.map_tools_window = self.create_themed_toplevel("map_tools", "Maps", on_close=self._on_close_map_tools_window)
 
@@ -2000,6 +2143,8 @@ class PGLOKApp:
         self._ensure_chat_tab("Other")
         self._ensure_chat_tab("Info")
         self._ensure_chat_tab("Player Log")
+        self._ensure_chat_tab("Debug")
+        self._flush_debug_buffer()
 
     def _on_home_pane_resize(self, _event=None):
         self._save_home_split()
@@ -2680,10 +2825,8 @@ class PGLOKApp:
             self.settings_window.focus_force()
             return
 
-        self.settings_window = tk.Toplevel(self.root)
-        self.settings_window.title(f"{UI_ATTRS['window_title']} - Settings")
+        self.settings_window = self.create_themed_toplevel("settings", "Settings", on_close=self._on_close_settings_window)
         self.settings_window.configure(bg=self.root.cget("bg"))
-        self.settings_window.protocol("WM_DELETE_WINDOW", self._on_close_settings_window)
 
         container = ttk.Frame(
             self.settings_window,
@@ -4406,23 +4549,80 @@ class PGLOKApp:
             if not self.chat_polling:
                 self._start_chat_monitor()
 
+    def _get_primary_monitor_geometry(self):
+        try:
+            result = subprocess.run(["xrandr", "--listmonitors"], capture_output=True, text=True, check=False)
+            lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+            for line in lines:
+                if "*" not in line:
+                    continue
+                match = re.search(r"(?P<w>\d+)/\d+x(?P<h>\d+)/\d+\+(?P<x>-?\d+)\+(?P<y>-?\d+)", line)
+                if match:
+                    return {
+                        "width": int(match.group("w")),
+                        "height": int(match.group("h")),
+                        "x": int(match.group("x")),
+                        "y": int(match.group("y")),
+                    }
+        except Exception:
+            pass
+        return None
+
     def _apply_startup_geometry(self):
         self.root.update_idletasks()
         req_w = max(int(self.root.winfo_reqwidth()), MAIN_MIN_WIDTH)
         req_h = max(int(self.root.winfo_reqheight()), MAIN_MIN_HEIGHT)
-        states = self._load_all_window_states()
-        if "main" in states:
-            # Use fixed minimums so the window remains user-resizable.
-            self._apply_saved_window_geometry("main", self.root, MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+
+        saved_geometry = None
+        try:
+            states = self._load_all_window_states()
+            state = states.get("main")
+            if isinstance(state, dict):
+                if state.get("geometry"):
+                    saved_geometry = str(state["geometry"])
+                elif "width" in state and "height" in state:
+                    width = int(state["width"])
+                    height = int(state["height"])
+                    if "x" in state and "y" in state:
+                        saved_geometry = f"{width}x{height}+{int(state['x'])}+{int(state['y'])}"
+                    else:
+                        saved_geometry = f"{width}x{height}"
+        except Exception:
+            saved_geometry = None
+
+        if saved_geometry:
+            try:
+                self.root.geometry(saved_geometry)
+                self.root.minsize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+                self._window_state_ready = False
+                return
+            except tk.TclError:
+                saved_geometry = None
+
+        monitor = self._get_primary_monitor_geometry()
+        if monitor is not None:
+            width = min(req_w, monitor["width"])
+            height = min(req_h, monitor["height"])
+            x = monitor["x"] + max(0, (monitor["width"] - width) // 2)
+            y = monitor["y"] + max(0, (monitor["height"] - height) // 2)
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
         else:
-            screen_w = max(640, int(self.root.winfo_screenwidth()))
-            screen_h = max(480, int(self.root.winfo_screenheight()))
-            max_w = max(480, screen_w - 80)
-            max_h = max(320, screen_h - 100)
-            width = min(req_w, max_w)
-            height = min(req_h, max_h)
-            self.root.geometry(f"{width}x{height}")
-        self.root.minsize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+            self.root.minsize(MAIN_MIN_WIDTH, MAIN_MIN_HEIGHT)
+        self._window_state_ready = False
+
+    def _show_main_window(self):
+        return
+
+    def _enforce_main_window_geometry(self):
+        return
+
+    def _on_window_map(self, _event=None):
+        return
+
+    def _on_window_visibility(self, _event=None):
+        return
+
+    def _enable_main_window_state_persistence(self):
         self._window_state_ready = True
 
     def _load_all_window_states(self):
@@ -4499,11 +4699,7 @@ class PGLOKApp:
                 pass
 
     def _raise_main_window_default(self):
-        try:
-            self.root.lift()
-            self.root.focus_set()
-        except tk.TclError:
-            pass
+        return
 
     def _capture_window_geometry(self, window):
         match = GEOMETRY_RE.match(window.geometry())
@@ -4527,28 +4723,108 @@ class PGLOKApp:
         self._save_all_window_states(states)
 
     def _apply_saved_window_geometry(self, key, window, min_width, min_height):
-        screen_w = max(640, int(window.winfo_screenwidth()))
-        screen_h = max(480, int(window.winfo_screenheight()))
+        def _parse_geometry(geometry):
+            try:
+                size_part, x_part, y_part = geometry.split("+", 2)
+                width_str, height_str = size_part.split("x", 1)
+                return int(width_str), int(height_str), int(x_part), int(y_part)
+            except Exception:
+                return None
+
+        def _get_owner_geometry():
+            owner = getattr(window, "master", None)
+            if owner is None:
+                return None
+            try:
+                if not owner.winfo_exists():
+                    return None
+                owner.update_idletasks()
+                parsed = _parse_geometry(owner.winfo_geometry())
+                if parsed is not None:
+                    return parsed
+                return (
+                    int(owner.winfo_rootx()),
+                    int(owner.winfo_rooty()),
+                    int(owner.winfo_width() or owner.winfo_reqwidth()),
+                    int(owner.winfo_height() or owner.winfo_reqheight()),
+                )
+            except Exception:
+                return None
+
+        def _get_screen_bounds():
+            try:
+                screen_x = int(window.winfo_vrootx()) if hasattr(window, "winfo_vrootx") else 0
+            except Exception:
+                screen_x = 0
+            try:
+                screen_y = int(window.winfo_vrooty()) if hasattr(window, "winfo_vrooty") else 0
+            except Exception:
+                screen_y = 0
+            screen_w = max(640, int(window.winfo_screenwidth()))
+            screen_h = max(480, int(window.winfo_screenheight()))
+            return screen_x, screen_y, screen_w, screen_h
+
+        def _clamp_geometry(width, height, x, y, bounds):
+            screen_x, screen_y, screen_w, screen_h = bounds
+            width = min(width, screen_w)
+            height = min(height, screen_h)
+            x = max(screen_x, min(int(x), screen_x + max(0, screen_w - width)))
+            y = max(screen_y, min(int(y), screen_y + max(0, screen_h - height)))
+            return width, height, x, y
+
+        screen_x, screen_y, screen_w, screen_h = _get_screen_bounds()
         max_w = max(480, screen_w - 80)
         max_h = max(320, screen_h - 100)
         base_w = max(320, min(int(min_width), max_w))
         base_h = max(240, min(int(min_height), max_h))
 
+        owner_geom = _get_owner_geometry()
+        if owner_geom is not None:
+            owner_x, owner_y, owner_w, owner_h = owner_geom
+
         states = self._load_all_window_states()
         state = states.get(key)
-        if state and "width" in state and "height" in state:
-            width = max(base_w, int(state["width"]))
-            height = max(base_h, int(state["height"]))
-            width = min(width, max_w)
-            height = min(height, max_h)
-            if "x" in state and "y" in state:
-                max_x = max(0, screen_w - width)
-                max_y = max(0, screen_h - height)
-                x = min(max(int(state["x"]), 0), max_x)
-                y = min(max(int(state["y"]), 0), max_y)
+        saved_geometry = None
+        if isinstance(state, dict):
+            if state.get("geometry"):
+                saved_geometry = str(state["geometry"])
+            elif "width" in state and "height" in state:
+                try:
+                    width = int(state["width"])
+                    height = int(state["height"])
+                    if "x" in state and "y" in state:
+                        saved_geometry = f"{width}x{height}+{int(state['x'])}+{int(state['y'])}"
+                    else:
+                        saved_geometry = f"{width}x{height}"
+                except (TypeError, ValueError):
+                    saved_geometry = None
+
+        if saved_geometry:
+            parsed = _parse_geometry(saved_geometry)
+            if parsed is not None:
+                width, height, x, y = parsed
+                width = max(base_w, width)
+                height = max(base_h, height)
+                width, height, x, y = _clamp_geometry(width, height, x, y, (screen_x, screen_y, screen_w, screen_h))
                 window.geometry(f"{width}x{height}+{x}+{y}")
             else:
-                window.geometry(f"{width}x{height}")
+                try:
+                    window.geometry(saved_geometry)
+                except tk.TclError:
+                    if owner_geom is not None:
+                        x = owner_x + ((owner_w - base_w) // 2)
+                        y = owner_y + ((owner_h - base_h) // 2)
+                        window.geometry(f"{base_w}x{base_h}+{x}+{y}")
+                    else:
+                        window.geometry(f"{base_w}x{base_h}")
+            return
+
+        if owner_geom is not None:
+            x = owner_x + ((owner_w - base_w) // 2)
+            y = owner_y + ((owner_h - base_h) // 2)
+            x = max(screen_x, min(x, screen_x + max(0, screen_w - base_w)))
+            y = max(screen_y, min(y, screen_y + max(0, screen_h - base_h)))
+            window.geometry(f"{base_w}x{base_h}+{x}+{y}")
         else:
             window.geometry(f"{base_w}x{base_h}")
 
@@ -4603,6 +4879,12 @@ class PGLOKApp:
             except tk.TclError:
                 pass
             self._itemizer_search_after_id = None
+        if self._clock_after_id is not None:
+            try:
+                self.root.after_cancel(self._clock_after_id)
+            except tk.TclError:
+                pass
+            self._clock_after_id = None
         self._save_main_window_state()
         self._set_window_open_state("settings", self.settings_window is not None and self.settings_window.winfo_exists())
         self._set_window_open_state(
@@ -4652,6 +4934,11 @@ class PGLOKApp:
                     pass
             self.timer_window = None
         self._stop_chat_monitor()
+        try:
+            sys.stdout = self._orig_stdout
+            sys.stderr = self._orig_stderr
+        except Exception:
+            pass
         self.root.destroy()
 
     def refresh_config_view(self):
@@ -4669,17 +4956,49 @@ class PGLOKApp:
         self.status_var.set(message)
 
     def run_in_background(self, task, busy_message, done_message, ui_after=None):
+        """Run a background task without calling Tk from the worker thread."""
+        event_queue = queue.Queue()
+        done_state = {"done": False}
+
+        def poll_events():
+            if done_state["done"]:
+                return
+
+            try:
+                while True:
+                    kind, payload = event_queue.get_nowait()
+                    if kind == "busy":
+                        self.set_busy(True, busy_message)
+                    elif kind == "done":
+                        self.set_busy(False, done_message)
+                        self.refresh_config_view()
+                        if ui_after is not None:
+                            ui_after()
+                        done_state["done"] = True
+                    elif kind == "error":
+                        self.set_busy(False, f"{UI_TEXT['status_error_prefix']}{payload}")
+                        done_state["done"] = True
+            except queue.Empty:
+                pass
+            except tk.TclError:
+                done_state["done"] = True
+                return
+
+            if not done_state["done"]:
+                try:
+                    self.root.after(100, poll_events)
+                except tk.TclError:
+                    done_state["done"] = True
+
         def runner():
             try:
-                self.root.after(0, lambda: self.set_busy(True, busy_message))
+                event_queue.put(("busy", None))
                 task()
-                self.root.after(0, lambda: self.set_busy(False, done_message))
-                self.root.after(0, self.refresh_config_view)
-                if ui_after is not None:
-                    self.root.after(0, ui_after)
+                event_queue.put(("done", None))
             except Exception as exc:
-                self.root.after(0, lambda: self.set_busy(False, f"{UI_TEXT['status_error_prefix']}{exc}"))
+                event_queue.put(("error", exc))
 
+        poll_events()
         threading.Thread(target=runner, daemon=True).start()
 
     def locate_pg(self):
@@ -4691,6 +5010,8 @@ class PGLOKApp:
         )
 
     def download_newer_files(self):
+        from src.data_acquisition import main as run_data_acquisition
+
         self.run_in_background(
             task=run_data_acquisition,
             busy_message=UI_TEXT["status_downloading"],
