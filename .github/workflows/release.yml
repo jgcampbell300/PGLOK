@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build-linux:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,44 +21,106 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install Linux build dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
 
       - name: Determine release version
         id: version
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Linux executable and packages
-        run: bash build_linux.sh && bash package_linux.sh
+      - name: Build Linux executable
+        run: python -m PyInstaller --clean --noconfirm scripts/pyinstaller/pglok.spec
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: PGLOK ${{ github.ref_name }}
-          draft: false
-          prerelease: false
+      - name: Package Linux release
+        run: bash package_linux.sh
 
       - name: Upload Linux release asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/PGLOK-Linux-v${{ steps.version.outputs.version }}.tar.gz
-          asset_name: PGLOK-Linux-v${{ steps.version.outputs.version }}.tar.gz
-          asset_content_type: application/gzip
+          name: linux-assets
+          path: |
+            dist/PGLOK-Linux-v${{ steps.version.outputs.version }}.tar.gz
+            dist/PGLOK-v${{ steps.version.outputs.version }}-source.tar.gz
 
-      - name: Upload source release asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/PGLOK-v${{ steps.version.outputs.version }}-source.tar.gz
-          asset_name: PGLOK-v${{ steps.version.outputs.version }}-source.tar.gz
-          asset_content_type: application/gzip
+          python-version: "3.12"
+
+      - name: Install Windows build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows executable
+        run: python -m PyInstaller --clean --noconfirm scripts/pyinstaller/pglok.spec
+
+      - name: Package Windows release (ZIP)
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP_NAME="PGLOK-Windows-v${VERSION}.zip"
+          mkdir -p "PGLOK-Windows-v${VERSION}"
+          cp dist/PGLOK.exe "PGLOK-Windows-v${VERSION}/"
+          cp icon.ico "PGLOK-Windows-v${VERSION}/"
+          cp icon.png "PGLOK-Windows-v${VERSION}/"
+          cp README.md "PGLOK-Windows-v${VERSION}/"
+          cp LICENSE "PGLOK-Windows-v${VERSION}/"
+          cp install_windows.bat "PGLOK-Windows-v${VERSION}/"
+          7z a "dist/${ZIP_NAME}" "PGLOK-Windows-v${VERSION}/"
+          rm -rf "PGLOK-Windows-v${VERSION}"
+
+      - name: Upload Windows release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: dist/PGLOK-Windows-v${{ steps.version.outputs.version }}.zip
+
+  create-release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: _assets
+
+      - name: List downloaded assets
+        run: ls -laR _assets/
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            _assets/linux-assets/*.tar.gz \
+            _assets/linux-assets/*source*.tar.gz \
+            _assets/windows-assets/*.zip \
+            --title "PGLOK ${{ github.ref_name }}" \
+            --notes-file RELEASE_NOTES.md \
+            --draft=false \
+            --prerelease=false
