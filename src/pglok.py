@@ -68,6 +68,19 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/jgcampbell300/PGLOK/releases/
 GITHUB_TAGS_API = "https://api.github.com/repos/jgcampbell300/PGLOK/tags?per_page=1"
 
 
+def _resolve_icon_path() -> str:
+    """Return the path to the app icon (.ico on Windows, .png/.xbm on Linux/macOS)."""
+    icon_name = "icon.ico"
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        icon_dir = Path(sys._MEIPASS)
+    else:
+        icon_dir = Path(__file__).resolve().parent.parent
+    icon_path = icon_dir / icon_name
+    if icon_path.exists():
+        return str(icon_path)
+    return ""
+
+
 class _DebugStreamTee:
     """Mirror stdout/stderr into PGLOK's debug tab without breaking the console."""
 
@@ -5418,6 +5431,19 @@ def main():
     crash_reporter.install()
 
     root = tk.Tk()
+    root.withdraw()
+    # Set taskbar/window icon (critical on Windows for taskbar icon to show)
+    try:
+        icon_path = _resolve_icon_path()
+        if icon_path and icon_path.endswith(".ico"):
+            root.iconbitmap(default=icon_path)
+        elif icon_path:
+            from PIL import Image, ImageTk
+            img = Image.open(icon_path)
+            root.tk.call("wm", "iconphoto", root._w, ImageTk.PhotoImage(img))
+    except Exception:
+        pass
+    root.deiconify()
     app = PGLOKApp(root)
     root.app = app
     root.mainloop()
