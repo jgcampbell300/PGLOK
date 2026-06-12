@@ -3,11 +3,13 @@ Data Listener for PGLOK Communications
 Handles receiving and processing game data from MQTT topics.
 """
 
-from typing import Dict, Any, Callable, Optional
+from typing import TYPE_CHECKING, Dict, Any, Callable, Optional
 import time
 
 import src.config.mqtt_config as mqtt_config
-from .mqtt_client import MqttClient
+
+if TYPE_CHECKING:
+    from .mqtt_client import MqttClient
 
 
 class DataListener:

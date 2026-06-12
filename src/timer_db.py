@@ -43,6 +43,12 @@ class TimerDatabase:
                 )
             """)
             
+            active_timer_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(active_timers)").fetchall()
+            }
+            if "duration_seconds" not in active_timer_columns:
+                conn.execute("ALTER TABLE active_timers ADD COLUMN duration_seconds INTEGER")
+            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS timer_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,14 +97,14 @@ class TimerDatabase:
                 VALUES (?, ?, ?, ?, ?)
             """, (event_type, event_name, duration_seconds, description, category))
     
-    def start_timer(self, event_type: str, event_name: str, notes: str = "") -> int:
+    def start_timer(self, event_type: str, event_name: str, notes: str = "", duration_seconds: Optional[int] = None) -> int:
         """Start a new timer and return its ID."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
                 INSERT INTO active_timers 
-                (event_type, event_name, start_time, status, notes)
-                VALUES (?, ?, CURRENT_TIMESTAMP, 'active', ?)
-            """, (event_type, event_name, notes))
+                (event_type, event_name, start_time, duration_seconds, status, notes)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?, 'active', ?)
+            """, (event_type, event_name, duration_seconds, notes))
             return cursor.lastrowid
     
     def stop_timer(self, timer_id: int, completion_status: str = "completed") -> Optional[Dict]:
@@ -115,9 +121,9 @@ class TimerDatabase:
             if not timer_info:
                 return None
             
-            # Calculate duration
+            # Calculate duration using UTC to match SQLite CURRENT_TIMESTAMP
             start_time = datetime.fromisoformat(timer_info[2])
-            end_time = datetime.now()
+            end_time = datetime.utcnow()
             duration = int((end_time - start_time).total_seconds())
             
             # Move to history
@@ -141,7 +147,7 @@ class TimerDatabase:
         """Get all currently active timers."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT id, event_type, event_name, start_time, notes 
+                SELECT id, event_type, event_name, start_time, duration_seconds, notes 
                 FROM active_timers 
                 WHERE status = 'active'
                 ORDER BY start_time
@@ -150,15 +156,16 @@ class TimerDatabase:
             timers = []
             for row in cursor.fetchall():
                 start_time = datetime.fromisoformat(row[3])
-                current_duration = int((datetime.now() - start_time).total_seconds())
+                current_duration = int((datetime.utcnow() - start_time).total_seconds())
                 
                 timers.append({
                     'id': row[0],
                     'event_type': row[1],
                     'event_name': row[2],
                     'start_time': row[3],
+                    'duration_seconds': row[4],
                     'current_duration_seconds': current_duration,
-                    'notes': row[4]
+                    'notes': row[5]
                 })
         
         return timers
@@ -255,7 +262,7 @@ class TimerDatabase:
         """Get all currently active boss timers."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT id, event_type, event_name, start_time, notes 
+                SELECT id, event_type, event_name, start_time, duration_seconds, notes 
                 FROM active_timers 
                 WHERE status = 'active' AND event_type = 'boss'
                 ORDER BY start_time
@@ -264,15 +271,16 @@ class TimerDatabase:
             timers = []
             for row in cursor.fetchall():
                 start_time = datetime.fromisoformat(row[3])
-                current_duration = int((datetime.now() - start_time).total_seconds())
+                current_duration = int((datetime.utcnow() - start_time).total_seconds())
                 
                 timers.append({
                     'id': row[0],
                     'event_type': row[1],
                     'event_name': row[2],
                     'start_time': row[3],
+                    'duration_seconds': row[4],
                     'current_duration_seconds': current_duration,
-                    'notes': row[4]
+                    'notes': row[5]
                 })
         
         return timers
@@ -288,7 +296,10 @@ DEFAULT_TIMER_DURATIONS = {
     "planting:flax": {"duration": 360, "description": "Flax growing time"},
     
     # Retting timers
-    "retting:flax": {"duration": 600, "description": "Flax retting time"},
+    "retting:flax": {"duration": 600, "description": "Flax Retting"},
+    
+    # Fieldwork / farming route timers
+    "misc:egg_run": {"duration": 3600, "description": "Egg Run"},
     
     # Fletching timers (in seconds)
     "fletching:arrow": {"duration": 45, "description": "Basic arrow fletching"},

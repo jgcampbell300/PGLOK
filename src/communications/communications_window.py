@@ -15,9 +15,6 @@ import src.config.mqtt_config as mqtt_config
 from src.config import config
 from src.config.ui_theme import apply_theme, UI_COLORS
 from src.config.window_state import setup_window
-from .mqtt_client import MqttClient
-from .data_publisher import DataPublisher
-from .data_listener import DataListener
 
 
 class CommunicationsWindow:
@@ -42,7 +39,8 @@ class CommunicationsWindow:
             min_w=800,
             min_h=600,
             default_geometry="900x650",
-            on_close=self._on_close
+            on_close=self._on_close,
+            parent_window=parent,
         )
         self.window.title(f"PGLOK Communications - {character_name}")
         
@@ -316,6 +314,10 @@ class CommunicationsWindow:
     def _connect_mqtt_async(self):
         """Async MQTT connection worker."""
         try:
+            from .mqtt_client import MqttClient
+            from .data_publisher import DataPublisher
+            from .data_listener import DataListener
+
             self.mqtt_client = MqttClient(self.character_name)
             connected_ok = self.mqtt_client.connect()
 

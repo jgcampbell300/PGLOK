@@ -291,7 +291,13 @@ class DependencyChecker:
                 checker_window = tk.Toplevel(self.parent_app.root)
                 try:
                     from src.config.window_state import setup_window
-                    setup_window(checker_window, "dependency_checker", min_w=700, min_h=500)
+                    setup_window(
+                        checker_window,
+                        "dependency_checker",
+                        min_w=700,
+                        min_h=500,
+                        parent_window=self.parent_app.root,
+                    )
                 except Exception:
                     pass
 

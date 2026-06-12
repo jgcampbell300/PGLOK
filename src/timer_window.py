@@ -6,9 +6,12 @@ from typing import Dict, List, Optional
 import threading
 import time
 import json
+import re
 
+import src.config.config as config
 from src.timer_db import TimerDatabase, get_db_path, DEFAULT_TIMER_DURATIONS, DEFAULT_BOSS_DURATIONS
 from src.chat.monitor import ChatLogMonitor
+from src.player.monitor import PlayerLogMonitor
 from src.config.ui_theme import UI_ATTRS, UI_COLORS, apply_theme, configure_menu_theme
 
 # Timer window state file
@@ -45,6 +48,7 @@ class TimerWindow:
         # Initialize database and monitor
         self.timer_db = TimerDatabase(get_db_path(config_dir))
         self.chat_monitor = ChatLogMonitor(chat_dir) if chat_dir else None
+        self.player_monitor = PlayerLogMonitor(log_dir=config.PG_BASE) if getattr(config, "PG_BASE", None) else None
         
         # Initialize default durations only if needed (check first)
         try:
@@ -118,10 +122,10 @@ class TimerWindow:
 
         # Initialize status variables
         self.status_var = tk.StringVar(value="Ready")
-        self.monitor_status_var = tk.StringVar(value="🟢 Chat Monitoring Active") if self.chat_monitor else None
+        self.monitor_status_var = tk.StringVar(value="🟢 Log Monitoring Active") if (self.chat_monitor or self.player_monitor) else None
         
-        # Start monitoring if chat directory is available
-        if self.chat_monitor:
+        # Start monitoring if a log source is available
+        if self.chat_monitor or self.player_monitor:
             self.start_chat_monitoring()
         
         self._build_ui()
@@ -153,291 +157,312 @@ class TimerWindow:
     def _build_ui(self):
         """Build the timer UI."""
         # Main container (more compact padding)
-        main_frame = ttk.Frame(self.window, padding=6, style="App.TFrame")
+        main_frame = ttk.Frame(self.window, padding=8, style="App.TFrame")
         main_frame.pack(fill="both", expand=True)
-        
+
         # Header with title and always on top button
-        header_frame = ttk.Frame(main_frame, style="App.Panel.TFrame")
-        header_frame.pack(fill="x", pady=(0, 6))
-        
-        title_label = ttk.Label(header_frame, text="⏱️ Game Timer System", style="App.Title.TLabel")
-        title_label.pack(side="left")
-        
+        header_frame = ttk.Frame(main_frame, style="App.Panel.TFrame", padding=(12, 10))
+        header_frame.pack(fill="x", pady=(0, 8))
+
+        header_text = ttk.Frame(header_frame, style="App.Panel.TFrame")
+        header_text.pack(side="left", fill="x", expand=True)
+
+        title_label = ttk.Label(header_text, text="⏱️ Game Timer System", style="Timer.Title.TLabel")
+        title_label.pack(anchor="w")
+        ttk.Label(
+            header_text,
+            text="Track active timers, boss respawns, and chat-driven events.",
+            style="Timer.Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
         # Always on top button
         self.always_on_top_var = tk.BooleanVar(value=self._get_ui_pref("timer_always_on_top", False))
         # ensure internal flag matches saved pref
         self.always_on_top = self.always_on_top_var.get()
-        self.always_on_top_button = ttk.Button(header_frame, text="📌 Always on Top", 
-                                             command=self._toggle_always_on_top,
-                                             style="App.Secondary.TButton")
-        self.always_on_top_button.pack(side="right", padx=(6, 0))
-        
+        self.always_on_top_button = ttk.Button(
+            header_frame,
+            text="📌 Always on Top",
+            command=self._toggle_always_on_top,
+            style="Timer.Secondary.TButton",
+        )
+        self.always_on_top_button.pack(side="right", padx=(6, 0), anchor="n")
+
         # Apply initial always on top state
         if self.always_on_top_var.get():
             self.window.attributes('-topmost', True)
             self.always_on_top_button.configure(text="📌 Always on Top ✓")
-        
+
         # Status bar - between header and tabs for better visibility
-        status_frame = ttk.Frame(main_frame, style="App.TFrame")
-        status_frame.pack(fill="x", pady=(3, 6))
-        
+        status_frame = ttk.Frame(main_frame, style="App.Panel.TFrame", padding=(10, 8))
+        status_frame.pack(fill="x", pady=(0, 8))
+
         # Status bar content - single line
-        ttk.Label(status_frame, textvariable=self.status_var, 
-                 style="App.Status.TLabel").pack(side="left", padx=5)
-        
-        # Chat monitoring status
-        if self.chat_monitor:
-            ttk.Label(status_frame, textvariable=self.monitor_status_var, 
-                     style="App.Status.TLabel").pack(side="right", padx=5)
-        
-        # Create notebook for different sections
-        notebook = ttk.Notebook(main_frame, style="TNotebook")
-        notebook.pack(fill="both", expand=True)
-        
+        ttk.Label(status_frame, textvariable=self.status_var, style="Timer.Status.TLabel").pack(side="left", padx=2)
+
+        # Chat/log monitoring status
+        if self.monitor_status_var is not None:
+            ttk.Label(status_frame, textvariable=self.monitor_status_var, style="Timer.Status.TLabel").pack(
+                side="right",
+                padx=2,
+            )
+
+        # Create notebook for the three main sections
+        self.notebook = ttk.Notebook(main_frame, style="TNotebook")
+        self.notebook.pack(fill="both", expand=True)
+
         # Bind tab change event to save preference
-        notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        
-        # Active timers tab
-        self.active_frame = ttk.Frame(notebook, style="App.TFrame")
-        notebook.add(self.active_frame, text="🔴 Active Timers")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # Current timers tab
+        self.active_frame = ttk.Frame(self.notebook, style="App.TFrame")
+        self.notebook.add(self.active_frame, text="Current Timers")
         self._build_active_timers_ui()
-        
-        # Timer management tab
-        self.management_frame = ttk.Frame(notebook, style="App.TFrame")
-        notebook.add(self.management_frame, text="⚙️ Timer Management")
-        self._build_management_ui()
-        
+
         # History tab
-        self.history_frame = ttk.Frame(notebook, style="App.TFrame")
-        notebook.add(self.history_frame, text="📊 History")
+        self.history_frame = ttk.Frame(self.notebook, style="App.TFrame")
+        self.notebook.add(self.history_frame, text="History")
         self._build_history_ui()
-        
-        # Boss timer tab
-        self.boss_frame = ttk.Frame(notebook, style="App.TFrame")
-        notebook.add(self.boss_frame, text="👹 Boss Timers")
+
+        # Settings tab
+        self.settings_frame = ttk.Frame(self.notebook, style="App.TFrame")
+        self.notebook.add(self.settings_frame, text="Settings")
+
+        settings_container = ttk.Frame(self.settings_frame, style="App.Panel.TFrame", padding=4)
+        settings_container.pack(fill="both", expand=True)
+
+        settings_canvas = tk.Canvas(settings_container, highlightthickness=0, bg=UI_COLORS["panel_bg"])
+        settings_scrollbar = ttk.Scrollbar(settings_container, orient="vertical", command=settings_canvas.yview, style="App.Vertical.TScrollbar")
+        settings_shell = ttk.Frame(settings_canvas, style="App.Panel.TFrame", padding=6)
+        settings_window = settings_canvas.create_window((0, 0), window=settings_shell, anchor="nw")
+        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+
+        def _sync_settings_width(_event):
+            settings_canvas.itemconfigure(settings_window, width=settings_canvas.winfo_width())
+        settings_canvas.bind("<Configure>", _sync_settings_width)
+        settings_shell.bind("<Configure>", lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
+
+        settings_canvas.pack(side="left", fill="both", expand=True)
+        settings_scrollbar.pack(side="right", fill="y")
+
+        settings_shell.columnconfigure(0, weight=1, uniform="settings")
+        settings_shell.columnconfigure(1, weight=1, uniform="settings")
+        settings_shell.rowconfigure(0, weight=1)
+
+        self.management_frame = ttk.Frame(settings_shell, style="App.TFrame")
+        self.management_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self._build_management_ui()
+
+        self.boss_frame = ttk.Frame(settings_shell, style="App.TFrame")
+        self.boss_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         self._build_boss_timers_ui()
-        
+
         # Restore selected tab
-        notebook.select(self.selected_tab_var.get())
+        self.notebook.select(self.selected_tab_var.get())
     
+    def _show_current_timers_tab(self):
+        """Switch the notebook to the Current Timers tab."""
+        if hasattr(self, "notebook") and self.notebook is not None:
+            try:
+                self.notebook.select(0)
+            except Exception:
+                pass
+
     def _build_active_timers_ui(self):
         """Build the active timers display."""
-        # Scrollable frame for active timers (horizontal layout)
-        canvas = tk.Canvas(self.active_frame, highlightthickness=0)
-        canvas.configure(bg=UI_COLORS["card_bg"])
-        h_scroll = ttk.Scrollbar(self.active_frame, orient="horizontal", command=canvas.xview, style="App.Horizontal.TScrollbar")
-        
+        shell = ttk.Frame(self.active_frame, style="App.Panel.TFrame", padding=8)
+        shell.pack(fill="both", expand=True)
+
+        header = ttk.Frame(shell, style="Timer.HeaderCard.TFrame", padding=(12, 10))
+        header.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(header, text="Current Timers", style="Timer.Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Timers you start or detect from chat will appear here.",
+            style="Timer.Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        canvas = tk.Canvas(shell, highlightthickness=0, bg=UI_COLORS["card_bg"])
+        scrollbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview, style="App.Vertical.TScrollbar")
         scrollable_frame = ttk.Frame(canvas, style="App.Card.TFrame")
-        canvas_frame = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(xscrollcommand=h_scroll.set)
-        
-        # Pack canvas and horizontal scrollbar
-        canvas.pack(side="top", fill="both", expand=True)
-        h_scroll.pack(side="bottom", fill="x")
-        
-        # Header (kept above the horizontal strip)
-        header_frame = ttk.Frame(scrollable_frame, style="App.Card.TFrame")
-        header_frame.pack(fill="x", pady=(0, 4))
-        
-        headers = ["ID", "Activity", "Duration", "Status", "Actions"]
-        for i, header in enumerate(headers):
-            label = ttk.Label(header_frame, text=header, style="App.Card.Header.TLabel")
-            label.grid(row=0, column=i, padx=10, pady=5, sticky="w")
-        
-        # Active timers container (place timers horizontally inside scrollable_frame)
-        self.active_timers_frame = scrollable_frame
-        
-        # Configure scrollregion on resize
+        scrollable_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _sync_active_timer_width(_event):
+            canvas.itemconfigure(scrollable_window, width=canvas.winfo_width())
+        canvas.bind("<Configure>", _sync_active_timer_width)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        self.active_timers_frame = scrollable_frame
     
     def _build_management_ui(self):
         """Build the timer management interface."""
-        # Manual timer controls
-        manual_frame = ttk.LabelFrame(self.management_frame, text="⏱️ Manual Timer", padding=6, style="App.Card.TLabelframe")
+        shell = ttk.Frame(self.management_frame, style="App.Panel.TFrame", padding=4)
+        shell.pack(fill="both", expand=True)
+
+        header = ttk.Frame(shell, style="Timer.HeaderCard.TFrame", padding=(8, 6))
+        header.pack(fill="x", pady=(0, 6))
+        ttk.Label(header, text="Timer Management", style="Timer.Title.TLabel").pack(anchor="w")
+
+        manual_frame = ttk.LabelFrame(shell, text="Manual Timer", padding=6, style="Timer.Section.TLabelframe")
         manual_frame.pack(fill="x", pady=(0, 6))
-        
-        # Timer selection
-        select_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
-        select_frame.pack(fill="x", pady=(0, 10))
-        
-        ttk.Label(select_frame, text="Activity:", style="App.Card.TLabel").grid(row=0, column=0, sticky="w", padx=5)
-        
-        self.activity_var = tk.StringVar()
-        self.activity_combo = ttk.Combobox(select_frame, textvariable=self.activity_var, style="App.TCombobox", width=25)
-        self.activity_combo.grid(row=0, column=1, padx=5, sticky="ew")
-        
-        # Populate with available activities
-        activities = []
-        for event_key, event_data in DEFAULT_TIMER_DURATIONS.items():
-            activities.append(f"{event_data['description']} ({event_key})")
-        
-        self.activity_combo['values'] = sorted(activities)
-        
-        # Restore last selected activity
-        last_activity = self.activity_var.get()
-        if last_activity and last_activity in activities:
-            self.activity_combo.set(last_activity)
-        elif activities:
-            self.activity_combo.set(activities[0])
-        
-        # Custom duration
-        ttk.Label(select_frame, text="Duration (seconds):", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
-        
-        duration_entry = ttk.Entry(select_frame, textvariable=self.duration_var, style="App.TEntry", width=15)
-        duration_entry.grid(row=1, column=1, padx=5, pady=(10, 0), sticky="ew")
-        
-        # Notes
-        ttk.Label(select_frame, text="Notes:", style="App.Card.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
-        
-        notes_entry = ttk.Entry(select_frame, textvariable=self.notes_var, style="App.TEntry", width=30)
-        notes_entry.grid(row=2, column=1, padx=5, pady=(10, 0), sticky="ew")
-        
-        # Save selection on change
-        self.activity_var.trace_add('write', lambda *args: self._save_timer_selection())
-        self.duration_var.trace_add('write', lambda *args: self._save_timer_selection())
-        self.notes_var.trace_add('write', lambda *args: self._save_timer_selection())
-        
-        # Buttons
-        button_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
-        button_frame.pack(fill="x", pady=8)
-        
-        ttk.Button(button_frame, text="▶️ Start Timer", command=self._start_manual_timer, style="App.Primary.TButton").pack(side="left", padx=4)
-        ttk.Button(button_frame, text="⏹️ Stop All", command=self._stop_all_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
-        ttk.Button(button_frame, text="🗑️ Clear All", command=self._clear_all_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
-        
-        # Configure grid weights
+
+        select_frame = ttk.Frame(manual_frame, style="Timer.Card.TFrame")
+        select_frame.pack(fill="x")
         select_frame.columnconfigure(1, weight=1)
-        
-        # Chat monitoring controls
+
+        ttk.Label(select_frame, text="Activity", style="Timer.Card.Muted.TLabel").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        self.activity_var = tk.StringVar()
+        self.activity_combo = ttk.Combobox(select_frame, textvariable=self.activity_var, style="App.TCombobox", width=24)
+        self.activity_combo.grid(row=0, column=1, padx=4, pady=2, sticky="ew")
+
+        activities = [f"{event_data['description']} ({event_key})" for event_key, event_data in DEFAULT_TIMER_DURATIONS.items()]
+        self.activity_combo["values"] = sorted(activities)
+        if activities:
+            self.activity_combo.set(self.activity_var.get() if self.activity_var.get() in activities else activities[0])
+
+        ttk.Label(select_frame, text="Duration", style="Timer.Card.Muted.TLabel").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(select_frame, textvariable=self.duration_var, style="App.TEntry", width=12).grid(row=1, column=1, padx=4, pady=2, sticky="ew")
+
+        ttk.Label(select_frame, text="Notes", style="Timer.Card.Muted.TLabel").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(select_frame, textvariable=self.notes_var, style="App.TEntry").grid(row=2, column=1, padx=4, pady=2, sticky="ew")
+
+        self.activity_var.trace_add("write", lambda *args: self._save_timer_selection())
+        self.duration_var.trace_add("write", lambda *args: self._save_timer_selection())
+        self.notes_var.trace_add("write", lambda *args: self._save_timer_selection())
+
+        button_frame = ttk.Frame(manual_frame, style="Timer.Card.TFrame")
+        button_frame.pack(fill="x", pady=(4, 0))
+        ttk.Button(button_frame, text="Start", command=self._start_manual_timer, style="Timer.Primary.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(button_frame, text="Stop All", command=self._stop_all_timers, style="Timer.Secondary.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(button_frame, text="Clear All", command=self._clear_all_timers, style="Timer.Secondary.TButton").pack(side="left")
+
         if self.chat_monitor:
-            chat_frame = ttk.LabelFrame(self.management_frame, text="💬 Chat Monitoring", padding=10, style="App.Card.TLabelframe")
-            chat_frame.pack(fill="x", pady=(10, 0))
-            
+            chat_frame = ttk.LabelFrame(shell, text="Chat Monitoring", padding=6, style="Timer.Section.TLabelframe")
+            chat_frame.pack(fill="x", pady=(0, 0))
+
             self.auto_start_var = tk.BooleanVar(value=self._get_ui_pref("timer_auto_start", True))
-            ttk.Checkbutton(chat_frame, text="Auto-start timers from chat events", variable=self.auto_start_var, style="App.Card.TCheckbutton", command=self._toggle_auto_monitoring).pack(anchor="w")
-            
-            ttk.Button(chat_frame, text="🔄 Scan Now", command=self._scan_chat_now, style="App.Secondary.TButton").pack(pady=(10, 0), anchor="w")
+            chat_row = ttk.Frame(chat_frame, style="Timer.Card.TFrame")
+            chat_row.pack(fill="x")
+            ttk.Checkbutton(
+                chat_row,
+                text="Auto-start from chat",
+                variable=self.auto_start_var,
+                style="App.Card.TCheckbutton",
+                command=self._toggle_auto_monitoring,
+            ).pack(side="left", anchor="w")
+            ttk.Button(chat_row, text="Scan Now", command=self._scan_chat_now, style="Timer.Secondary.TButton").pack(side="right")
     
     def _build_history_ui(self):
         """Build the timer history display."""
-        # History treeview
-        tree_frame = ttk.Frame(self.history_frame, style="App.TFrame")
-        tree_frame.pack(fill="both", expand=True, pady=(0, 10))
-        
-        # Treeview with scrollbar
+        shell = ttk.Frame(self.history_frame, style="App.Panel.TFrame", padding=8)
+        shell.pack(fill="both", expand=True)
+
+        header = ttk.Frame(shell, style="Timer.HeaderCard.TFrame", padding=(12, 10))
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="Timer History", style="Timer.Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Recently completed timers and their outcomes.",
+            style="Timer.Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        tree_frame = ttk.Frame(shell, style="App.Card.TFrame", padding=10)
+        tree_frame.pack(fill="both", expand=True)
+
         tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", style="App.Vertical.TScrollbar")
-        self.history_tree = ttk.Treeview(tree_frame, 
-                                     columns=("time", "activity", "duration", "status"),                                     show="headings", style="App.Treeview",                                     yscrollcommand=tree_scroll.set)
-        
-        # Configure columns
+        self.history_tree = ttk.Treeview(
+            tree_frame,
+            columns=("time", "activity", "duration", "status"),
+            show="headings",
+            style="Timer.Treeview",
+            yscrollcommand=tree_scroll.set,
+        )
         self.history_tree.heading("time", text="Time")
         self.history_tree.heading("activity", text="Activity")
         self.history_tree.heading("duration", text="Duration")
         self.history_tree.heading("status", text="Status")
-        
         self.history_tree.column("time", width=150, stretch=False)
-        self.history_tree.column("activity", width=200, stretch=True)
-        self.history_tree.column("duration", width=100, stretch=False)
-        self.history_tree.column("status", width=100, stretch=False)
-        
-        # Pack treeview and scrollbar
+        self.history_tree.column("activity", width=220, stretch=True)
+        self.history_tree.column("duration", width=110, stretch=False)
+        self.history_tree.column("status", width=120, stretch=False)
+
         self.history_tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
         tree_scroll.configure(command=self.history_tree.yview)
-        
-        # Refresh button
-        ttk.Button(self.history_frame, text="🔄 Refresh History", command=self._refresh_history, style="App.Secondary.TButton").pack(pady=10)
+
+        ttk.Button(shell, text="Refresh History", command=self._refresh_history, style="Timer.Secondary.TButton").pack(anchor="e", pady=(8, 0))
     
     def _build_boss_timers_ui(self):
         """Build the boss timers display."""
-        # Manual boss timer controls
-        manual_frame = ttk.LabelFrame(self.boss_frame, text="👹 Manual Boss Timer", padding=6, style="App.Card.TLabelframe")
+        shell = ttk.Frame(self.boss_frame, style="App.Panel.TFrame", padding=4)
+        shell.pack(fill="both", expand=True)
+
+        header = ttk.Frame(shell, style="Timer.HeaderCard.TFrame", padding=(8, 6))
+        header.pack(fill="x", pady=(0, 6))
+        ttk.Label(header, text="Boss Timers", style="Timer.Title.TLabel").pack(anchor="w")
+
+        manual_frame = ttk.LabelFrame(shell, text="Manual Boss", padding=6, style="Timer.Section.TLabelframe")
         manual_frame.pack(fill="x", pady=(0, 6))
-        
-        # Boss selection
-        select_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
-        select_frame.pack(fill="x", pady=(0, 10))
-        
-        ttk.Label(select_frame, text="Boss:", style="App.Card.TLabel").grid(row=0, column=0, sticky="w", padx=5)
-        
+
+        select_frame = ttk.Frame(manual_frame, style="Timer.Card.TFrame")
+        select_frame.pack(fill="x")
+        select_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(select_frame, text="Boss", style="Timer.Card.Muted.TLabel").grid(row=0, column=0, sticky="w", padx=4, pady=2)
         self.boss_var = tk.StringVar()
-        self.boss_combo = ttk.Combobox(select_frame, textvariable=self.boss_var, style="App.TCombobox", width=30)
-        self.boss_combo.grid(row=0, column=1, padx=5, sticky="ew")
-        
-        # Populate with available bosses
-        bosses = []
-        for event_key, event_data in DEFAULT_BOSS_DURATIONS.items():
-            bosses.append(f"{event_data['description']} ({event_key})")
-        
-        self.boss_combo['values'] = sorted(bosses)
-        
-        # Restore last selected boss
+        self.boss_combo = ttk.Combobox(select_frame, textvariable=self.boss_var, style="App.TCombobox", width=24)
+        self.boss_combo.grid(row=0, column=1, padx=4, pady=2, sticky="ew")
+
+        bosses = [f"{event_data['description']} ({event_key})" for event_key, event_data in DEFAULT_BOSS_DURATIONS.items()]
+        self.boss_combo["values"] = sorted(bosses)
         last_boss = self._get_ui_pref("timer_last_boss", "")
-        if last_boss and last_boss in bosses:
-            self.boss_var.set(last_boss)
-        elif bosses:
-            self.boss_var.set(bosses[0])
-        
-        # Custom duration
-        ttk.Label(select_frame, text="Duration (seconds):", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", padx=5, pady=(10, 0))
-        
+        if bosses:
+            self.boss_var.set(last_boss if last_boss in bosses else bosses[0])
+
+        ttk.Label(select_frame, text="Duration", style="Timer.Card.Muted.TLabel").grid(row=1, column=0, sticky="w", padx=4, pady=2)
         self.boss_duration_var = tk.StringVar()
-        duration_entry = ttk.Entry(select_frame, textvariable=self.boss_duration_var, style="App.TEntry", width=15)
-        duration_entry.grid(row=1, column=1, padx=5, pady=(10, 0), sticky="ew")
-        
-        # Restore last boss duration
+        ttk.Entry(select_frame, textvariable=self.boss_duration_var, style="App.TEntry", width=12).grid(row=1, column=1, padx=4, pady=2, sticky="ew")
+
+        ttk.Label(select_frame, text="Notes", style="Timer.Card.Muted.TLabel").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(select_frame, textvariable=self.boss_notes_var, style="App.TEntry").grid(row=2, column=1, padx=4, pady=2, sticky="ew")
+
         last_boss_duration = self._get_ui_pref("timer_last_boss_duration", "")
         if last_boss_duration:
             self.boss_duration_var.set(last_boss_duration)
-        
-        # Notes
-        ttk.Label(select_frame, text="Notes:", style="App.Card.TLabel").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
-        
-        notes_entry = ttk.Entry(select_frame, textvariable=self.boss_notes_var, style="App.TEntry", width=30)
-        notes_entry.grid(row=2, column=1, padx=5, pady=(10, 0), sticky="ew")
-        
-        # Save selection on change
-        self.boss_var.trace_add('write', lambda *args: self._save_boss_selection())
-        self.boss_duration_var.trace_add('write', lambda *args: self._save_boss_selection())
-        self.boss_notes_var.trace_add('write', lambda *args: self._save_boss_selection())
-        
-        # Buttons
-        button_frame = ttk.Frame(manual_frame, style="App.Card.TFrame")
-        button_frame.pack(fill="x", pady=8)
-        
-        ttk.Button(button_frame, text="👹 Start Boss Timer", command=self._start_boss_timer, style="App.Primary.TButton").pack(side="left", padx=4)
-        ttk.Button(button_frame, text="⏹️ Stop Boss Timers", command=self._stop_boss_timers, style="App.Secondary.TButton").pack(side="left", padx=4)
-        
-        # Active boss timers
-        active_frame = ttk.LabelFrame(self.boss_frame, text="🔴 Active Boss Timers", padding=6, style="App.Card.TLabelframe")
-        active_frame.pack(fill="both", expand=True, pady=(6, 0))
-        
-        # Scrollable frame for active boss timers
-        canvas = tk.Canvas(active_frame, highlightthickness=0)
-        canvas.configure(bg=UI_COLORS["card_bg"])
+
+        self.boss_var.trace_add("write", lambda *args: self._save_boss_selection())
+        self.boss_duration_var.trace_add("write", lambda *args: self._save_boss_selection())
+        self.boss_notes_var.trace_add("write", lambda *args: self._save_boss_selection())
+
+        button_frame = ttk.Frame(manual_frame, style="Timer.Card.TFrame")
+        button_frame.pack(fill="x", pady=(4, 0))
+        ttk.Button(button_frame, text="Start", command=self._start_boss_timer, style="Timer.Primary.TButton").pack(side="left", padx=(0, 4))
+        ttk.Button(button_frame, text="Stop All", command=self._stop_boss_timers, style="Timer.Secondary.TButton").pack(side="left")
+
+        active_frame = ttk.LabelFrame(shell, text="Active Boss", padding=6, style="Timer.Section.TLabelframe")
+        active_frame.pack(fill="both", expand=True, pady=(0, 0))
+
+        canvas = tk.Canvas(active_frame, highlightthickness=0, bg=UI_COLORS["card_bg"])
         scrollbar = ttk.Scrollbar(active_frame, orient="vertical", command=canvas.yview, style="App.Vertical.TScrollbar")
-        
         scrollable_frame = ttk.Frame(canvas, style="App.Card.TFrame")
-        
+        scrollable_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas_frame = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        
-        # Pack canvas and scrollbar
+
+        def _sync_active_boss_timer_width(_event):
+            canvas.itemconfigure(scrollable_window, width=canvas.winfo_width())
+        canvas.bind("<Configure>", _sync_active_boss_timer_width)
+
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        
-        # Active boss timers container
-        self.active_boss_timers_frame = ttk.Frame(scrollable_frame, style="App.Card.TFrame")
-        self.active_boss_timers_frame.pack(fill="both", expand=True)
-        
-        # Configure scrollregion
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        
-        # Configure grid weights
-        select_frame.columnconfigure(1, weight=1)
-        
-        # Refresh button
-        ttk.Button(self.boss_frame, text="🔄 Refresh Boss Timers", command=self._refresh_boss_timers, style="App.Secondary.TButton").pack(pady=10)
+
+        self.active_boss_timers_frame = ttk.Frame(scrollable_frame, style="Timer.Card.TFrame")
+        self.active_boss_timers_frame.pack(fill="both", expand=True)
     
     def _on_tab_changed(self, event):
         """Handle tab change event and save preference."""
@@ -511,10 +536,11 @@ class TimerWindow:
             boss_name = _boss_name[1] if len(_boss_name) > 1 else _boss_name[0]
             
             # Start boss timer
-            timer_id = self.timer_db.start_timer("boss", boss_name, self.boss_notes_var.get())
+            timer_id = self.timer_db.start_timer("boss", boss_name, self.boss_notes_var.get(), duration)
             
             self.status_var.set(f"Started boss timer: {self.boss_var.get()}")
             self._refresh_timers()
+            self._show_current_timers_tab()
             self._refresh_boss_timers()
             self._refresh_history()
             
@@ -561,46 +587,32 @@ class TimerWindow:
     
     def _create_boss_timer_display(self, timer, row):
         """Create UI display for a single boss timer."""
-        frame = ttk.Frame(self.active_boss_timers_frame, style="App.Card.TFrame")
-        frame.pack(fill="x", pady=5, padx=10)
-        
-        # Boss timer info
-        info_frame = ttk.Frame(frame, style="App.TFrame")
-        info_frame.pack(fill="x", padx=10, pady=10)
-        
-        # Boss name with special styling
-        ttk.Label(info_frame, text=f"👹 {timer['event_name'].title()}", style="App.Card.TLabel").grid(row=0, column=0, sticky="w")
-        
-        # Duration
-        duration_str = self._format_duration(timer['current_duration_seconds'])
-        ttk.Label(info_frame, text=f"⏱️ {duration_str}", style="App.Card.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        
-        # Progress bar
-        boss_key = f"boss:{timer['event_name']}"
-        max_duration = DEFAULT_BOSS_DURATIONS.get(boss_key, {}).get('duration', 900)
-        progress_var = tk.DoubleVar(value=min(timer['current_duration_seconds'] / max_duration, 1.0))
-        progress_bar = ttk.Progressbar(info_frame, variable=progress_var, maximum=1.0, style="App.Horizontal.TProgressbar", length=200)
-        progress_bar.grid(row=2, column=0, sticky="ew", pady=(5, 0))
-        
-        # Action buttons
-        button_frame = ttk.Frame(frame, style="App.TFrame")
-        button_frame.pack(fill="x", padx=10, pady=(10, 10))
-        
-        ttk.Button(button_frame, text="⏹️ Stop Boss", command=lambda: self._stop_boss_timer(timer['id']), style="App.Secondary.TButton").pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🗑️ Cancel", command=lambda: self._cancel_boss_timer(timer['id']), style="App.Secondary.TButton").pack(side="left", padx=5)
-        
-        # Store reference and update progress
-        if not hasattr(self, 'active_boss_timers'):
-            self.active_boss_timers = {}
-        
+        frame = ttk.Frame(self.active_boss_timers_frame, style="Timer.Card.TFrame", padding=0)
+        frame.pack(fill="x", pady=3, padx=1)
+
+        display_name = timer["event_name"].replace("_", " ").title()
+        max_duration = int(timer.get("duration_seconds") or DEFAULT_BOSS_DURATIONS.get(f"boss:{timer['event_name']}", {}).get("duration", 900))
+        current_duration = timer["current_duration_seconds"]
+
+        row_frame = ttk.Frame(frame, style="Timer.Card.TFrame", padding=(8, 5, 8, 6))
+        row_frame.pack(fill="x")
+        row_frame.columnconfigure(0, weight=1)
+        row_frame.columnconfigure(1, weight=0)
+
+        indicator_canvas = tk.Canvas(row_frame, height=30, highlightthickness=0, bg=UI_COLORS["card_bg"])
+        indicator_canvas.grid(row=0, column=0, sticky="ew")
+
         self.active_boss_timers[timer['id']] = {
             'frame': frame,
-            'progress_var': progress_var,
+            'indicator_canvas': indicator_canvas,
+            'display_name': display_name,
+            'current_duration': current_duration,
             'start_time': timer['start_time'],
-            'max_duration': max_duration
+            'max_duration': max_duration,
         }
-        
-        # Start progress update
+
+        indicator_canvas.bind("<Configure>", lambda _event, timer_id=timer['id']: self._refresh_timer_indicator(timer_id, boss=True))
+        self._refresh_timer_indicator(timer['id'], boss=True)
         self._update_boss_timer_progress(timer['id'])
     
     def _stop_boss_timer(self, timer_id: int):
@@ -630,29 +642,40 @@ class TimerWindow:
             messagebox.showerror("Error", f"Failed to cancel boss timer: {e}")
     
     def _update_boss_timer_progress(self, timer_id: int):
-        """Update progress bar for a boss timer."""
+        """Update the boss timer countdown indicator."""
         if not hasattr(self, 'active_boss_timers') or timer_id not in self.active_boss_timers:
             return
-        
+
         timer_data = self.active_boss_timers[timer_id]
+
+        try:
+            frame = timer_data.get("frame")
+            canvas = timer_data.get("indicator_canvas")
+            remaining_label = timer_data.get("remaining_label")
+            if self.window is None or not self.window.winfo_exists():
+                return
+            if frame is None or not frame.winfo_exists():
+                return
+            if canvas is None or not canvas.winfo_exists():
+                return
+            if remaining_label is not None and not remaining_label.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
         start_time = datetime.fromisoformat(timer_data['start_time'])
         current_duration = int((datetime.now() - start_time).total_seconds())
-        
-        # Update progress
-        progress = min(current_duration / timer_data['max_duration'], 1.0)
-        timer_data['progress_var'].set(progress)
-        
-        # Update duration display
-        for widget in timer_data['frame'].winfo_children():
-            if isinstance(widget, ttk.Label) and "⏱️" in widget.cget("text"):
-                duration_str = self._format_duration(current_duration)
-                widget.config(text=f"⏱️ {duration_str}")
-        
-        # Schedule next update
+        timer_data['current_duration'] = current_duration
+
+        self._refresh_timer_indicator(timer_id, boss=True)
+
+        # Schedule next update only if the window is still alive
         try:
-            self.window.after(1000, lambda: self._update_boss_timer_progress(timer_id))
+            if self.window is not None and self.window.winfo_exists():
+                self.window.after(1000, lambda: self._update_boss_timer_progress(timer_id))
         except Exception:
             pass
+
     def _start_manual_timer(self):
         """Start a manual timer."""
         try:
@@ -674,13 +697,9 @@ class TimerWindow:
                 return
             
             # Get duration
-            try:
-                duration = int(self.duration_var.get()) if self.duration_var.get() else None
-                if not duration or duration <= 0:
-                    messagebox.showerror("Error", "Please enter a valid duration in seconds.")
-                    return
-            except ValueError:
-                messagebox.showerror("Error", "Duration must be a number.")
+            duration = self._parse_duration_input(self.duration_var.get())
+            if not duration or duration <= 0:
+                messagebox.showerror("Error", "Please enter a valid duration in seconds.")
                 return
             
             # Get event name from event_type
@@ -688,10 +707,11 @@ class TimerWindow:
             event_name = _event_name[1] if len(_event_name) > 1 else _event_name[0]
             
             # Start timer
-            timer_id = self.timer_db.start_timer(event_type, event_name, self.notes_var.get())
+            timer_id = self.timer_db.start_timer(event_type, event_name, self.notes_var.get(), duration)
             
             self.status_var.set(f"Started timer: {self.activity_var.get()}")
             self._refresh_timers()
+            self._show_current_timers_tab()
             self._refresh_history()
             
         except Exception as e:
@@ -742,14 +762,15 @@ class TimerWindow:
         self._set_ui_pref("timer_auto_start", self.auto_start_var.get())
     
     def _scan_chat_now(self):
-        """Manually scan chat logs for events."""
-        if not self.chat_monitor:
-            messagebox.showwarning("Warning", "Chat monitoring not available.")
+        """Manually scan chat and player logs for events."""
+        if not self.chat_monitor and self.player_monitor is None:
+            messagebox.showwarning("Warning", "Log monitoring not available.")
             return
         
         try:
             lines = self._read_chat_monitor_lines()
-            actions = self._process_chat_lines(lines)
+            player_lines = self._read_player_monitor_lines()
+            actions = self._process_chat_lines(lines) + self._process_player_lines(player_lines)
             
             for action in actions:
                 self.status_var.set(action)
@@ -766,17 +787,21 @@ class TimerWindow:
     
     def start_chat_monitoring(self):
         """Start background chat monitoring."""
-        if not self.chat_monitor or self.monitoring_active:
+        if self.monitoring_active:
+            return
+        if not self.chat_monitor and self.player_monitor is None:
             return
         
         self.monitoring_active = True
-        self.monitor_status_var.set("🟢 Chat Monitoring Active")
+        if self.monitor_status_var is not None:
+            self.monitor_status_var.set("🟢 Log Monitoring Active")
         
         def monitor_loop():
             while self.monitoring_active:
                 try:
-                    lines = self._read_chat_monitor_lines()
-                    actions = self._process_chat_lines(lines)
+                    chat_lines = self._read_chat_monitor_lines()
+                    player_lines = self._read_player_monitor_lines()
+                    actions = self._process_chat_lines(chat_lines) + self._process_player_lines(player_lines)
                     if actions:
                         self.window.after(0, lambda acts=actions: self._apply_chat_actions(acts))
                     time.sleep(5)  # Check every 5 seconds
@@ -813,6 +838,214 @@ class TimerWindow:
             return self.chat_monitor.read_new_lines()
         except Exception:
             return []
+
+    def _read_player_monitor_lines(self):
+        """Read newly appended player.log lines from the underlying monitor."""
+        if self.player_monitor is None:
+            self._ensure_player_monitor()
+        if self.player_monitor is None:
+            return []
+        try:
+            return self.player_monitor.read_new_lines()
+        except Exception:
+            return []
+
+    def _ensure_player_monitor(self):
+        """Create the player monitor lazily when PG_BASE becomes available."""
+        if self.player_monitor is not None:
+            return
+        if getattr(config, "PG_BASE", None) is None:
+            return
+        try:
+            self.player_monitor = PlayerLogMonitor(log_dir=config.PG_BASE)
+        except Exception:
+            self.player_monitor = None
+
+    def _get_timer_key_variants(self, event_type: str, event_name: str) -> List[str]:
+        key = f"{event_type}:{event_name}".lower()
+        variants = {key}
+        if event_name:
+            compact = event_name.replace("_", "")
+            variants.add(f"{event_type}:{compact}".lower())
+        return list(variants)
+
+    def _get_timer_duration_seconds(self, event_type: str, event_name: str, default: int = 300) -> int:
+        for key in self._get_timer_key_variants(event_type, event_name):
+            data = DEFAULT_TIMER_DURATIONS.get(key)
+            if data:
+                return int(data.get("duration", default))
+        return default
+
+    def _get_timer_display_name(self, event_type: str, event_name: str) -> str:
+        for key in self._get_timer_key_variants(event_type, event_name):
+            data = DEFAULT_TIMER_DURATIONS.get(key)
+            if data and data.get("description"):
+                return str(data["description"])
+        return event_name.replace("_", " ").title()
+
+    def _parse_duration_input(self, raw_value: str) -> Optional[int]:
+        """Parse a timer duration from user input.
+
+        Accepts plain seconds like "10" and simple human-friendly values like
+        "10 sec", "5m", or "1h 30m".
+        """
+        text = str(raw_value or "").strip().lower()
+        if not text:
+            return None
+
+        try:
+            return max(1, int(text))
+        except ValueError:
+            pass
+
+        total_seconds = 0
+        matched = False
+        for amount, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([hms])", text):
+            matched = True
+            value = float(amount)
+            if unit == "h":
+                total_seconds += int(value * 3600)
+            elif unit == "m":
+                total_seconds += int(value * 60)
+            elif unit == "s":
+                total_seconds += int(value)
+
+        if matched and total_seconds > 0:
+            return total_seconds
+
+        return None
+
+    def _draw_timer_indicator(self, canvas, percent_remaining: float, label_text: str):
+        """Draw a smooth gradient countdown bar with centered text."""
+        if canvas is None or not canvas.winfo_exists():
+            return
+
+        canvas.delete("all")
+        width = max(240, int(canvas.winfo_width() or canvas.winfo_reqwidth() or 240))
+        height = max(30, int(canvas.winfo_height() or canvas.winfo_reqheight() or 30))
+
+        pad_x = 3
+        pad_y = 4
+        track_x0 = pad_x
+        track_x1 = max(track_x0 + 10, width - pad_x)
+        track_y0 = pad_y
+        track_y1 = max(track_y0 + 10, height - pad_y)
+        track_width = track_x1 - track_x0
+        segment_colors = ["#22c55e", "#eab308", "#ef4444"]
+
+        for i in range(24):
+            start = i / 24.0
+            end = (i + 1) / 24.0
+            seg_x0 = track_x0 + (track_width * start)
+            seg_x1 = track_x0 + (track_width * end)
+            color_index = 0 if start < 0.5 else 1 if start < 0.85 else 2
+            canvas.create_rectangle(
+                seg_x0,
+                track_y0,
+                seg_x1,
+                track_y1,
+                fill=segment_colors[color_index],
+                outline=segment_colors[color_index],
+                width=0,
+            )
+
+        canvas.create_rectangle(track_x0, track_y0, track_x1, track_y1, outline="#0f1720", width=1)
+        marker_x = track_x0 + (track_width * max(0.0, min(1.0, percent_remaining)))
+        marker_x = max(track_x0, min(track_x1, marker_x))
+        canvas.create_line(marker_x, track_y0 - 1, marker_x, track_y1 + 1, fill="#ffffff", width=3)
+        canvas.create_oval(marker_x - 6, track_y0 + 2, marker_x + 6, track_y0 + 14, fill="#ffffff", outline="#111827", width=2)
+        canvas.create_text(
+            (track_x0 + track_x1) / 2,
+            (track_y0 + track_y1) / 2,
+            text=label_text,
+            fill="#000000",
+            font=(UI_ATTRS["font_family"], max(10, UI_ATTRS["font_size"] + 1), "bold"),
+            justify="center",
+        )
+
+    def _draw_timer_switch(self, canvas, percent_remaining: float):
+        """Draw a sliding switch-style countdown indicator."""
+        if canvas is None or not canvas.winfo_exists():
+            return
+
+        canvas.delete("all")
+        width = max(56, int(canvas.winfo_width() or canvas.winfo_reqwidth() or 56))
+        height = max(28, int(canvas.winfo_height() or canvas.winfo_reqheight() or 28))
+        progress = max(0.0, min(1.0, percent_remaining))
+
+        track_outline = "#111827"
+        track_fill = "#22c55e" if progress > 0.66 else "#f59e0b" if progress > 0.33 else "#ef4444"
+        knob_left = 6 + int((width - 22) * (1.0 - progress))
+        knob_right = knob_left + 16
+
+        canvas.create_rectangle(10, 8, width - 10, height - 8, fill="#1f2937", outline=track_outline, width=2)
+        canvas.create_rectangle(12, 10, width - 12, height - 10, fill=track_fill, outline="", width=0)
+        canvas.create_oval(knob_left, 5, knob_right, height - 5, fill="#ffffff", outline=track_outline, width=2)
+
+    def _refresh_timer_indicator(self, timer_id: int, boss: bool = False):
+        """Redraw the countdown switch, bar, and label for one timer."""
+        store = self.active_boss_timers if boss else self.active_timers
+        timer_data = store.get(timer_id)
+        if not timer_data:
+            return
+
+        canvas = timer_data.get("indicator_canvas")
+        frame = timer_data.get("frame")
+        display_name = timer_data.get("display_name", "Timer")
+
+        try:
+            if canvas is None or not canvas.winfo_exists():
+                return
+            if frame is not None and not frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        current_duration = int(timer_data.get("current_duration", 0))
+        max_duration = max(1, int(timer_data.get("max_duration", 300)))
+        remaining = max(0, max_duration - current_duration)
+        percent_remaining = max(0.0, min(1.0, remaining / max_duration))
+        label_text = f"{display_name}  •  {int(round(percent_remaining * 100))}%  •  {self._format_duration(remaining)} left"
+
+        try:
+            self._draw_timer_indicator(canvas, percent_remaining, label_text)
+        except tk.TclError:
+            return
+
+    def _has_active_timer(self, event_type: str, event_name: str) -> bool:
+        for timer in self.timer_db.get_active_timers():
+            if timer.get("event_type") == event_type and timer.get("event_name") == event_name:
+                return True
+        return False
+
+    def _start_auto_timer_from_line(self, event_key: str, line: str, source: str) -> Optional[str]:
+        event_data = DEFAULT_TIMER_DURATIONS.get(event_key)
+        if not event_data:
+            return None
+        event_type, event_name = event_key.split(":", 1)
+        if self._has_active_timer(event_type, event_name):
+            return f"{event_data['description']} already running"
+
+        timer_id = self.timer_db.start_timer(
+            event_type,
+            event_name,
+            f"Auto-started from {source}: {line.strip()}",
+        )
+        self.window.after(0, self._show_current_timers_tab)
+        self.window.after(0, self._refresh_timers)
+        return f"Started {event_data['description']} timer (ID: {timer_id})"
+
+    def _detect_auto_timer_key(self, line: str) -> Optional[str]:
+        lowered = line.lower()
+        compact = lowered.replace(" ", "").replace("-", "").replace("_", "")
+
+        if "egg run" in lowered or "eggrun" in compact or "one hour clock" in lowered or "hour clock" in lowered:
+            return "misc:egg_run"
+
+        if ("retting" in lowered and "flax" in lowered) or "rettingbundle" in compact or "linen retting" in lowered:
+            return "retting:flax"
+
+        return None
     
     def _process_chat_lines(self, lines):
         """Convert chat log lines into timer actions.
@@ -824,11 +1057,33 @@ class TimerWindow:
         for line in lines or []:
             if not line:
                 continue
+
+            auto_key = self._detect_auto_timer_key(line)
+            if auto_key:
+                action = self._start_auto_timer_from_line(auto_key, line, "chat log")
+                if action:
+                    actions.append(action)
+                continue
+
             lowered = line.lower()
             if "timer" in lowered and ("start" in lowered or "begin" in lowered):
                 actions.append(f"Timer event detected: {line}")
             elif "boss" in lowered and ("respawn" in lowered or "spawn" in lowered):
                 actions.append(f"Boss event detected: {line}")
+        return actions
+
+    def _process_player_lines(self, lines):
+        """Convert player.log lines into timer actions."""
+        actions = []
+        for line in lines or []:
+            if not line:
+                continue
+
+            auto_key = self._detect_auto_timer_key(line)
+            if auto_key:
+                action = self._start_auto_timer_from_line(auto_key, line, "player.log")
+                if action:
+                    actions.append(action)
         return actions
     
     def _refresh_timers(self):
@@ -841,9 +1096,11 @@ class TimerWindow:
         active_timers = self.timer_db.get_active_timers()
         
         if not active_timers:
-            no_timers_label = ttk.Label(self.active_timers_frame 
-                                     , text="No active timers" 
-                                     , style="App.Muted.TLabel")
+            no_timers_label = ttk.Label(
+                self.active_timers_frame,
+                text="No active timers yet.",
+                style="App.Muted.TLabel",
+            )
             no_timers_label.pack(pady=20)
             return
         
@@ -853,45 +1110,32 @@ class TimerWindow:
     
     def _create_timer_display(self, timer, row):
         """Create UI display for a single timer."""
-        frame = ttk.Frame(self.active_timers_frame, style="App.Card.TFrame")
-        # Place timers horizontally so many can fit in one line
-        frame.pack(side="left", padx=8, pady=8)
-        frame.pack_propagate(False)
-        frame.configure(width=260)
-        
-        # Timer info
-        info_frame = ttk.Frame(frame, style="App.TFrame")
-        info_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # ID and Activity
-        ttk.Label(info_frame, text=f"#{timer['id']}", style="App.Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(info_frame, text=timer['event_name'], style="App.Card.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
-        
-        # Duration
-        duration_str = self._format_duration(timer['current_duration_seconds'])
-        ttk.Label(info_frame, text=f"⏱️ {duration_str}", style="App.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
-        
-        # Progress bar
-        progress_var = tk.DoubleVar(value=min(timer['current_duration_seconds'] / 300, 1.0))  # Assume 5 min max
-        progress_bar = ttk.Progressbar(info_frame, variable=progress_var, maximum=1.0, style="App.Horizontal.TProgressbar", length=200)
-        progress_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0))
-        
-        # Action buttons
-        button_frame = ttk.Frame(frame, style="App.TFrame")
-        button_frame.pack(fill="x", padx=10, pady=(10, 10))
-        
-        ttk.Button(button_frame, text="⏹️ Stop", command=lambda: self._stop_timer(timer['id']), style="App.Secondary.TButton").pack(side="left", padx=5)
-        ttk.Button(button_frame, text="🗑️ Cancel", command=lambda: self._cancel_timer(timer['id']), style="App.Secondary.TButton").pack(side="left", padx=5)
-        
-        # Store reference and update progress
+        frame = ttk.Frame(self.active_timers_frame, style="Timer.Card.TFrame", padding=0)
+        frame.pack(fill="x", pady=3, padx=1)
+
+        display_name = self._get_timer_display_name(timer["event_type"], timer["event_name"])
+        max_duration = int(timer.get("duration_seconds") or self._get_timer_duration_seconds(timer["event_type"], timer["event_name"], default=300))
+        current_duration = timer["current_duration_seconds"]
+
+        row_frame = ttk.Frame(frame, style="Timer.Card.TFrame", padding=(8, 5, 8, 6))
+        row_frame.pack(fill="x")
+        row_frame.columnconfigure(0, weight=1)
+        row_frame.columnconfigure(1, weight=0)
+
+        indicator_canvas = tk.Canvas(row_frame, height=30, highlightthickness=0, bg=UI_COLORS["card_bg"])
+        indicator_canvas.grid(row=0, column=0, sticky="ew")
+
         self.active_timers[timer['id']] = {
             'frame': frame,
-            'progress_var': progress_var,
+            'indicator_canvas': indicator_canvas,
+            'display_name': display_name,
+            'current_duration': current_duration,
             'start_time': timer['start_time'],
-            'max_duration': 300
+            'max_duration': max_duration,
         }
-        
-        # Start progress update
+
+        indicator_canvas.bind("<Configure>", lambda _event, timer_id=timer['id']: self._refresh_timer_indicator(timer_id))
+        self._refresh_timer_indicator(timer['id'])
         self._update_timer_progress(timer['id'])
     
     def _stop_timer(self, timer_id: int):
@@ -919,27 +1163,39 @@ class TimerWindow:
             messagebox.showerror("Error", f"Failed to cancel timer: {e}")
     
     def _update_timer_progress(self, timer_id: int):
-        """Update progress bar for a timer."""
+        """Update the timer countdown indicator."""
         if timer_id not in self.active_timers:
             return
-        
+
         timer_data = self.active_timers[timer_id]
+
+        try:
+            frame = timer_data.get("frame")
+            canvas = timer_data.get("indicator_canvas")
+            remaining_label = timer_data.get("remaining_label")
+            if self.window is None or not self.window.winfo_exists():
+                return
+            if frame is None or not frame.winfo_exists():
+                return
+            if canvas is None or not canvas.winfo_exists():
+                return
+            if remaining_label is not None and not remaining_label.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
         start_time = datetime.fromisoformat(timer_data['start_time'])
         current_duration = int((datetime.now() - start_time).total_seconds())
-        
-        # Update progress (assuming 5 minutes = 100% for most activities)
-        progress = min(current_duration / 300, 1.0)
-        timer_data['progress_var'].set(progress)
-        
-        # Update duration display
-        for widget in timer_data['frame'].winfo_children():
-            if isinstance(widget, ttk.Label) and "⏱️" in widget.cget("text"):
-                duration_str = self._format_duration(current_duration)
-                widget.config(text=f"⏱️ {duration_str}")
-                break
-        
-        # Schedule next update
-        self.window.after(1000, lambda: self._update_timer_progress(timer_id))
+        timer_data['current_duration'] = current_duration
+
+        self._refresh_timer_indicator(timer_id)
+
+        # Schedule next update only if the window is still alive
+        try:
+            if self.window is not None and self.window.winfo_exists():
+                self.window.after(1000, lambda: self._update_timer_progress(timer_id))
+        except Exception:
+            pass
     
     def _refresh_history(self):
         """Refresh the history display."""
@@ -1068,8 +1324,25 @@ class TimerWindow:
             # Get saved geometry from parent's preferences
             saved_geometry = self._get_ui_pref("timer_window_geometry", "400x300+100+100")
             
-            # Apply the saved geometry directly
-            self.window.geometry(saved_geometry)
+            # Apply the saved geometry directly; if it has no explicit screen
+            # position, center relative to the parent window instead of the
+            # whole desktop.
+            if saved_geometry and "+" not in saved_geometry and hasattr(self.parent, "root"):
+                try:
+                    self.parent.root.update_idletasks()
+                    root_x = self.parent.root.winfo_rootx()
+                    root_y = self.parent.root.winfo_rooty()
+                    root_w = self.parent.root.winfo_width() or self.parent.root.winfo_reqwidth()
+                    root_h = self.parent.root.winfo_height() or self.parent.root.winfo_reqheight()
+                    width = self.window.winfo_width() or self.window.winfo_reqwidth() or 400
+                    height = self.window.winfo_height() or self.window.winfo_reqheight() or 300
+                    x = root_x + max(0, (root_w - width) // 2)
+                    y = root_y + max(0, (root_h - height) // 2)
+                    self.window.geometry(f"{width}x{height}+{x}+{y}")
+                except Exception:
+                    self.window.geometry(saved_geometry)
+            else:
+                self.window.geometry(saved_geometry)
             
             # Apply always on top state
             if self.always_on_top_var.get():

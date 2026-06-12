@@ -19,20 +19,26 @@ class FoodEntry:
     eaten_time: Optional[str] = None
     character_name: Optional[str] = None
     
+    def _set_eaten_state(self, eaten: bool, character_name: Optional[str] = None):
+        """Update the eaten state and related metadata."""
+        self.eaten = eaten
+        if eaten:
+            now = datetime.now()
+            self.eaten_date = now.strftime("%Y-%m-%d")
+            self.eaten_time = now.strftime("%H:%M:%S")
+            self.character_name = character_name or "Unknown"
+        else:
+            self.eaten_date = None
+            self.eaten_time = None
+            self.character_name = None
+
     def mark_eaten(self, character_name: str = "Unknown"):
         """Mark this food as eaten."""
-        self.eaten = True
-        now = datetime.now()
-        self.eaten_date = now.strftime("%Y-%m-%d")
-        self.eaten_time = now.strftime("%H:%M:%S")
-        self.character_name = character_name
+        self._set_eaten_state(True, character_name)
     
     def mark_uneaten(self):
         """Mark this food as not eaten."""
-        self.eaten = False
-        self.eaten_date = None
-        self.eaten_time = None
-        self.character_name = None
+        self._set_eaten_state(False)
     
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -100,6 +106,16 @@ class FoodTracker:
         self.foods[item_id] = entry
         self._save_tracking_data()
         return entry
+
+    def _update_food_state(self, item_id: str, eaten: bool, character_name: str = "Unknown") -> bool:
+        """Update a tracked food item and persist the change."""
+        entry = self.foods.get(item_id)
+        if entry is None:
+            return False
+
+        entry._set_eaten_state(eaten, character_name)
+        self._save_tracking_data()
+        return True
     
     def mark_eaten(self, item_id: str, character_name: str = "Unknown") -> bool:
         """Mark a food as eaten.
@@ -111,11 +127,7 @@ class FoodTracker:
         Returns:
             True if successful, False if food not found
         """
-        if item_id in self.foods:
-            self.foods[item_id].mark_eaten(character_name)
-            self._save_tracking_data()
-            return True
-        return False
+        return self._update_food_state(item_id, True, character_name)
     
     def mark_uneaten(self, item_id: str) -> bool:
         """Mark a food as not eaten.
@@ -126,11 +138,7 @@ class FoodTracker:
         Returns:
             True if successful, False if food not found
         """
-        if item_id in self.foods:
-            self.foods[item_id].mark_uneaten()
-            self._save_tracking_data()
-            return True
-        return False
+        return self._update_food_state(item_id, False)
     
     def get_eaten_foods(self) -> List[FoodEntry]:
         """Get all foods that have been eaten."""

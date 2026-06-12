@@ -432,10 +432,14 @@ class FoodComparisonWindow:
         dialog.transient(self.window)
         dialog.grab_set()
         
-        # Center dialog
+        # Center dialog on the same monitor as the parent window
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
-        y = (dialog.winfo_screenheight() // 2) - (350 // 2)
+        root_x = self.window.winfo_rootx()
+        root_y = self.window.winfo_rooty()
+        root_w = self.window.winfo_width() or self.window.winfo_reqwidth()
+        root_h = self.window.winfo_height() or self.window.winfo_reqheight()
+        x = root_x + max(0, (root_w - 500) // 2)
+        y = root_y + max(0, (root_h - 350) // 2)
         dialog.geometry(f"500x350+{x}+{y}")
 
         # Apply PGLOK theme so the dialog matches the main UI

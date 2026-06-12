@@ -396,6 +396,133 @@ def apply_theme(root):
         indicatorcolor=UI_COLORS["entry_bg"],
     )
 
+    # Timer-specific styling for a more polished, cohesive timer window
+    style.configure(
+        "Timer.Title.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size_header"] + 1, "bold"),
+    )
+    style.configure(
+        "Timer.Subtitle.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
+    )
+    style.configure(
+        "Timer.Status.TLabel",
+        background=UI_COLORS["panel_bg"],
+        foreground=UI_COLORS["text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+    )
+    style.configure(
+        "Timer.Card.TFrame",
+        background=UI_COLORS["card_bg"],
+        borderwidth=0,
+        relief="flat",
+    )
+    style.configure(
+        "Timer.HeaderCard.TFrame",
+        background=UI_COLORS["panel_bg"],
+        borderwidth=0,
+        relief="flat",
+    )
+    style.configure(
+        "Timer.Section.TLabelframe",
+        background=UI_COLORS["card_bg"],
+        borderwidth=0,
+        relief="flat",
+        padding=8,
+    )
+    style.configure(
+        "Timer.Section.TLabelframe.Label",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+    )
+    style.configure(
+        "Timer.Card.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+    )
+    style.configure(
+        "Timer.Card.Muted.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["muted_text"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1),
+    )
+    style.configure(
+        "Timer.Metric.TLabel",
+        background=UI_COLORS["card_bg"],
+        foreground=UI_COLORS["accent"],
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] + 1, "bold"),
+    )
+    style.configure(
+        "Timer.Badge.TLabel",
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        padding=(8, 3),
+        borderwidth=1,
+        relief="solid",
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"] - 1, "bold"),
+    )
+    style.configure(
+        "Timer.Primary.TButton",
+        background=UI_COLORS["primary"],
+        foreground=UI_COLORS["text"],
+        borderwidth=1,
+        relief="raised",
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+        padding=(10, 6),
+    )
+    style.map(
+        "Timer.Primary.TButton",
+        background=[("active", UI_COLORS["primary_active"]), ("disabled", UI_COLORS["secondary"])],
+        foreground=[("disabled", UI_COLORS["muted_text"])],
+    )
+    style.configure(
+        "Timer.Secondary.TButton",
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        borderwidth=1,
+        relief="raised",
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"]),
+        padding=(10, 6),
+    )
+    style.map(
+        "Timer.Secondary.TButton",
+        background=[("active", UI_COLORS["secondary_active"]), ("disabled", UI_COLORS["secondary"])],
+        foreground=[("disabled", UI_COLORS["muted_text"])],
+    )
+    style.configure(
+        "Timer.Treeview",
+        background=UI_COLORS["entry_bg"],
+        fieldbackground=UI_COLORS["entry_bg"],
+        foreground=UI_COLORS["text"],
+        bordercolor=UI_COLORS["entry_border"],
+        rowheight=26,
+    )
+    style.map(
+        "Timer.Treeview",
+        background=[("selected", UI_COLORS["secondary_active"])],
+        foreground=[("selected", UI_COLORS["accent"])],
+    )
+    style.configure(
+        "Timer.Treeview.Heading",
+        background=UI_COLORS["secondary"],
+        foreground=UI_COLORS["text"],
+        relief="raised",
+        font=(UI_ATTRS["font_family"], UI_ATTRS["font_size"], "bold"),
+    )
+    style.map("Timer.Treeview.Heading", background=[("active", UI_COLORS["secondary_active"])])
+    style.configure(
+        "Timer.Horizontal.TProgressbar",
+        troughcolor=UI_COLORS["entry_bg"],
+        background=UI_COLORS["accent"],
+        thickness=14,
+    )
+
 
 def configure_menu_theme(menu):
     menu.configure(

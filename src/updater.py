@@ -272,6 +272,23 @@ def restart_application():
         traceback.print_exc()
 
 
+def _refresh_required_data_files() -> bool:
+    """Download any missing or changed CDN data files.
+
+    This is best-effort: if the network or downloader fails, we keep the
+    application update result intact and let the user retry data refresh later.
+    """
+    try:
+        from src.data_acquisition import main as run_data_acquisition
+
+        print("Refreshing required CDN data files...")
+        run_data_acquisition()
+        return True
+    except Exception as e:
+        print(f"Data refresh failed: {e}")
+        return False
+
+
 def perform_auto_update(current_version: str) -> bool:
     try:
         latest_version, assets = fetch_latest_repo_version()
@@ -320,6 +337,7 @@ def perform_auto_update(current_version: str) -> bool:
 
             if success:
                 print("Update installed successfully")
+                _refresh_required_data_files()
                 return True
 
             print("Update installation failed")

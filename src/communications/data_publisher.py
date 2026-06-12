@@ -3,8 +3,12 @@ Data Publisher for PGLOK Communications
 Provides functions to publish different types of game data via MQTT.
 """
 
+from typing import TYPE_CHECKING
+
 import src.config.mqtt_config as mqtt_config
-from .mqtt_client import MqttClient
+
+if TYPE_CHECKING:
+    from .mqtt_client import MqttClient
 
 
 class DataPublisher:

@@ -6,8 +6,12 @@ from pathlib import Path
 DB_FILENAME = "pglok_index.db"
 
 
-def get_db_path(data_dir):
+def get_db_path(data_dir: Path) -> Path:
     return Path(data_dir) / DB_FILENAME
+
+
+def _list_json_files(data_dir: Path):
+    return sorted(data_dir.glob("*.json"))
 
 
 def ensure_schema(conn):
@@ -122,11 +126,11 @@ def index_data_dir(data_dir, db_path=None):
 
     indexed_files = 0
     skipped_files = 0
+    json_files = _list_json_files(data_dir)
 
     with sqlite3.connect(db_path) as conn:
         ensure_schema(conn)
 
-        json_files = sorted(data_dir.glob("*.json"))
         for file_path in json_files:
             row_count, updated = _index_file(conn, file_path)
             if updated:
@@ -140,7 +144,7 @@ def index_data_dir(data_dir, db_path=None):
         "db_path": str(db_path),
         "indexed_files": indexed_files,
         "skipped_files": skipped_files,
-        "total_files": len(sorted(data_dir.glob("*.json"))),
+        "total_files": len(json_files),
     }
 
 

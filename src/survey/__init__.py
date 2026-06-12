@@ -2283,6 +2283,15 @@ class SurveyHelperWindow(tk.Toplevel):
         set_window_icon(win)
         win.transient(self)
 
+        win.update_idletasks()
+        root_x = self.winfo_rootx()
+        root_y = self.winfo_rooty()
+        root_w = self.winfo_width() or self.winfo_reqwidth()
+        root_h = self.winfo_height() or self.winfo_reqheight()
+        x = root_x + max(0, (root_w - 640) // 2)
+        y = root_y + max(0, (root_h - 360) // 2)
+        win.geometry(f"640x360+{x}+{y}")
+
         frame = tk.Frame(win, bg=UI_COLORS["panel_bg"])
         frame.pack(fill="both", expand=True, padx=8, pady=8)
 

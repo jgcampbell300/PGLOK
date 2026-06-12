@@ -211,6 +211,9 @@ class PGLOKApp:
         self.last_gifted_item = None
         self.last_gifted_npc = None
         self.last_gifted_time = None
+
+        # Damage tracker – parsed damage events from player.log
+        self.damage_events = []  # list of dicts: {source, target, amount, type, timestamp, is_player_damage}
         
         # Add trace to update map when area changes
         self.current_area.trace_add("write", self._on_area_change)
@@ -1569,6 +1572,8 @@ class PGLOKApp:
                     line = q.get_nowait()
                     # Parse gift-related events from player log
                     self._parse_player_log_for_gifts(line)
+                    # Parse damage events from player log
+                    self._parse_player_log_for_damage(line)
                     # Apply filter if present
                     if filter_re:
                         if not filter_re.search(line):
@@ -1655,6 +1660,9 @@ class PGLOKApp:
 
                         # Parse favor gain messages
                         self._parse_favor_gain(line)
+
+                        # Parse damage events from chat lines
+                        self._parse_player_log_for_damage(line)
 
                         # Handle PGLok channel commands / watch terms
                         self._handle_pglok_watch_terms(line, channel)
@@ -1786,6 +1794,338 @@ class PGLOKApp:
         # Pattern for inventory item removal (might indicate gifting)
         # This is a fallback - the game doesn't always send removal messages for gifts
         # We'll rely on the favor gain message to trigger the actual recording
+
+    def _parse_player_log_for_damage(self, line):
+        """Parse player.log and chat lines for damage events.
+
+        Supports many Project Gorgon formats:
+          Chat box (English):
+            - 'You hit [enemy] for X damage with [ability]'
+            - '[Enemy] hits you for X [type] damage'
+            - 'Your [ability] hits [enemy] for X [type] damage'
+            - 'You are hit for X [type] damage'
+            - Armor absorption messages
+
+          Unity player.log (debug traces):
+            - 'LocalPlayer: ProcessDoDamage(NPC_Orc, 42)'
+            - 'TakeDamage(player, 12, "crushing", "NPC_Orc")'
+            - 'ProcessDamage(...)' 
+            - Generic: any line with 'damage' and a number near a creature name
+
+          Fallback – catches lines with 'damage' keyword + a numeric value.
+        """
+        if not line:
+            return
+
+        # ======================
+        # CHAT-STYLE damage (English patterns – from chat log or echoed to player.log)
+        # ======================
+
+        # "You hit [enemy] for X damage" or "You hit [enemy] for X [type] damage" with optional ability
+        match = re.search(
+            r"you hit (.+?) for ([\d,]+(?:\.\d+)?) damage(?: with (.+?))?(?:\s*$|\s*\.|\s*\()",
+            line, re.IGNORECASE
+        )
+        if match:
+            target = match.group(1).strip()
+            amount = match.group(2).replace(",", "")
+            ability = (match.group(3) or "").strip()
+            self._record_damage_event(
+                source="You",
+                target=target,
+                amount=float(amount),
+                damage_type=ability if ability else "",
+                is_player_damage=True,
+                raw_line=line,
+            )
+            return
+
+        # "Your [ability] hits [enemy] for X [type] damage"
+        match = re.search(
+            r"your (.+?) hits? (.+?) for ([\d,]+(?:\.\d+)?) (?:(\w+)\s*)?damage",
+            line, re.IGNORECASE
+        )
+        if match:
+            ability = match.group(1).strip()
+            target = match.group(2).strip()
+            amount = match.group(3).replace(",", "")
+            dmgt = (match.group(4) or "").strip()
+            self._record_damage_event(
+                source="You",
+                target=target,
+                amount=float(amount),
+                damage_type=f"{ability} {dmgt}".strip(),
+                is_player_damage=True,
+                raw_line=line,
+            )
+            return
+
+        # "You deal X damage to [target]" or "You deal X [type] damage to [target]"
+        match = re.search(
+            r"you deal ([\d,]+(?:\.\d+)?) (?:(\w+)\s*)?damage to (.+)",
+            line, re.IGNORECASE
+        )
+        if match:
+            amount = match.group(1).replace(",", "")
+            dmgt = (match.group(2) or "").strip()
+            target = match.group(3).strip()
+            self._record_damage_event(
+                source="You",
+                target=target,
+                amount=float(amount),
+                damage_type=dmgt,
+                is_player_damage=True,
+                raw_line=line,
+            )
+            return
+
+        # "[Enemy] hits you for X [type] damage"
+        match = re.search(
+            r"(.+?) hits? you for ([\d,]+(?:\.\d+)?) (?:(\w+)\s*)?damage",
+            line, re.IGNORECASE
+        )
+        if match:
+            enemy = match.group(1).strip()
+            amount = match.group(2).replace(",", "")
+            dmgt = (match.group(3) or "").strip()
+            self._record_damage_event(
+                source=enemy,
+                target="You",
+                amount=float(amount),
+                damage_type=dmgt,
+                is_player_damage=False,
+                raw_line=line,
+            )
+            return
+
+        # "You are hit for X [type] damage"
+        match = re.search(
+            r"you (?:are|were) hit for ([\d,]+(?:\.\d+)?) (?:(\w+)\s*)?damage",
+            line, re.IGNORECASE
+        )
+        if match:
+            amount = match.group(1).replace(",", "")
+            dmgt = (match.group(2) or "").strip()
+            self._record_damage_event(
+                source="Unknown",
+                target="You",
+                amount=float(amount),
+                damage_type=dmgt,
+                is_player_damage=False,
+                raw_line=line,
+            )
+            return
+
+        # --- Armor absorption ---
+        # "Your armor absorbed / absorbs X damage"
+        match = re.search(
+            r"(?:your armor|armor) absorb(?:s|ed)? ([\d,]+(?:\.\d+)?)\s*(?:points? of)?\s*damage",
+            line, re.IGNORECASE
+        )
+        if match:
+            amount = match.group(1).replace(",", "")
+            self._record_damage_event(
+                source="Armor",
+                target="You",
+                amount=float(amount),
+                damage_type="absorbed",
+                is_player_damage=False,
+                raw_line=line,
+            )
+            return
+
+        # "You evaded [enemy]'s attack" or "You avoided damage"
+        match = re.search(
+            r"you (?:evaded?|avoid(?:ed)?|dodged?|parried?|block(?:ed)?) (.+?)'?s?\s*(?:attack|blow|hit|strike|damage)",
+            line, re.IGNORECASE
+        )
+        if match:
+            # Record as 0 damage with the source name
+            enemy_or_attack = match.group(1).strip()
+            if enemy_or_attack.lower() not in ("the", "a", "an", "its", "their"):
+                self._record_damage_event(
+                    source=enemy_or_attack,
+                    target="You",
+                    amount=0.0,
+                    damage_type="avoided",
+                    is_player_damage=False,
+                    raw_line=line,
+                )
+            return
+
+        # "[Enemy] evaded / dodged your attack"
+        match = re.search(
+            r"(.+?) (?:evaded?|dodged?|parried?|block(?:ed)?|avoid(?:ed)?) your (?:attack|blow|hit|strike|damage)",
+            line, re.IGNORECASE
+        )
+        if match:
+            enemy = match.group(1).strip()
+            if enemy.lower() not in ("the", "a", "an", "its", "their"):
+                self._record_damage_event(
+                    source="You",
+                    target=enemy,
+                    amount=0.0,
+                    damage_type="avoided",
+                    is_player_damage=True,
+                    raw_line=line,
+                )
+            return
+
+        # ======================
+        # UNITY PLAYER.LOG damage (debug traces from the C# engine)
+        # ======================
+
+        # "LocalPlayer: ProcessDoDamage(target, amount)"
+        match = re.search(r"LocalPlayer:\s*ProcessDoDamage\(([^,)]+)[,)]\s*([\d,]+(?:\.\d+)?)", line, re.IGNORECASE)
+        if match:
+            target = match.group(1).strip().strip('"').strip("'")
+            amount = match.group(2).replace(",", "")
+            self._record_damage_event(
+                source="You",
+                target=target,
+                amount=float(amount),
+                damage_type="",
+                is_player_damage=True,
+                raw_line=line,
+            )
+            return
+
+        # "ProcessDamage(attacker, defender, amount, ...)" – detect who is the player
+        match = re.search(r"ProcessDamage\(([^,]+),\s*([^,]+),\s*([\d,]+(?:\.\d+)?)", line, re.IGNORECASE)
+        if match:
+            attacker = match.group(1).strip().strip('"').strip("'")
+            defender = match.group(2).strip().strip('"').strip("'")
+            amount = float(match.group(3).replace(",", ""))
+            if amount <= 0:
+                return
+            # Determine if player is attacker or defender
+            player_aliases = ("player", "localplayer", "you", "")
+            if any(p in attacker.lower() for p in player_aliases):
+                self._record_damage_event(
+                    source="You", target=defender, amount=amount,
+                    damage_type="", is_player_damage=True, raw_line=line,
+                )
+            elif any(p in defender.lower() for p in player_aliases):
+                self._record_damage_event(
+                    source=attacker, target="You", amount=amount,
+                    damage_type="", is_player_damage=False, raw_line=line,
+                )
+            return
+
+        # "TakeDamage(entity, amount, type, source)" — player taking damage
+        match = re.search(r"TakeDamage\(([^,)]+)[,)]\s*([\d,]+(?:\.\d+)?)\s*[,)]?\s*([^,)]*?)[,)]?\s*([^,)]*?)\)", line, re.IGNORECASE)
+        if match:
+            entity = match.group(1).strip().strip('"').strip("'")
+            amount = match.group(2).replace(",", "")
+            dmgt = match.group(3).strip().strip('"').strip("'")
+            source = match.group(4).strip().strip('"').strip("'") if match.group(4) else ""
+            player_aliases = ("player", "localplayer", "you", "")
+            if any(p in entity.lower() for p in player_aliases):
+                self._record_damage_event(
+                    source=source if source else "Unknown",
+                    target="You",
+                    amount=float(amount),
+                    damage_type=dmgt,
+                    is_player_damage=False,
+                    raw_line=line,
+                )
+                return
+
+        # "Damage: X [type] to Y" or "Dealt X damage to Y" (generic Debug.Log)
+        match = re.search(r"(?:Damage|Dealt):?\s*([\d,]+(?:\.\d+)?)\s*(?:(\w+)\s*)?(?:damage|DMG)?\s*(?:to|on|->)\s*(.+)", line, re.IGNORECASE)
+        if match:
+            amount = match.group(1).replace(",", "")
+            dmgt = (match.group(2) or "").strip()
+            target = match.group(3).strip()
+            self._record_damage_event(
+                source="You",
+                target=target,
+                amount=float(amount),
+                damage_type=dmgt,
+                is_player_damage=True,
+                raw_line=line,
+            )
+            return
+
+        # ======================
+        # BROAD FALLBACK – any line with "damage" + a number after a creature-like name
+        # Catches many custom formats without false positives.
+        # ======================
+
+        # Only apply fallback if line contains the word "damage" (case-insensitive)
+        if not re.search(r"damage", line, re.IGNORECASE):
+            return
+
+        # Try to extract: [word] [hits|hit|deals] you for [number]
+        match = re.search(
+            r"(?:^|\s)([A-Z][\w\s]{1,40}?)\s+(?:hits?|deals?|does)\s+(?:you\s+for\s+|)([\d,]+(?:\.\d+)?)",
+            line, re.IGNORECASE
+        )
+        if match:
+            source_name = match.group(1).strip()
+            amount_text = match.group(2).replace(",", "")
+            # Filter out non-creature phrases
+            if source_name.lower() not in ("you", "your", "the", "a", "an", "and", "or", "but", "that", "this", "with", "from", "to"):
+                self._record_damage_event(
+                    source=source_name,
+                    target="You",
+                    amount=float(amount_text),
+                    damage_type="",
+                    is_player_damage=False,
+                    raw_line=line,
+                )
+                return
+
+    def _record_damage_event(self, source, target, amount, damage_type, is_player_damage, raw_line):
+        """Record a single damage event and append it to the Damage Log tab."""
+        event = {
+            "source": source,
+            "target": target,
+            "amount": amount,
+            "damage_type": damage_type,
+            "is_player_damage": is_player_damage,
+            "timestamp": datetime.now(),
+            "raw": raw_line,
+        }
+        # Clamp the list to avoid unbounded memory growth
+        if len(self.damage_events) > 5000:
+            self.damage_events = self.damage_events[-4000:]
+        self.damage_events.append(event)
+
+        # Build the display line with color tags
+        if not self.chat_notebook:
+            return
+
+        damage_text = self.chat_tab_text.get("Damage Log")
+        if damage_text is None:
+            return
+
+        damage_text.configure(state="normal")
+
+        time_str = event["timestamp"].strftime("%H:%M:%S")
+        damage_text.insert(tk.END, f"[{time_str}] ")
+
+        if is_player_damage:
+            # Green: You → enemy
+            damage_text.insert(tk.END, "You ", ("player_damage",))
+            damage_text.insert(tk.END, f"→ {target}: ")
+            damage_text.insert(tk.END, f"{amount:,.0f}", ("damage_amount",))
+            if damage_type:
+                damage_text.insert(tk.END, f" ({damage_type})", ("damage_type",))
+            damage_text.insert(tk.END, " damage")
+        else:
+            # Red: enemy → You
+            damage_text.insert(tk.END, f"{source} ", ("damage_source",))
+            damage_text.insert(tk.END, "→ You: ")
+            damage_text.insert(tk.END, f"{amount:,.0f}", ("damage_amount",))
+            if damage_type:
+                damage_text.insert(tk.END, f" ({damage_type})", ("damage_type",))
+            damage_text.insert(tk.END, " damage", ("enemy_damage",))
+
+        damage_text.insert(tk.END, "\n")
+        damage_text.see(tk.END)
+        self._trim_chat_widget(damage_text)
+        damage_text.configure(state="disabled")
 
     def _parse_favor_gain(self, line):
         """Parse favor gain messages from chat logs and automatically record them."""
@@ -2143,8 +2483,18 @@ class PGLOKApp:
         self._ensure_chat_tab("Other")
         self._ensure_chat_tab("Info")
         self._ensure_chat_tab("Player Log")
+        self._ensure_chat_tab("Damage Log")
         self._ensure_chat_tab("Debug")
         self._flush_debug_buffer()
+
+        # Configure damage log text widget with color tags
+        damage_text = self.chat_tab_text.get("Damage Log")
+        if damage_text is not None:
+            damage_text.tag_configure("player_damage", foreground="#4CAF50")  # green
+            damage_text.tag_configure("enemy_damage", foreground="#F44336")   # red
+            damage_text.tag_configure("damage_source", foreground="#FF9800")  # orange for source names
+            damage_text.tag_configure("damage_type", foreground="#9E9E9E")    # grey for damage type
+            damage_text.tag_configure("damage_amount", foreground="#FFFFFF")   # white for amounts
 
     def _on_home_pane_resize(self, _event=None):
         self._save_home_split()
@@ -4697,6 +5047,11 @@ class PGLOKApp:
                 self._open_communications_window()
             except Exception:
                 pass
+        if self._is_window_marked_open("timer"):
+            try:
+                self._open_timer()
+            except Exception:
+                pass
 
     def _raise_main_window_default(self):
         return
@@ -4898,7 +5253,12 @@ class PGLOKApp:
         )
         self._set_window_open_state("map_tools", self.map_tools_window is not None and self.map_tools_window.winfo_exists())
         self._set_window_open_state("survey_helper", self.survey_helper_window is not None and self.survey_helper_window.winfo_exists())
-        self._set_window_open_state("timer", self.timer_window is not None and self.timer_window.window.winfo_exists())
+        # Capture timer open state before closing it so startup restore can reopen it.
+        try:
+            was_timer_open = self.timer_window is not None and self.timer_window.window.winfo_exists()
+        except Exception:
+            was_timer_open = False
+        self._set_window_open_state("timer", was_timer_open)
         # Track favor tracker window open state if present
         try:
             is_favor_open = self.favor_tracker_window is not None and self.favor_tracker_window.window.winfo_exists()
