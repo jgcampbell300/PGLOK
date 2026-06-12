@@ -1179,8 +1179,10 @@ class PGLOKApp:
                 except Exception:
                     self.communications_window = None
 
-            # Get character name - TODO: improve detection
-            character_name = "raloc"  # Hardcoded temporarily
+            # Get character name from detected game info
+            character_name = self.current_character.get().strip()
+            if not character_name or character_name == "Unknown" or character_name == "":
+                character_name = "Unknown"
 
             # Create window with app reference
             from src.communications.communications_window import CommunicationsWindow
