@@ -154,6 +154,60 @@ def should_skip_update_path(relative_path: Path) -> bool:
     return False
 
 
+def _extract_version_from_dirname(source_dir: Path) -> Optional[str]:
+    """Try to extract a version number from the extracted directory name.
+
+    The tarball creates a directory like PGLOK-Linux-v0.2.7/ or PGLOK-Linux-v0.2.6/.
+    """
+    # The source_dir itself might be the versioned directory
+    for candidate in [source_dir] + list(source_dir.parents)[:2]:
+        name = candidate.name
+        # Look for patterns like v0.2.7 or 0.2.7 in the directory name
+        import re
+        match = re.search(r'v?(\d+\.\d+\.\d+)', name)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _sha256_of_exe_in(source_dir: Path) -> Optional[str]:
+    """Return SHA256 of the PGLOK executable found under source_dir."""
+    import hashlib
+    exe_name = "PGLOK.exe" if sys.platform == "win32" else "PGLOK"
+    for candidate in source_dir.rglob(exe_name):
+        try:
+            h = hashlib.sha256()
+            h.update(candidate.read_bytes())
+            return h.hexdigest()
+        except Exception:
+            return None
+    return None
+
+
+def _is_same_binary_as_running(source_dir: Path) -> bool:
+    """Check if the extracted binary is identical to the currently running one.
+
+    If true, the update archive contains the same binary we already have,
+    meaning it was incorrectly packaged.
+    """
+    extracted_sha = _sha256_of_exe_in(source_dir)
+    if extracted_sha is None:
+        return False
+
+    # Path to the running executable
+    if getattr(sys, "frozen", False):
+        running_path = Path(sys.executable)
+    else:
+        return False  # Running from source, can't compare
+
+    try:
+        h = hashlib.sha256()
+        h.update(running_path.read_bytes())
+        return h.hexdigest() == extracted_sha
+    except Exception:
+        return False
+
+
 def copy_update_tree(source_dir: Path, current_dir: Path) -> bool:
     files_copied = 0
     files_skipped = 0
@@ -212,7 +266,40 @@ def copy_update_tree(source_dir: Path, current_dir: Path) -> bool:
     return True
 
 
-def install_update_windows(zip_path: Path) -> bool:
+def _verify_extracted_version(source_dir: Path, expected_version: str) -> bool:
+    """Check the extracted update matches the expected release version.
+
+    Two checks:
+      1) Directory name contains the expected version (e.g. ...-v0.2.7/).
+      2) SHA256 of the extracted binary differs from the currently running binary
+         (catches identical-binary-in-wrong-tarball packaging errors).
+
+    Both must pass for the update to proceed.
+    """
+    expected_clean = expected_version.lstrip("v")
+
+    # Check 1: directory name version
+    dir_version = _extract_version_from_dirname(source_dir)
+    if dir_version and dir_version != expected_clean:
+        print(f"❌ Version mismatch: extracted directory indicates v{dir_version}, "
+              f"expected v{expected_clean}")
+        print(f"   The release archive was incorrectly packaged. Update aborted.")
+        return False
+
+    if dir_version == expected_clean:
+        print(f"✅ Extracted directory version matches: v{dir_version}")
+
+    # Check 2: SHA comparison vs running binary (catches identical binary with wrong name)
+    if _is_same_binary_as_running(source_dir):
+        print(f"❌ Extracted binary is identical to the currently running executable.")
+        print(f"   The release archive contains the same binary — not an upgrade. Update aborted.")
+        return False
+
+    print(f"✅ Extracted binary differs from running executable — proceeding with update.")
+    return True
+
+
+def install_update_windows(zip_path: Path, expected_version: str) -> bool:
     try:
         import zipfile
 
@@ -230,6 +317,10 @@ def install_update_windows(zip_path: Path) -> bool:
                 return False
 
             print(f"Source directory for update: {source_dir}")
+
+            if not _verify_extracted_version(source_dir, expected_version):
+                return False
+
             return copy_update_tree(source_dir, current_dir)
     except Exception as e:
         print(f"Windows update failed: {e}")
@@ -238,7 +329,7 @@ def install_update_windows(zip_path: Path) -> bool:
         return False
 
 
-def install_update_linux(tar_path: Path) -> bool:
+def install_update_linux(tar_path: Path, expected_version: str) -> bool:
     try:
         import tarfile
 
@@ -264,6 +355,10 @@ def install_update_linux(tar_path: Path) -> bool:
                 return False
 
             print(f"Source directory for update: {source_dir}")
+
+            if not _verify_extracted_version(source_dir, expected_version):
+                return False
+
             return copy_update_tree(source_dir, current_dir)
     except Exception as e:
         print(f"Linux update failed: {e}")
@@ -272,7 +367,7 @@ def install_update_linux(tar_path: Path) -> bool:
         return False
 
 
-def install_update_mac(dmg_path: Path) -> bool:
+def install_update_mac(dmg_path: Path, expected_version: str) -> bool:
     try:
         subprocess.run(["open", str(dmg_path)], check=True)
         return True
@@ -351,14 +446,14 @@ def perform_auto_update(current_version: str) -> bool:
             suffixes = update_file.suffixes
             url_lower = download_url.lower()
             if platform == "win32" and (update_file.suffix == ".zip" or ".zip" in url_lower):
-                success = install_update_windows(update_file)
+                success = install_update_windows(update_file, latest_version)
             elif platform.startswith("linux") and (
                 ".tgz" in url_lower or ".tar.gz" in url_lower or 
                 (len(suffixes) >= 2 and suffixes[-2].lower() == ".tar" and suffixes[-1].lower() == ".gz")
             ):
-                success = install_update_linux(update_file)
+                success = install_update_linux(update_file, latest_version)
             elif platform == "darwin" and update_file.suffix == ".dmg":
-                success = install_update_mac(update_file)
+                success = install_update_mac(update_file, latest_version)
 
             if success:
                 print("Update installed successfully")
