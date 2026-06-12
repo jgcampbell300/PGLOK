@@ -170,7 +170,24 @@ def copy_update_tree(source_dir: Path, current_dir: Path) -> bool:
         dest_file = current_dir / relative_path
         try:
             dest_file.parent.mkdir(parents=True, exist_ok=True)
+            # If the destination is the running executable, rename it aside first.
+            # On Linux, renaming a running binary is safe — the old process keeps
+            # the original inode. On Windows, the rename will fail and we fall
+            # through to the existing exception handler.
+            if dest_file.exists():
+                old_name = dest_file.with_name(dest_file.name + ".old")
+                try:
+                    dest_file.rename(old_name)
+                except OSError:
+                    pass  # Can't rename — proceed to try direct copy
             shutil.copy2(item, dest_file)
+            # Clean up the renamed-aside file on success
+            old_name = dest_file.with_name(dest_file.name + ".old")
+            if old_name.exists():
+                try:
+                    old_name.unlink()
+                except OSError:
+                    pass  # Best-effort cleanup
             files_copied += 1
             print(f"Copied: {item} -> {dest_file}")
         except shutil.SameFileError:
@@ -180,6 +197,14 @@ def copy_update_tree(source_dir: Path, current_dir: Path) -> bool:
         except Exception as e:
             print(f"Failed to copy {item}: {e}")
             return False
+
+    # Clean up any leftover .old files
+    for leftover in current_dir.rglob("*.old"):
+        if leftover.name.endswith(".old"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
 
     print(f"Successfully copied {files_copied} files")
     if files_skipped:
