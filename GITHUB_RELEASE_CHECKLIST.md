@@ -1,16 +1,16 @@
-# PGLOK v0.2.3 Release Checklist
+# PGLOK v0.2.4 Release Checklist
 
 ## Release Info
 
-- Tag: `v0.2.3`
-- Title: `PGLOK v0.2.3`
+- Tag: `v0.2.4`
+- Title: `PGLOK v0.2.4`
 - Target branch: `main`
 - Notes source: `RELEASE_NOTES.md`
 
 ## Assets
 
-- `PGLOK-Linux-v0.2.3.tar.gz`
-- `PGLOK-v0.2.3-source.tar.gz`
+- `PGLOK-Linux-v0.2.4.tar.gz`
+- `PGLOK-v0.2.4-source.tar.gz`
 
 ## Auto-Update Expectations
 
@@ -21,5 +21,5 @@
 ## Verification
 
 - Launch `PGLOK` after install and confirm normal startup.
-- Confirm the app reports version `0.2.3`.
-- Confirm a `0.2.2` install offers update to `v0.2.3`.
+- Confirm the app reports version `0.2.4`.
+- Confirm a `0.2.3` install offers update to `v0.2.4`.
