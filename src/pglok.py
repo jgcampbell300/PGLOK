@@ -121,6 +121,7 @@ class PGLOKApp:
         self.survey_helper_window = None
         self.communications_window = None
         self.timer_window = None
+        self.skill_tracker_window = None
         self.home_paned = None
         self.itemizer_paned = None
         self.itemizer_bottom_paned = None
@@ -316,6 +317,9 @@ class PGLOKApp:
             side="left", padx=(3, 0)
         )
         ttk.Button(toolbar, text="Planner", command=self._open_planner, style="App.Secondary.TButton").pack(side="left", padx=(3, 0))
+        ttk.Button(toolbar, text="Skills", command=self._open_skill_tracker, style="App.Secondary.TButton").pack(
+            side="left", padx=(3, 0)
+        )
 
         # Right side: Always on Top toggle + Alpha version button
         self.pin_button = ttk.Checkbutton(
@@ -611,6 +615,7 @@ class PGLOKApp:
         tools_menu.add_command(label="Itemizer", command=self.open_itemizer_window)
         tools_menu.add_command(label="Maps", command=self.open_map_tools_window)
         tools_menu.add_command(label="Planner", command=self._open_planner)
+        tools_menu.add_command(label="Skill Tracker", command=self._open_skill_tracker)
         tools_menu.add_command(label="Survey Helper", command=self._open_survey_helper)
         tools_menu.add_command(label="Timer", command=self._open_timer)
         menu_bar.add_cascade(label="Tools", menu=tools_menu)
@@ -1075,6 +1080,30 @@ class PGLOKApp:
 
         except Exception as e:
             self.status_var.set(f"Error opening timer: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _open_skill_tracker(self):
+        """Open the Skill Tracker window."""
+        try:
+            if self.skill_tracker_window is not None:
+                try:
+                    if self.skill_tracker_window.window.winfo_exists():
+                        self.skill_tracker_window.window.deiconify()
+                        self.skill_tracker_window.window.lift()
+                        self.skill_tracker_window.window.focus_force()
+                        self.status_var.set("Skill Tracker opened")
+                        return
+                except Exception:
+                    self.skill_tracker_window = None
+
+            from src.skill_tracker import SkillTrackerWindow
+
+            self.skill_tracker_window = SkillTrackerWindow(self)
+            self.status_var.set("Skill Tracker opened")
+
+        except Exception as e:
+            self.status_var.set(f"Error opening Skill Tracker: {e}")
             import traceback
             traceback.print_exc()
 
